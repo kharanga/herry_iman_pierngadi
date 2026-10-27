@@ -5,3 +5,8 @@ __pycache__/
 *.jpg
 *.mp4
 handoff/
+CLAUDE.md
+SPEC.md
+.claude
+docs/PLAN.md
+docs/overview.md
