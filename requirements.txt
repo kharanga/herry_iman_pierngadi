@@ -1,0 +1,5 @@
+duckdb
+opencv-python
+pandas
+pytest
+yt-dlp
