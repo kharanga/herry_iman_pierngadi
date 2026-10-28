@@ -19,7 +19,6 @@ from ingest.label_translations import (
 from ingest.load_shuttleset import RAW_SHOTS_SQL, SHUTTLESET_SET_DIR, build_database
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CLAUDE_MD_PATH = PROJECT_ROOT / "CLAUDE.md"
 REAL_SET_DIR = PROJECT_ROOT / SHUTTLESET_SET_DIR
 REAL_DATABASE_PATH = PROJECT_ROOT / "data" / "scout.duckdb"
 TRANSLATED_COLUMNS = ["type", "lose_reason", "win_reason"]
@@ -36,29 +35,63 @@ SYNTHETIC_ROWS = (
 )
 
 
-def claude_md_shot_type_map() -> dict[str, str]:
-    claude_text = CLAUDE_MD_PATH.read_text()
-    map_block = claude_text.split("Shot type map:")[1].split("\n\n")[0]
+EXPECTED_SHOT_TYPE_ENGLISH_BY_CHINESE = {
+    "放小球": "net shot",
+    "擋小球": "return net",
+    "殺球": "smash",
+    "點扣": "wrist smash",
+    "挑球": "lob",
+    "防守回挑": "defensive return lob",
+    "長球": "clear",
+    "平球": "drive",
+    "小平球": "driven flight",
+    "後場抽平球": "back-court drive",
+    "切球": "drop",
+    "過度切球": "passive drop",
+    "過渡切球": "passive drop",
+    "推球": "push",
+    "撲球": "rush",
+    "防守回抽": "defensive return drive",
+    "勾球": "cross-court net shot",
+    "發短球": "short service",
+    "發長球": "long service",
+    "未知球種": "unknown",
+}
+
+EXPECTED_REASON_PAIRS = [
+    (("對手落地致勝", "opponent winner"), ("落地致勝", "winner")),
+    (("出界", "out"), ("對手出界", "opponent out")),
+    (("掛網", "net"), ("對手掛網", "opponent net")),
+    (("未過網", "not over net"), ("對手未過網", "opponent not over net")),
+    (("落點判斷失誤", "misjudged landing"), ("對手落點判斷失誤", "opponent misjudged landing")),
+    (("對手落地判斷失誤", "misjudged opponent landing"), ("落地判斷失誤", "landed, opponent misjudged")),
+    (("犯規", "foul"), ("對手犯規", "opponent foul")),
+]
+EXPECTED_LOSE_REASON_ENGLISH_BY_CHINESE = dict(lose_pair for lose_pair, _ in EXPECTED_REASON_PAIRS)
+EXPECTED_WIN_REASON_ENGLISH_BY_CHINESE = dict(win_pair for _, win_pair in EXPECTED_REASON_PAIRS)
+LABEL_DOC_PATH = PROJECT_ROOT / "docs" / "analytics" / "label_translations.md"
+
+
+def markdown_table_rows(markdown_section: str) -> list[list[str]]:
+    table_lines = [line for line in markdown_section.splitlines() if line.startswith("|")]
+    return [[cell.strip() for cell in line.strip("|").split("|")] for line in table_lines[2:]]
+
+
+def documented_shot_type_map() -> dict[str, str]:
+    shot_type_section = LABEL_DOC_PATH.read_text().split("Shot types:")[1].split("Rally-end reasons")[0]
     shot_type_map = {}
-    for line in map_block.strip().splitlines():
-        for entry in line.split(" | "):
-            labels_part, english = re.fullmatch(r"([^\x00-\x7f]+(?: AND [^\x00-\x7f]+)?) ([a-z -]+?)(?: \(.*\))?", entry.strip()).groups()
-            for chinese in labels_part.split(" AND "):
-                shot_type_map[chinese] = english
+    for chinese_cell, english in markdown_table_rows(shot_type_section):
+        for chinese in chinese_cell.split(", "):
+            shot_type_map[chinese] = english
     return shot_type_map
 
 
-def claude_md_reason_maps() -> tuple[dict[str, str], dict[str, str]]:
-    claude_text = CLAUDE_MD_PATH.read_text()
-    map_block = claude_text.split("Rally-end reason maps")[1].split("\n", 1)[1].split("\n\n")[0]
-    lose_reason_map, win_reason_map = {}, {}
-    for line in map_block.strip().splitlines():
-        lose_entry, win_entry = line.split(" | ")
-        lose_chinese, lose_english = lose_entry.strip().split(" ", 1)
-        win_chinese, win_english = win_entry.strip().split(" ", 1)
-        lose_reason_map[lose_chinese] = lose_english
-        win_reason_map[win_chinese] = win_english
-    return lose_reason_map, win_reason_map
+def documented_reason_pairs() -> list[tuple[tuple[str, str], tuple[str, str]]]:
+    reason_section = LABEL_DOC_PATH.read_text().split("Rally-end reasons")[1].split("\n\n", 1)[1].split("\n\n")[0]
+    return [
+        ((lose_chinese, lose_english), (win_chinese, win_english))
+        for lose_chinese, lose_english, win_chinese, win_english in markdown_table_rows(reason_section)
+    ]
 
 
 def write_synthetic_set_dir(set_dir: Path, rows: str) -> Path:
@@ -86,15 +119,19 @@ def varchar_columns(connection, table_name: str) -> list[str]:
     ]
 
 
-def test_shot_type_map_matches_claude_md_exactly():
-    assert claude_md_shot_type_map() == SHOT_TYPE_ENGLISH_BY_CHINESE
+def test_shot_type_map_matches_expected_table_exactly():
+    assert SHOT_TYPE_ENGLISH_BY_CHINESE == EXPECTED_SHOT_TYPE_ENGLISH_BY_CHINESE
     assert len(SHOT_TYPE_ENGLISH_BY_CHINESE) == 20
 
 
-def test_reason_maps_match_claude_md_exactly():
-    lose_reason_map, win_reason_map = claude_md_reason_maps()
-    assert lose_reason_map == LOSE_REASON_ENGLISH_BY_CHINESE
-    assert win_reason_map == WIN_REASON_ENGLISH_BY_CHINESE
+def test_reason_maps_match_expected_table_exactly():
+    assert LOSE_REASON_ENGLISH_BY_CHINESE == EXPECTED_LOSE_REASON_ENGLISH_BY_CHINESE
+    assert WIN_REASON_ENGLISH_BY_CHINESE == EXPECTED_WIN_REASON_ENGLISH_BY_CHINESE
+
+
+def test_documented_tables_match_expected_tables():
+    assert documented_shot_type_map() == EXPECTED_SHOT_TYPE_ENGLISH_BY_CHINESE
+    assert documented_reason_pairs() == EXPECTED_REASON_PAIRS
 
 
 def test_misjudged_pairs_stay_separate():
@@ -299,10 +336,9 @@ def test_no_chinese_character_in_any_column_of_any_table(translated_and_source_d
 
 
 @requires_shuttleset
-def test_reason_pairs_follow_claude_md_rows(translated_and_source_databases):
+def test_reason_pairs_follow_expected_table_rows(translated_and_source_databases):
     connection, _ = translated_and_source_databases
-    lose_reason_map, win_reason_map = claude_md_reason_maps()
-    expected_pairs = set(zip(lose_reason_map.values(), win_reason_map.values()))
+    expected_pairs = {(lose_english, win_english) for (_, lose_english), (_, win_english) in EXPECTED_REASON_PAIRS}
     actual_pairs = set(
         connection.execute(
             "SELECT DISTINCT lose_reason, win_reason FROM translated.raw_shots WHERE lose_reason IS NOT NULL OR win_reason IS NOT NULL"
