@@ -7,7 +7,10 @@ One markdown file per module, for example:
 - `load_shuttleset.md`: `ingest/load_shuttleset.py`
 - `fetch_shuttleset.md`: `ingest/fetch_shuttleset.sh`
 - `label_translations.md`: `ingest/label_translations.py`
-- `schema.md`: the `shots` table, label mapping, coordinate conversion
+- `build_shots.md`: `analytics/build_shots.py` and `analytics/schema.sql`, the `shots` table
+- `court.md`: `analytics/court.py`, court meters, normalization, zones, cross-court
+- `shot_types.md`: `analytics/shot_types.py`, shot type -> group
+- `spot_check.md`: `analytics/spot_check.py`, the court diagram of random shots
 - `classifier.md`: `shots/train.py`, `shots/predict.py`
 - `tendencies.md`: `analytics/tendencies.py`
 - `report.md`: the `report/` app and its command
