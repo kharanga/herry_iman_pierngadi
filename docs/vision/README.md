@@ -4,13 +4,13 @@ Module documentation for the video track, written by **vision-builder**.
 Covers code in `vision/` and `ingest/record.*`.
 
 One markdown file per module, for example:
-- `alignment.md`: label/video alignment check (VIS-001)
-- `record.md`: Pi recording script (VIS-002)
-- `court.md`: court calibration and homography (VIS-003)
-- `players.md`: player detection and tracking (VIS-004)
-- `shuttle.md`: TrackNetV3 shuttle tracking (VIS-005)
-- `hits.md`: hit detection and rally segmentation (VIS-006)
-- `features.md`: hits to `shots` rows (VIS-007)
+- `alignment.md`: label/video alignment check
+- `record.md`: Pi recording script
+- `court.md`: court calibration and homography
+- `players.md`: player detection and tracking
+- `shuttle.md`: TrackNetV3 shuttle tracking
+- `hits.md`: hit detection and rally segmentation
+- `features.md`: hits to `shots` rows
 
 For each public function, class or command: what it does, inputs, output, errors,
 and a doctest `>>>` example using small synthetic arrays, not video files.

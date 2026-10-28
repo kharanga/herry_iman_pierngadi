@@ -1,4 +1,4 @@
-# VIS-001: Alignment check — results
+# Alignment check — results
 
 ## How to run
 ```
