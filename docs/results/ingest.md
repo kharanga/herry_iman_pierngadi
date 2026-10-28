@@ -1,4 +1,4 @@
-# M1: ShuttleSet ingest — results
+# ShuttleSet ingest — results
 
 ## How to run
 ```
@@ -10,7 +10,7 @@
 ## Output: `data/scout.duckdb`
 | Table | Rows | Contents |
 |---|---|---|
-| `raw_shots` | 36,484 | every row of every `set/*/set*.csv`, plus `match_id`, `set_no`, `time_seconds`; `frame_num` cast to INTEGER |
+| `raw_shots` | 36,484 | every row of every `set/*/set*.csv`, plus `match_id`, `set_no`, `time_seconds`; `frame_num` cast to INTEGER; `type`, `lose_reason`, `win_reason` translated to English |
 | `matches` | 44 | `match.csv`, plus `match_id`, `fps_estimate`, `fps_fit_r2`, `fps` |
 | `homography` | 44 | `homography.csv`, with `homography_matrix` parsed to `DOUBLE[3][3]` |
 
@@ -22,6 +22,59 @@
 | Every row has `match_id` and `set_no` | 0 missing |
 | fps for all 44 matches | 19 at 25 fps, 25 at 30 fps |
 | Idempotent | full rebuild in one transaction with `CREATE OR REPLACE`; two rebuilds give identical tables |
+
+## English labels
+The database holds no Chinese. Ingest translates `raw_shots.type`, `raw_shots.lose_reason`
+and `raw_shots.win_reason` with the maps in `ingest/label_translations.py`
+(documented in `docs/analytics/label_translations.md`). A label missing from a map
+stops the build with `UnmappedLabelError` naming the column and the label; nothing becomes NULL silently.
+
+| Criterion | Result |
+|---|---|
+| `type` only English | 19 English labels; both passive-drop spellings become `passive drop` (the data only uses `過度切球`), `未知球種` becomes `unknown` |
+| `lose_reason`, `win_reason` only English | 7 English labels each; NULLs stay NULL (32,975 in each column) |
+| No Chinese anywhere | 0 VARCHAR values with a CJK character in `raw_shots`, `matches`, `homography` |
+| Every label mapped | 0 unmapped (a synthetic CSV with an unknown label fails the build and keeps the old tables) |
+| Nothing else changes | 36,484 rows; every other column of `raw_shots`, and all of `matches` and `homography`, identical row by row to a build without translation |
+| Counts preserved | every English value's count equals its Chinese source's count, and each row maps to the English of its own Chinese label (checked against a build without translation) |
+| Idempotent | two rebuilds give identical tables |
+
+Counts after translation:
+
+| `type` | Shots |
+|---|---|
+| net shot | 6,290 |
+| lob | 5,331 |
+| return net | 3,620 |
+| push | 2,925 |
+| clear | 2,922 |
+| smash | 2,586 |
+| drop | 2,144 |
+| short service | 2,051 |
+| wrist smash | 1,648 |
+| unknown | 1,407 |
+| cross-court net shot | 1,371 |
+| passive drop | 1,356 |
+| drive | 700 |
+| rush | 512 |
+| back-court drive | 473 |
+| defensive return drive | 406 |
+| long service | 373 |
+| defensive return lob | 301 |
+| driven flight | 68 |
+
+| `lose_reason` | `win_reason` | Rallies |
+|---|---|---|
+| opponent winner | winner | 1,189 |
+| out | opponent out | 1,048 |
+| net | opponent net | 841 |
+| not over net | opponent not over net | 376 |
+| misjudged landing | opponent misjudged landing | 44 |
+| misjudged opponent landing | landed, opponent misjudged | 7 |
+| foul | opponent foul | 4 |
+
+The two reason columns always pair up as in the table above (the same event seen from each side),
+and both are NULL on every shot that does not end a rally.
 
 ## fps estimation
 `fps_estimate` is the least-squares slope of `frame_num` against `time_seconds` over all shots in a match.

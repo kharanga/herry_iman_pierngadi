@@ -4,6 +4,10 @@ Loads the ShuttleSet CSVs into a DuckDB database: one row per shot in `raw_shots
 one row per match in `matches` (with its frame rate), and one row per match in
 `homography`. Run `ingest/fetch_shuttleset.sh` first (see `fetch_shuttleset.md`).
 
+The database holds no Chinese: `raw_shots.type`, `raw_shots.lose_reason` and
+`raw_shots.win_reason` are translated to English at ingest with the maps in
+`ingest/label_translations.py` (see `label_translations.md`).
+
 ## Command
 
 ```
@@ -28,7 +32,10 @@ fps 30: 25 matches (estimates 29.97-30.00)
 |---|---|---|
 | `SHUTTLESET_SET_DIR` | `Path` | `data/CoachAI-Projects/ShuttleSet/set` |
 | `DATABASE_PATH` | `Path` | `data/scout.duckdb` |
+| `PROJECT_ROOT` | `Path` | the repo root, added to `sys.path` so the script can import `ingest.label_translations` |
 | `RAW_SHOTS_SQL`, `MATCHES_SQL`, `HOMOGRAPHY_SQL`, `FRAME_RATE_SQL`, `ATTACH_FPS_TO_MATCHES_SQL` | `str` | the SQL each build step runs |
+| `LABEL_TRANSLATIONS_TABLE_SQL`, `INSERT_LABEL_TRANSLATION_SQL`, `RAW_SHOTS_COLUMN_NAMES_SQL`, `DROP_LABEL_TRANSLATIONS_SQL` | `str` | SQL for the temporary `label_translations` table used during the build |
+| `UNMAPPED_LABELS_SQL_TEMPLATE`, `TRANSLATE_COLUMN_SQL_TEMPLATE` | `str` | per-column SQL; `{column_name}` is filled from `ENGLISH_BY_CHINESE_BY_RAW_SHOTS_COLUMN` only |
 
 ## `build_database(set_dir, database_path)`
 
@@ -45,10 +52,16 @@ Output: `None`. The tables are written to `database_path`.
 How it works:
 - `match_id` and `set_no` are parsed from each CSV's path (`set/<match_id>/set<set_no>.csv`).
 - `time` (`H:MM:SS` or `HH:MM:SS`) becomes `time_seconds`.
+- `type`, `lose_reason` and `win_reason` are translated to English in the same
+  transaction (`translate_raw_shots_to_english`). NULLs stay NULL; labels that are
+  already English stay as they are. A column missing from the CSVs is skipped.
 - `fps_estimate` is the least-squares slope of `frame_num` over `time_seconds`
   for all shots in a match; `fps` is that estimate rounded.
 
 Errors:
+- `ingest.label_translations.UnmappedLabelError` (a `ValueError`) if `type`, `lose_reason`
+  or `win_reason` holds a label with no English translation. The message names the column
+  and the label. The transaction is rolled back, so nothing silently becomes NULL.
 - `duckdb.IOException` if no `set*.csv` files match under `set_dir`, or if
   `match.csv` / `homography.csv` is missing. The transaction is rolled back, so
   an existing database keeps its old tables; a new `database_path` is left as an
@@ -73,6 +86,15 @@ Example (builds into a temp folder, never `data/scout.duckdb`):
 ...     ["Viktor_Axelsen_Anthony_Sinisuka_Ginting_YONEX_Thailand_Open_2021_SemiFinals"],
 ... ).fetchone()
 (30, 30.0)
+>>> connection.execute(
+...     "SELECT raw_shots.type, COUNT(*) FROM raw_shots GROUP BY raw_shots.type ORDER BY COUNT(*) DESC LIMIT 3"
+... ).fetchall()
+[('net shot', 6290), ('lob', 5331), ('return net', 3620)]
+>>> connection.execute(
+...     "SELECT raw_shots.lose_reason, raw_shots.win_reason, COUNT(*) FROM raw_shots "
+...     "GROUP BY raw_shots.lose_reason, raw_shots.win_reason ORDER BY COUNT(*) DESC LIMIT 3"
+... ).fetchall()
+[(None, None, 32975), ('opponent winner', 'winner', 1189), ('out', 'opponent out', 1048)]
 >>> connection.close()
 
 ```
@@ -85,6 +107,59 @@ Missing input:
 ... except duckdb.IOException as error:
 ...     print(str(error).split(" match the pattern")[0])
 IO Error: No files found that
+
+```
+
+Unmapped label (a synthetic `set1.csv` with a shot type that is in no map):
+
+```python
+>>> from ingest.label_translations import UnmappedLabelError
+>>> unmapped_set_dir = temp_dir / "unmapped_set"
+>>> (unmapped_set_dir / "Synthetic_Match").mkdir(parents=True)
+>>> _ = (unmapped_set_dir / "Synthetic_Match" / "set1.csv").write_text(
+...     "rally,ball_round,time,frame_num,player,type,lose_reason,win_reason\n"
+...     "1,1,0:00:01,25,A,殺球,,\n"
+...     "1,2,0:00:02,50,B,飛球,出界,對手出界\n"
+... )
+>>> _ = (unmapped_set_dir / "match.csv").write_text("id,video,set\n1,Synthetic_Match,1\n")
+>>> _ = (unmapped_set_dir / "homography.csv").write_text(
+...     'id,video,homography_matrix\n1,Synthetic_Match,"[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]"\n'
+... )
+>>> try:
+...     build_database(unmapped_set_dir, temp_dir / "unmapped.duckdb")
+... except UnmappedLabelError as error:
+...     print(error)
+raw_shots.type has a label with no English translation: '飛球'
+
+```
+
+## `translate_raw_shots_to_english(connection)`
+
+Translates `raw_shots.type`, `raw_shots.lose_reason` and `raw_shots.win_reason` in place.
+Called by `build_database` inside its transaction, right after `raw_shots` is created.
+Loads every accepted label into a temporary `label_translations` table
+(`load_label_translations`), then for each of the three columns present in `raw_shots`
+(`translated_columns_present`) checks for unmapped labels (`fail_on_unmapped_labels`)
+and replaces each non-NULL value with its English label. The temporary table is dropped at the end.
+
+Inputs:
+- `connection` (`duckdb.DuckDBPyConnection`): an open, writable connection with a `raw_shots` table.
+
+Output: `None`. `raw_shots` is updated; its row count, row order and other columns do not change.
+
+Errors:
+- `UnmappedLabelError` from `fail_on_unmapped_labels` for the first unmapped label
+  (alphabetically) in the first column that has one, checked in the order `type`, `lose_reason`, `win_reason`.
+
+```python
+>>> from ingest.load_shuttleset import translate_raw_shots_to_english
+>>> memory_connection = duckdb.connect()
+>>> _ = memory_connection.execute("CREATE TABLE raw_shots (ball_round INTEGER, type VARCHAR, lose_reason VARCHAR)")
+>>> _ = memory_connection.execute("INSERT INTO raw_shots VALUES (1, '挑球', NULL), (2, '過渡切球', '掛網')")
+>>> translate_raw_shots_to_english(memory_connection)
+>>> memory_connection.execute("SELECT * FROM raw_shots ORDER BY ball_round").fetchall()
+[(1, 'lob', None), (2, 'passive drop', 'net')]
+>>> memory_connection.close()
 
 ```
 
@@ -131,7 +206,7 @@ Ordered by `match_id, set_no, rally, ball_round`. Coordinates are pixels in a 12
 | roundscore_B | BIGINT | |
 | player | VARCHAR | `A` or `B` |
 | server | BIGINT | |
-| type | VARCHAR | shot type, Chinese label |
+| type | VARCHAR | shot type, English label (`net shot`, `lob`, ..., `unknown`; see `label_translations.md`) |
 | aroundhead | DOUBLE | |
 | backhand | DOUBLE | |
 | hit_height | DOUBLE | |
@@ -142,8 +217,8 @@ Ordered by `match_id, set_no, rally, ball_round`. Coordinates are pixels in a 12
 | landing_area | BIGINT | |
 | landing_x | DOUBLE | pixels |
 | landing_y | DOUBLE | pixels |
-| lose_reason | VARCHAR | |
-| win_reason | VARCHAR | |
+| lose_reason | VARCHAR | why the rally's last shot lost, English (`out`, `net`, ...); NULL except on a rally's last shot |
+| win_reason | VARCHAR | the same event from the winner's side, English (`winner`, `opponent out`, ...); NULL when `lose_reason` is |
 | getpoint_player | VARCHAR | |
 | flaw | BIGINT | |
 | player_location_area | BIGINT | |
