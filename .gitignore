@@ -10,3 +10,5 @@ SPEC.md
 .claude
 docs/PLAN.md
 docs/overview.md
+*.pt
+*.onnx

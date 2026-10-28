@@ -3,3 +3,5 @@ opencv-python
 pandas
 pytest
 yt-dlp
+ultralytics
+lap>=0.5.12
