@@ -11,7 +11,7 @@ One markdown file per module, for example:
 - `court.md`: `analytics/court.py`, court meters, normalization, zones, cross-court
 - `shot_types.md`: `analytics/shot_types.py`, shot type -> group
 - `spot_check.md`: `analytics/spot_check.py`, the court diagram of random shots
-- `classifier.md`: `shots/train.py`, `shots/predict.py`
+- `classifier.md`: `shots/features.py`, `shots/train.py`, `shots/predict.py`
 - `tendencies.md`: `analytics/tendencies.py`
 - `report.md`: the `report/` app and its command
 
