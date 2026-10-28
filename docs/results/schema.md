@@ -104,22 +104,47 @@ hitter's position in all 86, so for `hit_zone` and `is_cross` the hitter's posit
 used there instead of the hit point.
 
 ## Zones and cross-court
-Zones: each half has 3 equal depth bands from the net (2.23 m each: front, mid, rear) x 2 sides
-(forehand / backhand). `hit_zone` is seen from the hitter, `landing_zone` from the receiver,
-who faces the other way. Players are right-handed except `LEFT_HANDED_PLAYER_NAMES`
-(Carolina Marin, Kento Momota; 11 of 44 matches involve one of them). Player `A` is the
-match winner in all 44 matches, which is how `A`/`B` are matched to names.
+Zones: each half has 3 equal depth bands from the net (2.23 m each: front, mid, rear) x 3 sides
+(forehand / middle / backhand). The middle column is 1.0 m wide around the centre line
+(x 2.55-3.55 m, `MIDDLE_COLUMN_WIDTH_M`), and a point exactly on its edge counts as middle.
+`hit_zone` is seen from the hitter, `landing_zone` from the receiver, who faces the other way.
+Players are right-handed except `LEFT_HANDED_PLAYER_NAMES` (Carolina Marin, Kento Momota;
+11 of 44 matches involve one of them); for them forehand and backhand swap, middle does not.
+Player `A` is the match winner in all 44 matches, which is how `A`/`B` are matched to names.
 
 | Zone | `hit_zone` | `landing_zone` |
 |---|---|---|
-| front_forehand | 6,589 | 6,649 |
-| front_backhand | 5,821 | 5,874 |
-| mid_forehand | 5,709 | 4,471 |
-| mid_backhand | 5,901 | 4,753 |
-| rear_forehand | 5,769 | 6,260 |
-| rear_backhand | 5,565 | 6,159 |
+| front_forehand | 5,775 | 5,848 |
+| front_middle | 1,601 | 1,569 |
+| front_backhand | 5,034 | 5,106 |
+| mid_forehand | 3,958 | 3,946 |
+| mid_middle | 3,566 | 1,063 |
+| mid_backhand | 4,086 | 4,215 |
+| rear_forehand | 5,605 | 6,068 |
+| rear_middle | 365 | 406 |
+| rear_backhand | 5,364 | 5,945 |
 | not_over_net | n/a | 1,131 |
 | NULL (no position) | 1,129 | 1,186 |
+
+### Shots moved into the middle column
+Compared with the earlier 6-zone build (forehand / backhand only), joined shot by shot on
+(`match_id`, `set_no`, `rally`, `ball_round`, `frame_num`), which is unique:
+
+| Before -> after | `hit_zone` | `landing_zone` |
+|---|---|---|
+| front_forehand -> front_middle | 814 | 801 |
+| front_backhand -> front_middle | 787 | 768 |
+| mid_forehand -> mid_middle | 1,751 | 525 |
+| mid_backhand -> mid_middle | 1,815 | 538 |
+| rear_forehand -> rear_middle | 164 | 192 |
+| rear_backhand -> rear_middle | 201 | 214 |
+| **total moved** | **5,532 of 35,354 (15.6%)** | **3,038 of 35,297 (8.6%)** |
+
+No other change: every changed zone moved into `middle` at the same depth, from forehand and
+backhand in about equal numbers. All other columns, `is_cross` included, are identical
+row by row (`EXCEPT ALL` on every column except the two zones gives 0 rows). The middle column
+fills most in `mid` for hits (3,566), where players stand on their base position between
+shots, and least at the rear (365 hits, 406 landings), where shots go to the corners.
 
 `is_cross`: the hit and landing are on opposite sides of the centre line and at least 1.0 m apart
 sideways. 12,395 of 35,293 shots (35%). The labelled shot types back this up:
@@ -154,12 +179,12 @@ before-score plus exactly one point. Every set's rally 1 is 0-0.
 
 ## Spot check
 `data/checks/shots/random_shots.png` (seed 7). 10 random shots with a hit and a landing, on a
-top-down court with the hitter's half at the bottom. I checked each against its numbers:
+top-down court with the hitter's half at the bottom; gray lines mark the depth bands and the middle column. I checked each against its numbers:
 
 | # | Shot | Hit (m) | Landing (m) | Zones | Looks right? |
 |---|---|---|---|---|---|
-| 1 | clear by Christie (B) | 0.78, 1.12 | 3.10, 11.72 | rear_backhand -> rear_backhand, cross | yes: rear left corner, deep; lands 0.05 m past centre, so "cross" is borderline |
-| 2 | net shot by Chen Long | 2.65, 4.70 | 3.07, 7.56 | front_backhand -> front_backhand | yes: just left of centre near the net, to just over it |
+| 1 | clear by Christie (B) | 0.78, 1.12 | 3.10, 11.72 | rear_backhand -> rear_middle, cross | yes: rear left corner, deep, to the middle of the back line. It lands 0.05 m past centre, so "cross" is borderline |
+| 2 | net shot by Chen Long | 2.65, 4.70 | 3.07, 7.56 | front_middle -> front_middle | yes: from the middle at the net to just over it, down the centre |
 | 3 | net shot by Chou | 4.93, 4.25 | 4.85, 7.31 | mid_forehand -> front_backhand | yes: 2.45 m from the net is just in "mid"; the receiver's left |
 | 4 | push by Chou (B) to Momota | 4.53, 4.33 | 1.56, 12.54 | mid_forehand -> rear_backhand, cross | yes: left-handed Momota's backhand is on his right (small x) |
 | 5 | net shot by Momota | 1.10, 5.14 | 1.36, 7.40 | front_forehand -> front_forehand | yes: left side is a left-hander's forehand |
@@ -167,7 +192,7 @@ top-down court with the hitter's half at the bottom. I checked each against its 
 | 7 | passive drop by Kidambi (B) | 1.23, 1.26 | 6.13, 9.90 | rear_backhand -> mid_backhand, cross | yes: receiver reached it just outside the sideline |
 | 8 | drop by Intanon | 2.15, 1.04 | 5.11, 8.60 | rear_backhand -> front_backhand, cross | yes |
 | 9 | lob by Axelsen | 0.81, 5.10 | 1.19, 12.86 | front_backhand -> rear_forehand | yes: from the net to the back line |
-| 10 | net shot by Axelsen | 1.23, 4.28 | 2.86, 7.88 | mid_backhand -> front_forehand | yes |
+| 10 | net shot by Axelsen | 1.23, 4.28 | 2.86, 7.88 | mid_backhand -> front_middle | yes: lands 0.19 m from the centre line, inside the middle column |
 
 Shot types agree with distances: the four net shots travel 2.3-4.0 m and stay in front.
 The clear and the back-court drive travel 10.2-10.9 m, and the lob from the net 7.8 m. Receivers (blue) cluster around the far

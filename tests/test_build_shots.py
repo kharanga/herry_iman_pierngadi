@@ -11,7 +11,12 @@ import pytest
 
 from analytics.build_shots import ShotsSchemaMismatchError, build_shots, pixel_to_court_homography_by_match, schema_columns
 from analytics.court import (
+    CENTRE_X_M,
     CROSS_COURT_MIN_LATERAL_M,
+    MIDDLE_COLUMN_LEFT_EDGE_X_M,
+    MIDDLE_COLUMN_RIGHT_EDGE_X_M,
+    MIDDLE_COLUMN_WIDTH_M,
+    ZONE_NAMES,
     DEPTH_BAND_M,
     NOT_OVER_NET_ZONE,
     apply_homography,
@@ -80,6 +85,8 @@ CONTRACT_TYPE_GROUPS = {
 
 COURT_CORNER_METERS = np.array([[0.0, 13.4], [6.1, 13.4], [0.0, 0.0], [6.1, 0.0]])
 
+CONTRACT_ZONES = [f"{depth}_{side}" for depth in ("front", "mid", "rear") for side in ("forehand", "middle", "backhand")]
+
 requires_shuttleset = pytest.mark.skipif(not REAL_SET_DIR.exists(), reason="run ingest/fetch_shuttleset.sh first")
 
 
@@ -90,7 +97,17 @@ def test_schema_sql_matches_contract_columns_and_types_in_order():
 
 @pytest.mark.parametrize(
     "column_name, bad_value",
-    [("source", "youtube"), ("set_no", 4), ("player", "C"), ("type_group", "flick"), ("hit_zone", "front"), ("landing_zone", "out")],
+    [
+        ("source", "youtube"),
+        ("set_no", 4),
+        ("player", "C"),
+        ("type_group", "flick"),
+        ("hit_zone", "front"),
+        ("hit_zone", "not_over_net"),
+        ("hit_zone", "middle_front"),
+        ("landing_zone", "out"),
+        ("landing_zone", "front_centre"),
+    ],
 )
 def test_schema_check_constraints_reject_values_outside_the_contract(column_name, bad_value):
     connection = duckdb.connect(":memory:")
@@ -157,7 +174,14 @@ def test_hitter_is_on_far_half_uses_hitter_points_before_receiver_points():
         ((2.0, -0.8), False, "rear_backhand"),
         ((2.0, 3.0), True, "mid_forehand"),
         ((4.0, 3.0), True, "mid_backhand"),
-        ((3.05, 3.0), False, "mid_backhand"),
+        ((3.05, 3.0), False, "mid_middle"),
+        ((3.05, 3.0), True, "mid_middle"),
+        ((2.55, 1.0), False, "rear_middle"),
+        ((3.55, 1.0), True, "rear_middle"),
+        ((2.5499, 5.0), False, "front_backhand"),
+        ((2.5499, 5.0), True, "front_forehand"),
+        ((3.5501, 5.0), False, "front_forehand"),
+        ((3.5501, 5.0), True, "front_backhand"),
     ],
 )
 def test_zone_in_near_half_depth_bands_and_handedness(point, left_handed, expected_zone):
@@ -469,3 +493,88 @@ def test_documented_pair_sql_reproduces_its_documented_result(built_database):
     pairs, equal_pairs = fetch_all(database_path, documented_sql)[0]
     assert f"Result: `pairs` {pairs:,}, `hit_equals_previous_landing` {equal_pairs:,}." in results_text
     assert (pairs, equal_pairs) == (31692, 31679)
+
+
+def test_zone_names_are_the_nine_contract_zones():
+    assert sorted(ZONE_NAMES) == sorted(CONTRACT_ZONES)
+
+
+@pytest.mark.parametrize("zone", CONTRACT_ZONES)
+def test_schema_accepts_every_contract_zone(zone):
+    connection = duckdb.connect(":memory:")
+    connection.execute((PROJECT_ROOT / "analytics" / "schema.sql").read_text())
+    connection.execute(
+        "INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, hit_zone, landing_zone) VALUES ('own', 'm', 1, 1, 1, 'me', ?, ?)",
+        [zone, zone],
+    )
+    connection.execute(
+        "INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, hit_zone, landing_zone) VALUES ('own', 'm', 1, 1, 2, 'me', ?, 'not_over_net')",
+        [zone],
+    )
+    connection.close()
+
+
+def test_middle_column_edges_derive_from_the_one_width_constant():
+    assert MIDDLE_COLUMN_WIDTH_M == 1.0
+    assert MIDDLE_COLUMN_LEFT_EDGE_X_M == CENTRE_X_M - MIDDLE_COLUMN_WIDTH_M / 2 == 2.55
+    assert MIDDLE_COLUMN_RIGHT_EDGE_X_M == CENTRE_X_M + MIDDLE_COLUMN_WIDTH_M / 2 == 3.55
+    for source_path in (PROJECT_ROOT / "analytics").glob("*.py"):
+        assert re.search(r"\b(2\.55|3\.55)\b", source_path.read_text()) is None, source_path.name
+    spot_check_source = (PROJECT_ROOT / "analytics" / "spot_check.py").read_text()
+    assert "MIDDLE_COLUMN_LEFT_EDGE_X_M" in spot_check_source and "MIDDLE_COLUMN_RIGHT_EDGE_X_M" in spot_check_source
+
+
+@pytest.mark.parametrize("width_m", [0.6, 2.0])
+def test_shot_geometry_follows_the_middle_column_width_constant(monkeypatch, width_m):
+    import analytics.court
+
+    monkeypatch.setattr(analytics.court, "MIDDLE_COLUMN_LEFT_EDGE_X_M", CENTRE_X_M - width_m / 2)
+    monkeypatch.setattr(analytics.court, "MIDDLE_COLUMN_RIGHT_EDGE_X_M", CENTRE_X_M + width_m / 2)
+    inside_x = CENTRE_X_M + width_m / 2 - 0.01
+    outside_x = CENTRE_X_M + width_m / 2 + 0.01
+    assert analytics.court.shot_geometry((inside_x, 3.0), (6.1 - inside_x, 10.0), None, None)["hit_zone"] == "mid_middle"
+    assert analytics.court.shot_geometry((outside_x, 3.0), (6.1 - outside_x, 10.0), None, None)["hit_zone"] == "mid_forehand"
+    assert analytics.court.shot_geometry((3.0, 3.0), (6.1 - inside_x, 10.0), None, None)["landing_zone"] == "mid_middle"
+    assert analytics.court.shot_geometry((3.0, 3.0), (6.1 - outside_x, 10.0), None, None)["landing_zone"] == "mid_forehand"
+
+
+@pytest.mark.parametrize(
+    "landing_x, left_handed, expected_side",
+    [
+        (2.54, False, "forehand"),
+        (2.55, False, "middle"),
+        (3.05, True, "middle"),
+        (3.55, False, "middle"),
+        (3.56, False, "backhand"),
+        (3.56, True, "forehand"),
+        (2.54, True, "backhand"),
+    ],
+)
+def test_landing_zone_edges_hold_on_the_receivers_half(landing_x, left_handed, expected_side):
+    assert landing_zone((landing_x, 10.0), receiver_left_handed=left_handed) == f"mid_{expected_side}"
+
+
+def test_far_hitter_on_a_middle_edge_is_middle_after_normalization():
+    assert shot_geometry((3.55, 10.0), (3.0, 3.0), (3.55, 10.0), None)["hit_zone"] == "mid_middle"
+    assert shot_geometry((3.5501, 10.0), (3.0, 3.0), (3.5501, 10.0), None)["hit_zone"] == "mid_backhand"
+
+
+def test_is_cross_ignores_the_middle_column():
+    assert is_cross_court((2.6, 2.0), (3.5, 12.0)) is False
+    assert is_cross_court((2.5, 2.0), (3.5, 12.0)) is True
+    assert is_cross_court((3.0, 2.0), (3.04, 12.0)) is False
+
+
+def test_old_six_zone_shots_table_raises_schema_mismatch_naming_constraints(tmp_path):
+    database_path = tmp_path / "old_zones.duckdb"
+    old_schema = (PROJECT_ROOT / "analytics" / "schema.sql").read_text()
+    for six_zone_side in ("'front_middle', ", "'mid_middle', ", "'rear_middle', "):
+        old_schema = old_schema.replace(six_zone_side, "")
+    connection = duckdb.connect(str(database_path))
+    connection.execute(old_schema)
+    connection.close()
+    with pytest.raises(ShotsSchemaMismatchError) as raised:
+        build_shots(database_path)
+    assert raised.value.existing_columns == raised.value.expected_columns
+    assert raised.value.existing_constraints != raised.value.expected_constraints
+    assert "drop the shots table" in str(raised.value)

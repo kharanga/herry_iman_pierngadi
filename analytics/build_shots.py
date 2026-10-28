@@ -101,6 +101,13 @@ WHERE table_name = 'shots'
 ORDER BY ordinal_position
 """
 
+SHOTS_CONSTRAINTS_SQL = """
+SELECT constraint_type, constraint_column_names, expression
+FROM duckdb_constraints()
+WHERE table_name = 'shots'
+ORDER BY constraint_type, constraint_column_names, expression
+"""
+
 DELETE_SHUTTLESET_SHOTS_SQL = "DELETE FROM shots WHERE shots.source = 'shuttleset'"
 
 INSERT_SHUTTLESET_SHOTS_SQL = """
@@ -139,34 +146,56 @@ FROM shuttleset_shot_rows
 
 
 class ShotsSchemaMismatchError(RuntimeError):
-    def __init__(self, existing_columns: list[tuple[str, str]], expected_columns: list[tuple[str, str]]):
+    def __init__(
+        self,
+        existing_columns: list[tuple[str, str]],
+        expected_columns: list[tuple[str, str]],
+        existing_constraints: list[tuple] | None = None,
+        expected_constraints: list[tuple] | None = None,
+    ):
+        differing_constraints = sorted(set(existing_constraints or []) ^ set(expected_constraints or []), key=str)
         super().__init__(
-            "the shots table in the database does not match analytics/schema.sql; "
-            f"existing {existing_columns}, expected {expected_columns}"
+            "the shots table in the database does not match analytics/schema.sql "
+            "(drop the shots table and rebuild); "
+            f"existing columns {existing_columns}, expected {expected_columns}, "
+            f"differing constraints {differing_constraints}"
         )
         self.existing_columns = existing_columns
         self.expected_columns = expected_columns
+        self.existing_constraints = existing_constraints or []
+        self.expected_constraints = expected_constraints or []
 
 
 def shots_columns(connection: duckdb.DuckDBPyConnection) -> list[tuple[str, str]]:
     return connection.execute(SHOTS_COLUMNS_SQL).fetchall()
 
 
-def schema_columns() -> list[tuple[str, str]]:
+def shots_constraints(connection: duckdb.DuckDBPyConnection) -> list[tuple]:
+    return [
+        (constraint_type, tuple(column_names), expression)
+        for constraint_type, column_names, expression in connection.execute(SHOTS_CONSTRAINTS_SQL).fetchall()
+    ]
+
+
+def schema_columns_and_constraints() -> tuple[list[tuple[str, str]], list[tuple]]:
     connection = duckdb.connect(":memory:")
     try:
         connection.execute(SCHEMA_PATH.read_text())
-        return shots_columns(connection)
+        return shots_columns(connection), shots_constraints(connection)
     finally:
         connection.close()
 
 
+def schema_columns() -> list[tuple[str, str]]:
+    return schema_columns_and_constraints()[0]
+
+
 def create_shots_table(connection: duckdb.DuckDBPyConnection) -> None:
     connection.execute(SCHEMA_PATH.read_text())
-    existing_columns = shots_columns(connection)
-    expected_columns = schema_columns()
-    if existing_columns != expected_columns:
-        raise ShotsSchemaMismatchError(existing_columns, expected_columns)
+    existing_columns, existing_constraints = shots_columns(connection), shots_constraints(connection)
+    expected_columns, expected_constraints = schema_columns_and_constraints()
+    if existing_columns != expected_columns or existing_constraints != expected_constraints:
+        raise ShotsSchemaMismatchError(existing_columns, expected_columns, existing_constraints, expected_constraints)
 
 
 def pixel_to_court_homography_by_match(connection: duckdb.DuckDBPyConnection) -> dict[str, np.ndarray]:

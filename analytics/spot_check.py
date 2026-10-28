@@ -5,7 +5,15 @@ import cv2
 import duckdb
 import numpy as np
 
-from analytics.court import CENTRE_X_M, COURT_LENGTH_M, COURT_WIDTH_M, DEPTH_BAND_M, NET_Y_M
+from analytics.court import (
+    CENTRE_X_M,
+    COURT_LENGTH_M,
+    COURT_WIDTH_M,
+    DEPTH_BAND_M,
+    MIDDLE_COLUMN_LEFT_EDGE_X_M,
+    MIDDLE_COLUMN_RIGHT_EDGE_X_M,
+    NET_Y_M,
+)
 
 DATABASE_PATH = Path("data/scout.duckdb")
 SPOT_CHECK_PATH = Path("data/checks/shots/random_shots.png")
@@ -86,7 +94,8 @@ def zone_boundaries_m() -> list[tuple[tuple[float, float], tuple[float, float]]]
         for direction in (-1, 1)
         for band in (1, 2)
     ]
-    return depth_lines + [((CENTRE_X_M, 0.0), (CENTRE_X_M, COURT_LENGTH_M))]
+    side_lines = [((edge_x, 0.0), (edge_x, COURT_LENGTH_M)) for edge_x in (MIDDLE_COLUMN_LEFT_EDGE_X_M, MIDDLE_COLUMN_RIGHT_EDGE_X_M)]
+    return depth_lines + side_lines
 
 
 def blank_court_image() -> np.ndarray:
@@ -133,7 +142,7 @@ def draw_legend(image: np.ndarray, shots: list[dict]) -> None:
         "so the hitter is on the near (bottom) half.",
         "yellow = hit (hitter's feet), red arrow -> landing",
         "(where the receiver reached it), blue = receiver",
-        "at the hit. Gray lines = zone bands and centre.",
+        "at the hit. Gray lines = depth bands and the middle column.",
         "",
     ]
     for shot_number, shot in enumerate(shots, start=1):

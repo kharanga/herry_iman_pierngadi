@@ -47,8 +47,8 @@ only the `source = 'shuttleset'` rows, so `own` rows survive it.
 | landing_x, landing_y | DOUBLE | yes | where the shot ended, court meters, normalized (see below) |
 | player_x, player_y | DOUBLE | yes | hitter's position at the hit, normalized |
 | opponent_x, opponent_y | DOUBLE | yes | receiver's position at the hit, normalized |
-| hit_zone | VARCHAR | yes | zone of the hit, from the hitter's view (`front_forehand` ... `rear_backhand`) |
-| landing_zone | VARCHAR | yes | zone of the landing, from the receiver's view, or `not_over_net` |
+| hit_zone | VARCHAR | yes | zone of the hit, from the hitter's view: one of the 9 zones below |
+| landing_zone | VARCHAR | yes | zone of the landing, from the receiver's view: one of the 9 zones, or `not_over_net` |
 | is_cross | BOOLEAN | yes | cross-court (see `court.md`) |
 | roundscore_me | INTEGER | yes | score of `A` (ShuttleSet) or `me` (own) **before** the rally |
 | roundscore_opp | INTEGER | yes | score of `B` or `opp` before the rally |
@@ -57,6 +57,16 @@ only the `source = 'shuttleset'` rows, so `own` rows survive it.
 
 CHECK constraints reject any other value of `source`, `player`, `getpoint_player`,
 `set_no`, `type_group`, `type_pred`, `hit_zone` and `landing_zone`.
+
+Zones (`analytics.court.ZONE_NAMES`): each half is 3 depths x 3 sides = 9 zones.
+
+| Depth (from the net) | Side | Zones |
+|---|---|---|
+| front 0-2.23 m, mid 2.23-4.47 m, rear beyond | forehand / middle / backhand | `front_forehand`, `front_middle`, `front_backhand`, `mid_forehand`, `mid_middle`, `mid_backhand`, `rear_forehand`, `rear_middle`, `rear_backhand` |
+
+The middle column is `MIDDLE_COLUMN_WIDTH_M` = 1.0 m wide, centred on the centre line
+(x 2.55-3.55 m, edges count as middle). Forehand and backhand swap for a left-handed
+player; middle does not. `landing_zone` can also be `not_over_net`. Details in `court.md`.
 
 Positions are in court meters (origin near-left corner, `x` 0-6.1 across, `y` 0-13.4
 along, net at 6.7; see `court.md`), turned so that the **hitter is on the near half**.
@@ -86,7 +96,7 @@ How the ShuttleSet columns are filled:
 | `SCHEMA_PATH` | `analytics/schema.sql` (absolute, next to the module) |
 | `LEFT_HANDED_PLAYER_NAMES` | `frozenset({"Carolina MARIN", "Kento MOMOTA"})` |
 | `POSITION_COLUMNS` | `raw_shots` pixel columns for `hit`, `landing`, `player`, `opponent` |
-| `SHUTTLESET_SHOT_ROWS_SQL`, `MATCH_HOMOGRAPHIES_SQL`, `RAW_SHOT_COUNT_SQL`, `SHOTS_COLUMNS_SQL`, `DELETE_SHUTTLESET_SHOTS_SQL`, `INSERT_SHUTTLESET_SHOTS_SQL` | the SQL of each step |
+| `SHUTTLESET_SHOT_ROWS_SQL`, `MATCH_HOMOGRAPHIES_SQL`, `RAW_SHOT_COUNT_SQL`, `SHOTS_COLUMNS_SQL`, `SHOTS_CONSTRAINTS_SQL`, `DELETE_SHUTTLESET_SHOTS_SQL`, `INSERT_SHUTTLESET_SHOTS_SQL` | the SQL of each step |
 
 ## `build_shots(database_path, left_handed_player_names=LEFT_HANDED_PLAYER_NAMES)`
 
@@ -140,30 +150,43 @@ Own rows survive a rebuild:
 
 ```
 
-## `schema_columns()`, `shots_columns(connection)`
+## `schema_columns()`, `shots_columns(connection)`, `schema_columns_and_constraints()`, `shots_constraints(connection)`
 
 - `schema_columns()` returns `[(column_name, data_type), ...]` from running `schema.sql` in an
   in-memory database: the contract's columns in order.
 - `shots_columns(connection)` returns the same for the `shots` table behind `connection`
   (an empty list if there is no `shots` table).
+- `shots_constraints(connection)` returns the table's NOT NULL and CHECK constraints as
+  `[(constraint_type, column_names_tuple, expression_or_None), ...]`, sorted.
+- `schema_columns_and_constraints()` returns `(schema_columns(), constraints)` from `schema.sql`.
 
 ```python
 >>> shots_columns(connection) == schema_columns()
 True
 >>> len(schema_columns()), schema_columns()[:3]
 (28, [('source', 'VARCHAR'), ('match_id', 'VARCHAR'), ('set_no', 'INTEGER')])
+>>> shots_constraints(connection) == schema_columns_and_constraints()[1]
+True
+>>> [constraint for constraint in shots_constraints(connection) if constraint[1] == ("hit_zone",)][0][2].count("_middle")
+3
 
 ```
 
 ## `create_shots_table(connection)`
 
-Runs `schema.sql` (`CREATE TABLE IF NOT EXISTS`), then checks the table's columns.
-Errors: `ShotsSchemaMismatchError` if they differ from `schema_columns()`.
+Runs `schema.sql` (`CREATE TABLE IF NOT EXISTS`), then checks the table's columns and
+constraints. `CREATE TABLE IF NOT EXISTS` leaves an older table as it is, so this is what
+catches a table built from an older `schema.sql`, for example one whose zone CHECK still
+allows only the old 6 zones.
+Errors: `ShotsSchemaMismatchError` if the columns or the constraints differ from `schema.sql`.
 
-## `ShotsSchemaMismatchError(existing_columns, expected_columns)`
+## `ShotsSchemaMismatchError(existing_columns, expected_columns, existing_constraints=None, expected_constraints=None)`
 
-A `RuntimeError` with `existing_columns` and `expected_columns` attributes. To change the
-schema, drop the `shots` table (or rebuild the database) and run `build_shots` again.
+A `RuntimeError` with `existing_columns`, `expected_columns`, `existing_constraints` and
+`expected_constraints` attributes (constraints default to `[]`). The message lists the
+constraints that differ. To move to a new schema, drop the `shots` table and run
+`build_shots` again. Copy any `own` rows out first and re-insert them afterwards:
+dropping the table deletes them.
 
 ```python
 >>> _ = connection.execute("ALTER TABLE shots ADD COLUMN speed DOUBLE")
@@ -172,6 +195,25 @@ schema, drop the `shots` table (or rebuild the database) and run `build_shots` a
 ... except ShotsSchemaMismatchError as error:
 ...     error.existing_columns[-1], len(error.expected_columns)
 (('speed', 'DOUBLE'), 28)
+>>> _ = connection.execute("ALTER TABLE shots DROP COLUMN speed")
+
+```
+
+A table with the right columns but an older zone CHECK (the 6 zones without middle) is
+also rejected:
+
+```python
+>>> six_zone_schema_sql = SCHEMA_PATH.read_text().replace("'front_middle', ", "").replace("'mid_middle', ", "").replace("'rear_middle', ", "")
+>>> old_connection = duckdb.connect(":memory:")
+>>> _ = old_connection.execute(six_zone_schema_sql)
+>>> shots_columns(old_connection) == schema_columns()
+True
+>>> try:
+...     create_shots_table(old_connection)
+... except ShotsSchemaMismatchError as error:
+...     sorted(set(error.existing_constraints) ^ set(error.expected_constraints))[0][1]
+('hit_zone',)
+>>> old_connection.close()
 
 ```
 

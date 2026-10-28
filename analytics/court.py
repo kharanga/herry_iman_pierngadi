@@ -7,10 +7,15 @@ COURT_LENGTH_M = 13.4
 NET_Y_M = COURT_LENGTH_M / 2
 CENTRE_X_M = COURT_WIDTH_M / 2
 DEPTH_BAND_M = NET_Y_M / 3
+MIDDLE_COLUMN_WIDTH_M = 1.0
+MIDDLE_COLUMN_LEFT_EDGE_X_M = CENTRE_X_M - MIDDLE_COLUMN_WIDTH_M / 2
+MIDDLE_COLUMN_RIGHT_EDGE_X_M = CENTRE_X_M + MIDDLE_COLUMN_WIDTH_M / 2
 CROSS_COURT_MIN_LATERAL_M = 1.0
 DEPTH_NAMES = ("front", "mid", "rear")
+SIDE_NAMES = ("forehand", "middle", "backhand")
 NOT_OVER_NET_ZONE = "not_over_net"
-ZONE_NAMES = tuple(f"{depth}_{side}" for depth in DEPTH_NAMES for side in ("forehand", "backhand"))
+ZONE_NAMES = tuple(f"{depth}_{side}" for depth in DEPTH_NAMES for side in SIDE_NAMES)
+LANDING_ZONE_NAMES = ZONE_NAMES + (NOT_OVER_NET_ZONE,)
 
 Point = tuple[float, float]
 
@@ -76,10 +81,19 @@ def depth_name(distance_from_net_m: float) -> str:
     return DEPTH_NAMES[band_index]
 
 
+def is_in_middle_column(x_m: float) -> bool:
+    return MIDDLE_COLUMN_LEFT_EDGE_X_M <= x_m <= MIDDLE_COLUMN_RIGHT_EDGE_X_M
+
+
+def side_name(x_m: float, left_handed: bool = False) -> str:
+    if is_in_middle_column(x_m):
+        return "middle"
+    is_right_of_centre = x_m > CENTRE_X_M
+    return "forehand" if is_right_of_centre != left_handed else "backhand"
+
+
 def zone_in_near_half(point: Point, left_handed: bool = False) -> str:
-    is_right_of_centre = point[0] > CENTRE_X_M
-    side = "forehand" if is_right_of_centre != left_handed else "backhand"
-    return f"{depth_name(NET_Y_M - point[1])}_{side}"
+    return f"{depth_name(NET_Y_M - point[1])}_{side_name(point[0], left_handed)}"
 
 
 def hit_zone(hit: Point | None, hitter_left_handed: bool = False) -> str | None:

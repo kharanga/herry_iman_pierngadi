@@ -26,9 +26,13 @@ left stays their left.
 | `NET_Y_M` | 6.7 | net position |
 | `CENTRE_X_M` | 3.05 | centre line |
 | `DEPTH_BAND_M` | 2.233 | a half is split into 3 equal depth bands of this length, measured from the net |
+| `MIDDLE_COLUMN_WIDTH_M` | 1.0 | total width of the middle column, centred on the centre line. The one place to tune it |
+| `MIDDLE_COLUMN_LEFT_EDGE_X_M`, `MIDDLE_COLUMN_RIGHT_EDGE_X_M` | 2.55, 3.55 | derived from the two above |
 | `CROSS_COURT_MIN_LATERAL_M` | 1.0 | minimum sideways travel for a cross-court shot |
 | `DEPTH_NAMES` | `("front", "mid", "rear")` | |
-| `ZONE_NAMES` | `front_forehand`, `front_backhand`, `mid_forehand`, `mid_backhand`, `rear_forehand`, `rear_backhand` | |
+| `SIDE_NAMES` | `("forehand", "middle", "backhand")` | |
+| `ZONE_NAMES` | 9 names `{front,mid,rear}_{forehand,middle,backhand}` | every allowed `hit_zone` |
+| `LANDING_ZONE_NAMES` | `ZONE_NAMES` + `not_over_net` | every allowed `landing_zone` |
 | `NOT_OVER_NET_ZONE` | `"not_over_net"` | landing zone of a shot that stayed on the hitter's half |
 
 `Point` is a `tuple[float, float]` in meters. Any function that takes a `Point | None`
@@ -36,8 +40,10 @@ treats `None` or a NaN coordinate as missing.
 
 ```python
 >>> from analytics.court import *
->>> round(DEPTH_BAND_M, 3), ZONE_NAMES[:2]
-(2.233, ('front_forehand', 'front_backhand'))
+>>> round(DEPTH_BAND_M, 3), MIDDLE_COLUMN_LEFT_EDGE_X_M, MIDDLE_COLUMN_RIGHT_EDGE_X_M
+(2.233, 2.55, 3.55)
+>>> len(ZONE_NAMES), ZONE_NAMES[:3], LANDING_ZONE_NAMES[-1]
+(9, ('front_forehand', 'front_middle', 'front_backhand'), 'not_over_net')
 
 ```
 
@@ -162,11 +168,40 @@ True
 
 ```
 
+## `is_in_middle_column(x_m)`
+
+`True` if `x_m` is inside the middle column, **edges included**: 2.55 <= x <= 3.55.
+A point exactly on a column edge counts as middle. The same rule applies to
+both halves, because the far half is rotated onto the near half first.
+
+```python
+>>> is_in_middle_column(2.55), is_in_middle_column(3.55), is_in_middle_column(3.05)
+(True, True, True)
+>>> is_in_middle_column(2.5499), is_in_middle_column(3.5501)
+(False, False)
+
+```
+
+## `side_name(x_m, left_handed=False)`
+
+Side of a point on the near half, from the near player's view: `"middle"` inside the
+middle column, otherwise forehand or backhand. The near player faces the far
+baseline, so their right is `x > 3.05`. Forehand is the right side for a right-handed
+player and the left side for a left-handed one. `"middle"` does not depend on handedness.
+
+```python
+>>> side_name(5.0), side_name(5.0, left_handed=True), side_name(1.0)
+('forehand', 'backhand', 'backhand')
+>>> side_name(3.0), side_name(3.0, left_handed=True)
+('middle', 'middle')
+>>> side_name(2.55), side_name(2.54), side_name(3.55), side_name(3.56)
+('middle', 'backhand', 'middle', 'forehand')
+
+```
+
 ## `zone_in_near_half(point, left_handed=False)`
 
-Zone of a point on the near half, from the near player's view. That player faces
-the far baseline, so their right is `x > 3.05`. Forehand is the right side for a
-right-handed player and the left side for a left-handed one.
+Zone of a point on the near half: `f"{depth_name(...)}_{side_name(...)}"`.
 
 - `point` (`Point`, not missing), `left_handed` (`bool`).
 - Returns one of `ZONE_NAMES`.
@@ -174,8 +209,8 @@ right-handed player and the left side for a left-handed one.
 ```python
 >>> zone_in_near_half((5.0, 1.0)), zone_in_near_half((5.0, 1.0), left_handed=True)
 ('rear_forehand', 'rear_backhand')
->>> zone_in_near_half((1.0, 6.0))
-'front_backhand'
+>>> zone_in_near_half((1.0, 6.0)), zone_in_near_half((3.3, 3.0))
+('front_backhand', 'mid_middle')
 
 ```
 
@@ -198,6 +233,8 @@ returns `"not_over_net"`. Returns `None` if `landing` is missing.
 ```python
 >>> landing_zone((1.0, 12.5)), landing_zone((1.0, 12.5), receiver_left_handed=True)
 ('rear_forehand', 'rear_backhand')
+>>> landing_zone((3.0, 12.5)), landing_zone((3.0, 12.5), receiver_left_handed=True)
+('rear_middle', 'rear_middle')
 >>> landing_zone((3.0, 6.0)), landing_zone(None)
 ('not_over_net', None)
 
@@ -257,11 +294,11 @@ A shot hit from the far half is turned so the hitter is near:
 
 ```
 
-A serve with no hit point uses the server's position:
+A serve with no hit point uses the server's position (here inside the middle column):
 
 ```python
 >>> serve = shot_geometry(hit=None, landing=(1.5, 8.9), player=(3.4, 4.5), opponent=(2.5, 8.6))
 >>> serve["hit"], serve["hit_zone"], serve["landing_zone"], serve["is_cross"]
-(None, 'front_forehand', 'front_forehand', True)
+(None, 'front_middle', 'front_forehand', True)
 
 ```

@@ -425,7 +425,9 @@ def test_no_model_weights_outside_data_models():
     weight_files = [
         path
         for path in PROJECT_ROOT.rglob("*")
-        if path.suffix in {".pt", ".pth", ".onnx"} and ".venv" not in path.parts and path.parent != PROJECT_ROOT / "data" / "models"
+        if path.suffix in {".pt", ".pth", ".onnx"}
+        and ".venv" not in path.parts
+        and not path.is_relative_to(PROJECT_ROOT / "data" / "models")
     ]
     assert weight_files == []
     tracked_files = subprocess.run(["git", "ls-files"], cwd=PROJECT_ROOT, capture_output=True, text=True).stdout.split()
