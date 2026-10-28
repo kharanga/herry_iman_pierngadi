@@ -76,7 +76,10 @@ needs `lap`, which is in `requirements.txt`. Ultralytics is AGPL-3.0.
 | `--views-only` | only run the view check and print how many frames are main view and how many are skipped; no YOLO, about 12 ms per frame |
 
 Output: `data/players/<video stem>/positions_<start>_<end>.csv`, one row per
-player per main-view frame where that player was found:
+player per main-view frame where that player was found, and next to it
+`boxes_<start>_<end>.csv` with the same rows' pixel boxes (`BOX_COLUMNS`: `frame`,
+`player`, `left`, `top`, `right`, `bottom`), which hit detection uses to measure how
+far the shuttle is from each player:
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -118,6 +121,7 @@ nothing is written in those cases. `2` for invalid arguments.
 | `PLAYERS_DIR` | `Path("data/players")` | root of the position files |
 | `CHECKS_DIR` | `Path("data/checks/players")` | overlay images |
 | `POSITION_COLUMNS` | `["frame", "player", "x_m", "y_m", "track_id", "confidence"]` | columns of the position file |
+| `BOX_COLUMNS` | `["frame", "player", "left", "top", "right", "bottom"]` | columns of the box file (pixels, one decimal) |
 
 ```python
 >>> from vision.players import COURT_MARGIN_M, MAIN_VIEW_MIN_LINE_SAMPLE_SHARE, PLAYERS, POSITION_COLUMNS
@@ -139,10 +143,11 @@ The tracked people in one frame. `boxes_xyxy`: `(N, 4)` float array of
 What labelling remembers between frames: the side (`me`/`opp`) fixed for each
 track id, and the track id each player had last. Start with `PlayerTrackingState()`.
 
-### `TrackingRun(positions, main_view_frames, skipped_frames, overlay_paths)`
+### `TrackingRun(positions, main_view_frames, skipped_frames, overlay_paths, boxes)`
 Result of `track_players`: the positions `DataFrame` (`POSITION_COLUMNS`), the
-frame indices that were tracked, the frame indices skipped by the view check, and
-the overlay images written.
+frame indices that were tracked, the frame indices skipped by the view check, the
+overlay images written, and the labelled players' boxes (`BOX_COLUMNS`, one row per
+position row).
 
 ## Functions
 
@@ -299,6 +304,17 @@ is a new `me` candidate, not `opp`; `opp` simply has no row until a far-side tra
 
 ```
 
+### `player_box_rows(detections, frame_rows) -> list[dict]`
+The pixel box of each labelled player in one frame, as `BOX_COLUMNS` rows, in the
+same order as the `label_players` rows.
+
+```python
+>>> from vision.players import player_box_rows
+>>> player_box_rows(detections, rows)
+[{'frame': 16900, 'player': 'me', 'left': 598.0, 'top': 388.0, 'right': 678.0, 'bottom': 532.0}, {'frame': 16900, 'player': 'opp', 'left': 600.0, 'top': 240.0, 'right': 660.0, 'bottom': 350.0}]
+
+```
+
 ### `id_continuity(positions, player, frames) -> dict`
 How well a player kept one track id over `frames` (any iterable of frame indices,
 usually the main-view frames of one rally). Output keys: `player`, `frames`,
@@ -449,12 +465,14 @@ range), calibration or weights file; `OSError` if the video can't be opened.
 Only the view check: main-view frame indices and skipped frame indices. Same
 errors as `track_players` (no weights needed).
 
-### `positions_path(video_path, start_frame, end_frame, players_dir=PLAYERS_DIR) -> Path`
+### `positions_path(...)`, `boxes_path(video_path, start_frame, end_frame, players_dir=PLAYERS_DIR) -> Path`
 
 ```python
->>> from vision.players import positions_path
+>>> from vision.players import boxes_path, positions_path
 >>> positions_path(Path("data/match.mp4"), 14201, 14947).as_posix()
 'data/players/match/positions_14201_14947.csv'
+>>> boxes_path(Path("data/match.mp4"), 14201, 14947).as_posix()
+'data/players/match/boxes_14201_14947.csv'
 
 ```
 

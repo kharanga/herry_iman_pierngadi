@@ -32,6 +32,7 @@ DEFAULT_MODEL_PATH = Path("data/models/yolo11s.pt")
 PLAYERS_DIR = Path("data/players")
 CHECKS_DIR = Path("data/checks/players")
 POSITION_COLUMNS = ["frame", "player", "x_m", "y_m", "track_id", "confidence"]
+BOX_COLUMNS = ["frame", "player", "left", "top", "right", "bottom"]
 PLAYER_COLOR_BGR = {"me": (255, 160, 0), "opp": (0, 0, 255)}
 BYSTANDER_COLOR_BGR = (160, 160, 160)
 
@@ -140,6 +141,20 @@ def label_players(
             }
         )
     return rows, PlayerTrackingState(side_by_track_id, track_id_by_player)
+
+
+def player_box_rows(detections: FrameDetections, frame_rows: list[dict]) -> list[dict]:
+    box_by_track_id = {
+        int(track_id): box for track_id, box in zip(detections.track_ids, np.asarray(detections.boxes_xyxy).reshape(-1, 4))
+    }
+    return [
+        {
+            "frame": row["frame"],
+            "player": row["player"],
+            **dict(zip(BOX_COLUMNS[2:], (round(float(value), 1) for value in box_by_track_id[row["track_id"]]))),
+        }
+        for row in frame_rows
+    ]
 
 
 def id_continuity(positions: pd.DataFrame, player: str, frames) -> dict:
@@ -259,6 +274,7 @@ class TrackingRun:
     main_view_frames: list[int]
     skipped_frames: list[int]
     overlay_paths: list[Path]
+    boxes: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=BOX_COLUMNS))
 
 
 def track_players(
@@ -277,7 +293,7 @@ def track_players(
     tracker = load_person_tracker(model_path)
     capture = open_video(Path(video_path))
     state = PlayerTrackingState()
-    rows, main_view_frames, skipped_frames, overlay_paths = [], [], [], []
+    rows, box_rows, main_view_frames, skipped_frames, overlay_paths = [], [], [], [], []
     try:
         for frame_index, frame in frames_in_range(capture, start_frame, end_frame):
             if not is_main_view(court_line_sample_share(frame, homography)):
@@ -288,6 +304,7 @@ def track_players(
             court_positions = court_positions_of_feet(homography, detections.boxes_xyxy)
             frame_rows, state = label_players(frame_index, detections, court_positions, state)
             rows.extend(frame_rows)
+            box_rows.extend(player_box_rows(detections, frame_rows))
             if frame_index in overlay_frames:
                 checks_dir.mkdir(parents=True, exist_ok=True)
                 overlay_path = checks_dir / f"{Path(video_path).stem}_players_frame{frame_index}.jpg"
@@ -295,7 +312,13 @@ def track_players(
                 overlay_paths.append(overlay_path)
     finally:
         capture.release()
-    return TrackingRun(pd.DataFrame(rows, columns=POSITION_COLUMNS), main_view_frames, skipped_frames, overlay_paths)
+    return TrackingRun(
+        pd.DataFrame(rows, columns=POSITION_COLUMNS),
+        main_view_frames,
+        skipped_frames,
+        overlay_paths,
+        pd.DataFrame(box_rows, columns=BOX_COLUMNS),
+    )
 
 
 def split_frames_by_view(
@@ -319,6 +342,10 @@ def split_frames_by_view(
 
 def positions_path(video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR) -> Path:
     return players_dir / Path(video_path).stem / f"positions_{start_frame}_{end_frame}.csv"
+
+
+def boxes_path(video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR) -> Path:
+    return players_dir / Path(video_path).stem / f"boxes_{start_frame}_{end_frame}.csv"
 
 
 def save_positions(positions: pd.DataFrame, output_path: Path) -> Path:
@@ -393,6 +420,7 @@ def main(arguments: list[str]) -> int:
     for line in summary_lines(run, measured_frames):
         print(line)
     print(f"saved {output_path}")
+    print(f"saved {save_positions(run.boxes, boxes_path(parsed.video, start_frame, end_frame))}")
     for overlay_path in run.overlay_paths:
         print(f"saved {overlay_path}")
     return 0
