@@ -381,11 +381,10 @@ def test_real_database_is_english_only():
 
 
 @requires_shuttleset
-@pytest.mark.parametrize("command_prefix", [["ingest/load_shuttleset.py"], ["-m", "ingest.load_shuttleset"]])
-def test_command_runs_as_script_and_as_module(tmp_path, command_prefix):
+def test_command_runs_as_module(tmp_path):
     database_path = tmp_path / "cli.duckdb"
     completed = subprocess.run(
-        [sys.executable, *command_prefix, str(database_path)],
+        [sys.executable, "-m", "ingest.load_shuttleset", str(database_path)],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,

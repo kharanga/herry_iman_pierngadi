@@ -13,6 +13,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LOAD_DOC_PATH = PROJECT_ROOT / "docs" / "analytics" / "load_shuttleset.md"
 FETCH_DOC_PATH = PROJECT_ROOT / "docs" / "analytics" / "fetch_shuttleset.md"
 LOADER_PATH = PROJECT_ROOT / "ingest" / "load_shuttleset.py"
+INGEST_RESULTS_PATH = PROJECT_ROOT / "docs" / "results" / "ingest.md"
+LOADER_MODULE_COMMAND = ".venv/bin/python -m ingest.load_shuttleset"
 FETCH_SCRIPT_PATH = PROJECT_ROOT / "ingest" / "fetch_shuttleset.sh"
 
 requires_shuttleset = pytest.mark.skipif(
@@ -84,7 +86,7 @@ def test_documented_row_counts_match_tables(shuttleset_connection):
 @requires_shuttleset
 def test_command_output_matches_documented_output(tmp_path):
     completed = subprocess.run(
-        [sys.executable, str(LOADER_PATH), str(tmp_path / "cli.duckdb")],
+        [sys.executable, "-m", "ingest.load_shuttleset", str(tmp_path / "cli.duckdb")],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
@@ -191,3 +193,94 @@ def test_loader_has_no_comments_or_docstrings():
 def test_fetch_script_has_no_comments_besides_shebang():
     script_lines = FETCH_SCRIPT_PATH.read_text().splitlines()
     assert [line for line in script_lines[1:] if line.lstrip().startswith("#")] == []
+
+
+def test_docs_show_module_command_and_never_the_script_path_command():
+    load_doc_text = LOAD_DOC_PATH.read_text()
+    results_text = INGEST_RESULTS_PATH.read_text()
+    assert f"{LOADER_MODULE_COMMAND} [database_path]" in load_doc_text
+    assert LOADER_MODULE_COMMAND in results_text
+    for doc_text in (load_doc_text, results_text, FETCH_DOC_PATH.read_text()):
+        assert "python ingest/load_shuttleset.py" not in doc_text
+
+
+@pytest.mark.parametrize("ingest_source_path", sorted((PROJECT_ROOT / "ingest").glob("*.py")), ids=lambda path: path.name)
+def test_ingest_source_has_no_import_path_workaround(ingest_source_path):
+    source_text = ingest_source_path.read_text()
+    assert "sys.path" not in source_text
+    assert "PROJECT_ROOT" not in source_text
+    assert "__file__" not in source_text
+
+
+def test_importing_loader_leaves_sys_path_unchanged():
+    completed = subprocess.run(
+        [sys.executable, "-c", "import sys; before = list(sys.path); import ingest.load_shuttleset; print(sys.path == before)"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert completed.stdout.strip() == "True"
+
+
+def test_loader_doc_no_longer_lists_project_root_constant():
+    assert "PROJECT_ROOT" not in LOAD_DOC_PATH.read_text()
+    assert "sys.path" not in LOAD_DOC_PATH.read_text()
+
+
+def documented_column_note(column_name: str) -> str:
+    return re.search(rf"^\| {column_name} \| VARCHAR \| (.*) \|$", LOAD_DOC_PATH.read_text(), re.MULTILINE).group(1)
+
+
+@requires_shuttleset
+def test_reason_column_docs_match_rally_counts(shuttleset_connection):
+    rally_count, rallies_with_reason = shuttleset_connection.execute(
+        "SELECT COUNT(*), COUNT(rally_reason) FROM ("
+        "SELECT MAX(raw_shots.lose_reason) AS rally_reason FROM raw_shots "
+        "GROUP BY raw_shots.match_id, raw_shots.set_no, raw_shots.rally)"
+    ).fetchone()
+    reason_row_count = shuttleset_connection.execute(
+        "SELECT COUNT(*) FROM raw_shots WHERE raw_shots.lose_reason IS NOT NULL"
+    ).fetchone()[0]
+    assert (rally_count, rallies_with_reason, reason_row_count) == (3683, 3508, 3509)
+    assert f"{rallies_with_reason:,} of {rally_count:,} rallies" in documented_column_note("lose_reason")
+    assert "same rows as `lose_reason`" in documented_column_note("win_reason")
+    assert shuttleset_connection.execute(
+        "SELECT COUNT(*) FROM raw_shots WHERE (raw_shots.lose_reason IS NULL) <> (raw_shots.win_reason IS NULL)"
+    ).fetchone()[0] == 0
+
+
+@requires_shuttleset
+def test_reasons_only_on_a_rallys_last_shot(shuttleset_connection):
+    assert shuttleset_connection.execute(
+        "SELECT COUNT(*) FROM ("
+        "SELECT raw_shots.lose_reason, raw_shots.ball_round, "
+        "MAX(raw_shots.ball_round) OVER (PARTITION BY raw_shots.match_id, raw_shots.set_no, raw_shots.rally) AS last_ball_round "
+        "FROM raw_shots) WHERE lose_reason IS NOT NULL AND ball_round < last_ball_round"
+    ).fetchone()[0] == 0
+
+
+def documented_reason_pair_counts() -> dict[tuple[str, str], tuple[int, int]]:
+    rows = re.findall(r"^\| ([a-z ,]+) \|\s*([a-z ,]*?)\s*\| ([\d,]+) \| ([\d,]+) \|$", INGEST_RESULTS_PATH.read_text(), re.MULTILINE)
+    return {
+        (lose_reason.strip(), win_reason.strip()): (int(shots.replace(",", "")), int(rallies.replace(",", "")))
+        for lose_reason, win_reason, shots, rallies in rows
+    }
+
+
+@requires_shuttleset
+def test_results_reason_table_shots_and_rallies_match_data(shuttleset_connection):
+    measured_counts = {
+        (lose_reason, win_reason): (shot_count, rally_count)
+        for lose_reason, win_reason, shot_count, rally_count in shuttleset_connection.execute(
+            "SELECT raw_shots.lose_reason, raw_shots.win_reason, COUNT(*), "
+            "COUNT(DISTINCT (raw_shots.match_id, raw_shots.set_no, raw_shots.rally)) FROM raw_shots "
+            "WHERE raw_shots.lose_reason IS NOT NULL GROUP BY raw_shots.lose_reason, raw_shots.win_reason"
+        ).fetchall()
+    }
+    measured_counts[("total", "")] = shuttleset_connection.execute(
+        "SELECT COUNT(*), COUNT(DISTINCT (raw_shots.match_id, raw_shots.set_no, raw_shots.rally)) FROM raw_shots "
+        "WHERE raw_shots.lose_reason IS NOT NULL"
+    ).fetchone()
+    assert documented_reason_pair_counts() == measured_counts
+    assert "3,508 of 3,683 rallies" in INGEST_RESULTS_PATH.read_text()

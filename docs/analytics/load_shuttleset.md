@@ -11,12 +11,13 @@ The database holds no Chinese: `raw_shots.type`, `raw_shots.lose_reason` and
 ## Command
 
 ```
-.venv/bin/python ingest/load_shuttleset.py [database_path]
+.venv/bin/python -m ingest.load_shuttleset [database_path]
 ```
 
 - `database_path` (optional): where to write the database. Default `data/scout.duckdb`.
 - Reads from `data/CoachAI-Projects/ShuttleSet/set` (`SHUTTLESET_SET_DIR`).
-- Runs `build_database`, then `print_summary`. Run from the project root.
+- Runs `build_database`, then `print_summary`. Run from the project root, as a module (`-m`),
+  so `ingest.label_translations` can be imported.
 
 Output on the full dataset:
 
@@ -32,7 +33,6 @@ fps 30: 25 matches (estimates 29.97-30.00)
 |---|---|---|
 | `SHUTTLESET_SET_DIR` | `Path` | `data/CoachAI-Projects/ShuttleSet/set` |
 | `DATABASE_PATH` | `Path` | `data/scout.duckdb` |
-| `PROJECT_ROOT` | `Path` | the repo root, added to `sys.path` so the script can import `ingest.label_translations` |
 | `RAW_SHOTS_SQL`, `MATCHES_SQL`, `HOMOGRAPHY_SQL`, `FRAME_RATE_SQL`, `ATTACH_FPS_TO_MATCHES_SQL` | `str` | the SQL each build step runs |
 | `LABEL_TRANSLATIONS_TABLE_SQL`, `INSERT_LABEL_TRANSLATION_SQL`, `RAW_SHOTS_COLUMN_NAMES_SQL`, `DROP_LABEL_TRANSLATIONS_SQL` | `str` | SQL for the temporary `label_translations` table used during the build |
 | `UNMAPPED_LABELS_SQL_TEMPLATE`, `TRANSLATE_COLUMN_SQL_TEMPLATE` | `str` | per-column SQL; `{column_name}` is filled from `ENGLISH_BY_CHINESE_BY_RAW_SHOTS_COLUMN` only |
@@ -217,8 +217,8 @@ Ordered by `match_id, set_no, rally, ball_round`. Coordinates are pixels in a 12
 | landing_area | BIGINT | |
 | landing_x | DOUBLE | pixels |
 | landing_y | DOUBLE | pixels |
-| lose_reason | VARCHAR | why the rally's last shot lost, English (`out`, `net`, ...); NULL except on a rally's last shot |
-| win_reason | VARCHAR | the same event from the winner's side, English (`winner`, `opponent out`, ...); NULL when `lose_reason` is |
+| lose_reason | VARCHAR | why the rally's last shot lost, English (`out`, `net`, ...); only set on a rally's last shot, and not always: 3,508 of 3,683 rallies have one (3,509 rows, because one rally's last shot appears twice in the source CSV) |
+| win_reason | VARCHAR | the same event from the winner's side, English (`winner`, `opponent out`, ...); set on the same rows as `lose_reason` |
 | getpoint_player | VARCHAR | |
 | flaw | BIGINT | |
 | player_location_area | BIGINT | |

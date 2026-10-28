@@ -3,7 +3,7 @@
 ## How to run
 ```
 ./ingest/fetch_shuttleset.sh
-.venv/bin/python ingest/load_shuttleset.py
+.venv/bin/python -m ingest.load_shuttleset
 .venv/bin/python -m pytest tests
 ```
 
@@ -63,18 +63,22 @@ Counts after translation:
 | defensive return lob | 301 |
 | driven flight | 68 |
 
-| `lose_reason` | `win_reason` | Rallies |
-|---|---|---|
-| opponent winner | winner | 1,189 |
-| out | opponent out | 1,048 |
-| net | opponent net | 841 |
-| not over net | opponent not over net | 376 |
-| misjudged landing | opponent misjudged landing | 44 |
-| misjudged opponent landing | landed, opponent misjudged | 7 |
-| foul | opponent foul | 4 |
+| `lose_reason` | `win_reason` | Shots | Rallies |
+|---|---|---|---|
+| opponent winner | winner | 1,189 | 1,189 |
+| out | opponent out | 1,048 | 1,047 |
+| net | opponent net | 841 | 841 |
+| not over net | opponent not over net | 376 | 376 |
+| misjudged landing | opponent misjudged landing | 44 | 44 |
+| misjudged opponent landing | landed, opponent misjudged | 7 | 7 |
+| foul | opponent foul | 4 | 4 |
+| total | | 3,509 | 3,508 |
 
 The two reason columns always pair up as in the table above (the same event seen from each side),
-and both are NULL on every shot that does not end a rally.
+and both are NULL on every shot that does not end a rally. Not every rally has a reason:
+3,508 of 3,683 rallies do. Shots and rallies differ by one because
+`Kento_MOMOTA_CHOU_Tien_Chen_Fuzhou_Open_2018_Finals` set 3 rally 10 has its last shot
+(ball_round 29, `out` / `opponent out`) twice in the source CSV; ingest keeps both rows.
 
 ## fps estimation
 `fps_estimate` is the least-squares slope of `frame_num` against `time_seconds` over all shots in a match.
