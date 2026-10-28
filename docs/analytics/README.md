@@ -14,7 +14,7 @@ One markdown file per module, for example:
 - `classifier.md`: `shots/features.py`, `shots/train.py`, `shots/predict.py`
 - `tendencies.md`: `analytics/tendencies.py`
 - `validate_tendencies.md`: `analytics/validate_tendencies.py`, set 1 -> set 2 check
-- `report.md`: the `report/` app and its command
+- `report.md`: `report/build.py`, `report/page.py`, `report/court_svg.py`, `report/serve.py`, `report/preview.py`
 
 For each public function, class or command: what it does, inputs, output, errors,
 and a doctest `>>>` example. Examples run with:
