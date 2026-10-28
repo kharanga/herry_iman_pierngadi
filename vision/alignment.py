@@ -6,10 +6,14 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from ingest.label_translations import UnmappedLabelError, translate_label
+
 SHUTTLESET_SET_DIR = Path("data/CoachAI-Projects/ShuttleSet/set")
 CHECKS_DIR = Path("data/checks")
 LABEL_FRAME_WIDTH = 1280
 MARKER_COLOR_BGR = (0, 0, 255)
+MISSING_SHOT_TYPE_CAPTION = "no shot type"
+UNMAPPED_SHOT_TYPE_CAPTION = "unmapped shot type"
 
 
 def set_csv_path(set_dir: Path, match_folder: str, set_no: int) -> Path:
@@ -49,6 +53,15 @@ def spread_positions(row_count: int, pick_count: int) -> list[int]:
 def pick_spread_shots(shots: pd.DataFrame, pick_count: int = 4) -> pd.DataFrame:
     shots_to_check = shots_with_hit_point(shots)
     return shots_to_check.iloc[spread_positions(len(shots_to_check), pick_count)].reset_index(drop=True)
+
+
+def english_shot_type(raw_shot_type: object) -> str:
+    if not isinstance(raw_shot_type, str) or not raw_shot_type.strip():
+        return MISSING_SHOT_TYPE_CAPTION
+    try:
+        return translate_label("type", raw_shot_type.strip())
+    except UnmappedLabelError:
+        return UNMAPPED_SHOT_TYPE_CAPTION
 
 
 def shot_caption(rally: int, ball_round: int, shot_type: str) -> str:
@@ -112,7 +125,7 @@ def write_alignment_checks(
             marked_frame = draw_hit_marker(
                 frame,
                 scaled_point(shot.hit_x, shot.hit_y, scale),
-                shot_caption(rally, ball_round, shot.type),
+                shot_caption(rally, ball_round, english_shot_type(shot.type)),
             )
             image_path = output_dir / check_image_name(rally, ball_round, frame_num)
             cv2.imwrite(str(image_path), marked_frame)

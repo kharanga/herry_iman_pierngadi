@@ -6,6 +6,15 @@ circle at the labeled hit point (the hitter's feet) and a caption, and saves the
 frames as JPEGs under `data/checks/<match_folder>/set<n>/`. If the circle sits at
 the hitter's feet at the moment of contact, the offset is right.
 
+The caption is `rally <r> shot <b> <shot type>`, with the shot type in English.
+The set CSVs hold Chinese shot types, which OpenCV's fonts can't draw, so they are
+translated with the shared map in `ingest/label_translations.py`
+(`translate_label("type", ...)`, see `docs/analytics/label_translations.md`); this
+module keeps no map of its own. A label missing from that map doesn't stop the
+check: the caption says `unmapped shot type`, so the image is still written and the
+gap is visible. An empty or missing label says `no shot type`. ShuttleSet's own
+`未知球種` label is a real label and shows as `unknown`.
+
 Per-frame helpers (`label_scale`, `scaled_point`, `draw_hit_marker`, ...) are pure:
 numbers or arrays in, numbers or arrays out. Only `load_set_shots`, `open_video`,
 `read_frame` and `write_alignment_checks` touch files.
@@ -47,6 +56,8 @@ example `set_no` 4). Frames that can't be read are reported and skipped.
 | `CHECKS_DIR` | `Path("data/checks")` | root folder for check images, relative to the working directory; default `checks_dir` |
 | `LABEL_FRAME_WIDTH` | `1280` | frame width (pixels) that ShuttleSet label coordinates refer to |
 | `MARKER_COLOR_BGR` | `(0, 0, 255)` | red, in OpenCV's BGR order, for the circle and caption |
+| `MISSING_SHOT_TYPE_CAPTION` | `"no shot type"` | caption text when a shot has no type label |
+| `UNMAPPED_SHOT_TYPE_CAPTION` | `"unmapped shot type"` | caption text when the label isn't in the shared English map |
 
 ```python
 >>> from vision.alignment import CHECKS_DIR, LABEL_FRAME_WIDTH, MARKER_COLOR_BGR, SHUTTLESET_SET_DIR
@@ -162,8 +173,32 @@ Errors: `KeyError` if `hit_x` or `hit_y` is missing.
 
 ```
 
+### `english_shot_type(raw_shot_type) -> str`
+English shot type for a caption. Input: `raw_shot_type` (the CSV's `type` value:
+a Chinese label as `str`, an already-English label, or `NaN`/`None` when empty).
+Output: the English label from the shared map (surrounding spaces ignored);
+`"unmapped shot type"` for a label the map doesn't know; `"no shot type"` for
+`NaN`, `None` or blank text. Never raises, so one odd label can't stop a check run.
+
+```python
+>>> from vision.alignment import english_shot_type
+>>> english_shot_type("發長球")
+'long service'
+>>> english_shot_type("過度切球"), english_shot_type("過渡切球")
+('passive drop', 'passive drop')
+>>> english_shot_type("未知球種")
+'unknown'
+>>> english_shot_type("smash")
+'smash'
+>>> english_shot_type("新球種")
+'unmapped shot type'
+>>> english_shot_type(float("nan")), english_shot_type(None), english_shot_type("  ")
+('no shot type', 'no shot type', 'no shot type')
+
+```
+
 ### `shot_caption(rally, ball_round, shot_type) -> str`
-Text drawn on the image.
+Text drawn on the image. `shot_type` should already be English (see `english_shot_type`).
 
 ```python
 >>> from vision.alignment import shot_caption

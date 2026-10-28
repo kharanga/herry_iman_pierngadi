@@ -9,11 +9,16 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import vision.alignment
+from ingest.label_translations import SHOT_TYPE_ENGLISH_BY_CHINESE
 from vision.alignment import (
+    MISSING_SHOT_TYPE_CAPTION,
     SHUTTLESET_SET_DIR,
+    UNMAPPED_SHOT_TYPE_CAPTION,
     check_image_dir,
     check_image_name,
     draw_hit_marker,
+    english_shot_type,
     label_scale,
     load_set_shots,
     main,
@@ -36,6 +41,7 @@ REAL_SET_DIR = PROJECT_ROOT / SHUTTLESET_SET_DIR
 AXELSEN_GINTING = "Viktor_Axelsen_Anthony_Sinisuka_Ginting_YONEX_Thailand_Open_2021_SemiFinals"
 SYNTHETIC_MATCH = "Synthetic_Match"
 SYNTHETIC_FRAME_COUNT = 10
+CJK_PATTERN = "[\u3000-\u303f\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uffef]"
 
 requires_match_video = pytest.mark.skipif(
     not MATCH_VIDEO_PATH.exists() or not REAL_SET_DIR.exists(),
@@ -418,3 +424,119 @@ def test_results_table_matches_rerun_on_axelsen_ginting(set_no, tmp_path):
     ]
     assert rerun_shots == documented_frames_by_set()[set_no]
     assert all(cv2.imread(str(path)).shape == (720, 1280, 3) for path in written_paths)
+
+
+@pytest.mark.parametrize("chinese_label, english_label", sorted(SHOT_TYPE_ENGLISH_BY_CHINESE.items()))
+def test_english_shot_type_translates_every_shared_map_label(chinese_label, english_label):
+    assert english_shot_type(chinese_label) == english_label
+
+
+def test_english_shot_type_spot_values():
+    assert english_shot_type("發長球") == "long service"
+    assert english_shot_type("過度切球") == english_shot_type("過渡切球") == "passive drop"
+    assert english_shot_type("未知球種") == "unknown"
+
+
+def test_english_shot_type_ignores_surrounding_whitespace_and_passes_english_through():
+    assert english_shot_type("  殺球\n") == "smash"
+    assert english_shot_type("smash") == "smash"
+    assert english_shot_type(" net shot ") == "net shot"
+
+
+@pytest.mark.parametrize("raw_shot_type", ["新球種", "Smash", "飛球", "out", "opponent winner", "?"])
+def test_english_shot_type_unmapped_label_returns_unmapped_caption(raw_shot_type):
+    assert english_shot_type(raw_shot_type) == UNMAPPED_SHOT_TYPE_CAPTION == "unmapped shot type"
+
+
+@pytest.mark.parametrize("raw_shot_type", [None, float("nan"), np.nan, pd.NA, "", "   ", 7, 3.5])
+def test_english_shot_type_missing_or_non_text_returns_missing_caption(raw_shot_type):
+    assert english_shot_type(raw_shot_type) == MISSING_SHOT_TYPE_CAPTION == "no shot type"
+
+
+def test_unmapped_and_missing_captions_differ_from_real_labels():
+    real_labels = set(SHOT_TYPE_ENGLISH_BY_CHINESE.values())
+    assert UNMAPPED_SHOT_TYPE_CAPTION not in real_labels
+    assert MISSING_SHOT_TYPE_CAPTION not in real_labels
+    assert UNMAPPED_SHOT_TYPE_CAPTION != MISSING_SHOT_TYPE_CAPTION
+
+
+def test_english_shot_type_reads_the_shared_ingest_map(monkeypatch):
+    monkeypatch.setitem(SHOT_TYPE_ENGLISH_BY_CHINESE, "測試球", "test shot")
+    assert english_shot_type("測試球") == "test shot"
+    monkeypatch.setitem(SHOT_TYPE_ENGLISH_BY_CHINESE, "殺球", "patched smash")
+    assert english_shot_type("殺球") == "patched smash"
+
+
+def test_alignment_source_keeps_no_copy_of_the_label_map():
+    source_text = ALIGNMENT_SOURCE_PATH.read_text()
+    assert re.search(CJK_PATTERN, source_text) is None
+    assert "from ingest.label_translations import" in source_text
+    module = ast.parse(source_text)
+    dict_literals = [node for node in ast.walk(module) if isinstance(node, ast.Dict)]
+    assert dict_literals == []
+
+
+def record_captions(monkeypatch) -> list[str]:
+    captions = []
+    real_draw_hit_marker = vision.alignment.draw_hit_marker
+
+    def recording_draw_hit_marker(frame, point, caption):
+        captions.append(caption)
+        return real_draw_hit_marker(frame, point, caption)
+
+    monkeypatch.setattr(vision.alignment, "draw_hit_marker", recording_draw_hit_marker)
+    return captions
+
+
+def test_write_alignment_checks_captions_are_english_ascii_and_unmapped_still_written(
+    synthetic_video, tmp_path, monkeypatch
+):
+    set_dir = tmp_path / "set"
+    shot_rows = [synthetic_shot(1, 2, 2, 640.0, 360.0), synthetic_shot(1, 3, 4, 400.0, 200.0), synthetic_shot(2, 2, 6, 800.0, 500.0), synthetic_shot(2, 3, 8, 900.0, 500.0)]
+    for shot_row, raw_type in zip(shot_rows, ["發長球", "過渡切球", "新球種", None]):
+        shot_row["type"] = raw_type
+    write_set_csv(set_dir, SYNTHETIC_MATCH, 1, shot_rows)
+    captions = record_captions(monkeypatch)
+    written_paths = write_alignment_checks(SYNTHETIC_MATCH, 1, synthetic_video, set_dir=set_dir, checks_dir=tmp_path / "checks")
+    assert len(written_paths) == 4
+    assert all(path.is_file() for path in written_paths)
+    assert captions == [
+        "rally 1 shot 2 long service",
+        "rally 1 shot 3 passive drop",
+        "rally 2 shot 2 unmapped shot type",
+        "rally 2 shot 3 no shot type",
+    ]
+    assert all(caption.isascii() for caption in captions)
+
+
+def test_english_caption_changes_drawn_pixels_versus_question_marks():
+    frame = np.zeros((100, 700, 3), dtype=np.uint8)
+    english_image = draw_hit_marker(frame, (50, 50), shot_caption(1, 2, english_shot_type("發長球")))
+    question_mark_image = draw_hit_marker(frame, (50, 50), shot_caption(1, 2, "???"))
+    assert not np.array_equal(english_image, question_mark_image)
+
+
+def documented_caption_types_by_set() -> dict[int, list[str]]:
+    rows = re.findall(r"^\| (\d) \| [^|]+ \| [^|]+ \| ([^|]+) \|$", ALIGNMENT_RESULTS_PATH.read_text(), re.MULTILINE)
+    return {int(set_no): [shot_type.strip() for shot_type in shot_types.split(",")] for set_no, shot_types in rows}
+
+
+@requires_match_video
+@pytest.mark.parametrize("set_no", [1, 2, 3])
+def test_results_caption_column_matches_rerun_captions(set_no, tmp_path, monkeypatch):
+    captions = record_captions(monkeypatch)
+    write_alignment_checks(AXELSEN_GINTING, set_no, MATCH_VIDEO_PATH, set_dir=REAL_SET_DIR, checks_dir=tmp_path / "checks")
+    rerun_types = [re.fullmatch(r"rally \d+ shot \d+ (.+)", caption).group(1) for caption in captions]
+    assert rerun_types == documented_caption_types_by_set()[set_no]
+    assert all(caption.isascii() for caption in captions)
+
+
+@pytest.mark.skipif(not REAL_SET_DIR.exists(), reason="run ingest/fetch_shuttleset.sh first")
+def test_every_shuttleset_shot_type_label_translates_for_captions():
+    distinct_labels = set()
+    for csv_path in REAL_SET_DIR.glob("*/set*.csv"):
+        distinct_labels |= set(pd.read_csv(csv_path, usecols=["type"])["type"].dropna())
+    assert len(distinct_labels) == 19
+    assert {english_shot_type(label) for label in distinct_labels} <= set(SHOT_TYPE_ENGLISH_BY_CHINESE.values())
+    results_text = ALIGNMENT_RESULTS_PATH.read_text()
+    assert "19 distinct shot-type labels; all 19" in results_text

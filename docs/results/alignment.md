@@ -9,16 +9,25 @@ for set_no in 1 2 3; do .venv/bin/python -m vision.alignment $M $set_no data/mat
 ## Run on Axelsen vs Ginting (Thailand Open 2021 SF), offset 0
 Video: `data/match.mp4`, 30.00 fps, 1280 wide (scale 1.000). 4 shots per set, 12 images, 0 frames unreadable.
 
-| Set | Shots checked (rally/shot, frame) | Output folder |
-|---|---|---|
-| 1 | 1/2 @ 12359, 17/8 @ 25747, 29/8 @ 40576, 39/22 @ 52638 | `data/checks/<match>/set1/` |
-| 2 | 1/2 @ 59004, 13/10 @ 69751, 21/2 @ 80514, 34/2 @ 91863 | `data/checks/<match>/set2/` |
-| 3 | 1/2 @ 95959, 12/10 @ 105057, 23/10 @ 117456, 34/19 @ 126430 | `data/checks/<match>/set3/` |
+| Set | Shots checked (rally/shot, frame) | Output folder | Caption shot types |
+|---|---|---|---|
+| 1 | 1/2 @ 12359, 17/8 @ 25747, 29/8 @ 40576, 39/22 @ 52638 | `data/checks/<match>/set1/` | lob, smash, lob, net shot |
+| 2 | 1/2 @ 59004, 13/10 @ 69751, 21/2 @ 80514, 34/2 @ 91863 | `data/checks/<match>/set2/` | push, return net, lob, cross-court net shot |
+| 3 | 1/2 @ 95959, 12/10 @ 105057, 23/10 @ 117456, 34/19 @ 126430 | `data/checks/<match>/set3/` | push, net shot, net shot, wrist smash |
 
 Spot check of set 2 rally 13 shot 10 (return net, frame 69751): the far player is
 lunging at the net with the racket at the shuttle, and the red marker sits at
 their feet. This agrees with the earlier finding: offset 0, and `hit_x`/`hit_y`
 mark the hitter's feet, not the shuttle.
+
+## English captions
+Captions translate the CSV's Chinese shot type with the shared label map. Regenerated
+all 3 sets and looked at `set1/rally1_shot2_frame12359.jpg` (`rally 1 shot 2 lob`)
+and `set2/rally1_shot2_frame59004.jpg` (`rally 1 shot 2 push`): plain English, no `?`.
+The caption of every picked shot is in the last column of the table above.
+
+Across every set CSV in ShuttleSet there are 19 distinct shot-type labels; all 19
+translate, so no ShuttleSet caption shows `unmapped shot type`.
 
 The first shot with a hit point in each set is shot 2: serves (shot 1) have no `hit_x`/`hit_y`.
 
