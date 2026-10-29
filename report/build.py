@@ -4,7 +4,7 @@ import duckdb
 
 from analytics.build_shots import LEFT_HANDED_PLAYER_NAMES
 from analytics.tendencies import DATABASE_PATH, FAMILIES, all_observations, tendencies_from_observations
-from report.court_svg import bullet_zone_rect
+from report.court_svg import bullet_zone_rect, reply_zone_rects
 
 OWN_PLAYER_NAMES = {"me": "Me", "opp": "Opponent"}
 FAMILY_HEADINGS = {
@@ -87,18 +87,33 @@ def evidence_text(tendency: dict) -> str:
     return f"{tendency['k']} of {tendency['n']}"
 
 
-def bullet_from_tendency(tendency: dict, hitter_is_me: bool, me_left_handed: bool, opponent_left_handed: bool) -> dict:
+OTHER_PLAYER_PHRASE = "the other player's"
+
+
+def other_player_possessive(other_player_name: str, other_player_is_me: bool) -> str:
+    return "my" if other_player_is_me else f"{other_player_name}'s"
+
+
+def named_text(text: str, other_player_name: str, other_player_is_me: bool) -> str:
+    return text.replace(OTHER_PLAYER_PHRASE, other_player_possessive(other_player_name, other_player_is_me))
+
+
+def bullet_from_tendency(
+    tendency: dict, hitter_is_me: bool, me_left_handed: bool, opponent_left_handed: bool, other_player_name: str = "the other player"
+) -> dict:
     zone = tendency["condition"] if tendency["family"] == "zone_mix" else tendency["outcome"]
+    is_reply = tendency["family"] == "response"
     return {
         "id": tendency["id"],
         "family": tendency["family"],
-        "text": tendency["text"],
+        "text": named_text(tendency["text"], other_player_name, not hitter_is_me) if is_reply else tendency["text"],
         "evidence": evidence_text(tendency),
         "k": tendency["k"],
         "n": tendency["n"],
         "rate": tendency["rate"],
         "label_source": tendency["label_source"],
         "zone_rect": bullet_zone_rect(hitter_is_me, tendency["family"], zone, me_left_handed, opponent_left_handed),
+        "reply_rects": reply_zone_rects(hitter_is_me, tendency["condition"], me_left_handed, opponent_left_handed) if is_reply else None,
         "sets": tendency["sets"],
     }
 
@@ -115,10 +130,15 @@ def family_groups(bullets: list[dict]) -> list[dict]:
     ]
 
 
-def player_section(observations, match_id: str, player: str, name: str, hitter_is_me: bool, left_handed: dict[str, bool], sets) -> dict:
+def player_section(
+    observations, match_id: str, player: str, name: str, hitter_is_me: bool, left_handed: dict[str, bool], sets, other_player_name: str
+) -> dict:
     tendencies = tendencies_from_observations(observations, match_id, player, sets)
     bullets = rewrite_bullets(
-        [bullet_from_tendency(tendency, hitter_is_me, left_handed["me"], left_handed["opponent"]) for tendency in tendencies]
+        [
+            bullet_from_tendency(tendency, hitter_is_me, left_handed["me"], left_handed["opponent"], other_player_name)
+            for tendency in tendencies
+        ]
     )
     return {
         "player": player,
@@ -153,6 +173,6 @@ def build_report(
         "match_id": match_id,
         "title": title,
         "sets": list(sets) if sets else None,
-        "opponent": player_section(observations, match_id, opponent, names[opponent], False, left_handed, sets),
-        "me": player_section(observations, match_id, me, names[me], True, left_handed, sets),
+        "opponent": player_section(observations, match_id, opponent, names[opponent], False, left_handed, sets, names[me]),
+        "me": player_section(observations, match_id, me, names[me], True, left_handed, sets, names[opponent]),
     }

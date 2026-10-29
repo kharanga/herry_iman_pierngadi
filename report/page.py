@@ -24,6 +24,9 @@ ol.bullets li { display: flex; gap: 12px; align-items: flex-start; padding: 12px
 svg.court { flex: 0 0 auto; }
 svg.court .floor { fill: var(--floor); }
 svg.court .zone { fill: var(--accent); fill-opacity: 0.7; }
+svg.court .zone.from { fill: #f2c200; fill-opacity: 0.8; }
+svg.court line.arrow { stroke: #111111; stroke-width: 1.6; }
+svg.court .arrowhead { fill: #111111; }
 svg.court line { stroke: #ffffff; stroke-width: 1.2; }
 svg.court line.net { stroke: #111111; stroke-width: 2; }
 .empty { color: var(--muted); padding: 12px 0; border-top: 1px solid var(--line); }
@@ -47,7 +50,11 @@ def tags_html(bullet: dict) -> str:
 
 def bullet_html(bullet: dict, hitter_name: str) -> str:
     diagram = ""
-    if bullet["zone_rect"] is not None:
+    if bullet.get("reply_rects") is not None:
+        diagram = court_svg(
+            None, f"court diagram, you at the bottom, arrow from where the shot was hit to where it landed: {escape(bullet['text'])}", bullet["reply_rects"]
+        )
+    elif bullet["zone_rect"] is not None:
         diagram = court_svg(bullet["zone_rect"], f"court diagram, zone shaded, you at the bottom: {escape(bullet['text'])}")
     return (
         "<li>"
@@ -89,7 +96,8 @@ def footer_html(report: dict) -> str:
         "Every choice is listed, however rare, with no comparison and no ranking.</p>"
         f"<p>{types_note}</p>"
         "<p>Court diagrams: you are at the bottom, the opponent at the top; the shaded zone is the one the bullet is about. "
-        "Replies, winners and errors have no zone, so no diagram.</p>"
+        "Reply diagrams show the other player's shot: hit from the yellow zone, landing in the red zone, with an arrow. "
+        "Winners and errors have no zone, so no diagram.</p>"
         "</footer>"
     )
 

@@ -30,7 +30,7 @@ from report.build import (
     opponent_of,
     rewrite_bullets,
 )
-from report.court_svg import DIAGRAM_FAMILIES, SVG_WIDTH_PX, bullet_zone_rect, court_svg, rotate_rect_half_turn, zone_rect_in_near_half
+from report.court_svg import DIAGRAM_FAMILIES, SVG_WIDTH_PX, bullet_zone_rect, court_svg, rect_centre, reply_zone_rects, rotate_rect_half_turn, svg_x, svg_y, zone_rect_in_near_half
 from report.page import PAGE_CSS, render_page
 from report.preview import CHROME_PATH, PHONE_WIDTH_PX, PREVIEW_HEIGHT_PX, WINDOW_PADDING_PX, screenshot_at_width
 from report.serve import main, write_report
@@ -43,7 +43,8 @@ TRACKED_MATCH_ID = "match_tracked"
 TASK_ID_PATTERN = r"\b(ANA|VIS|INT)-\d+\b"
 EVIDENCE_PATTERN = r"\d+ of \d+"
 PROS_PATTERN = r"(?i)\bpros?\b|professional|more than|weaker evidence|class=\"hint\""
-BULLET_KEYS = {"id", "family", "text", "evidence", "k", "n", "rate", "label_source", "zone_rect", "sets"}
+BULLET_KEYS = {"id", "family", "text", "evidence", "k", "n", "rate", "label_source", "zone_rect", "reply_rects", "sets"}
+OTHER_PLAYER_PHRASE = "the other player's"
 SECTION_KEYS = {"player", "name", "bullets", "groups", "sets"}
 EMPTY_SECTION_TEXT = "No shots counted for this player yet."
 VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -104,8 +105,8 @@ def pro_rally(match_id: str, rally: int) -> list[dict]:
 
 def own_rally(match_id: str, rally: int) -> list[dict]:
     return [
-        shot_row("own", match_id, rally, 1, "opp", type_pred="serve", landing_zone="front_forehand"),
-        shot_row("own", match_id, rally, 2, "me", type_pred="drop", hit_zone="rear_forehand", getpoint_player="opp", lose_reason="out"),
+        shot_row("own", match_id, rally, 1, "opp", type_pred="serve", hit_zone="mid_middle", landing_zone="front_forehand"),
+        shot_row("own", match_id, rally, 2, "me", type_pred="drop", hit_zone="rear_forehand", is_cross=False, getpoint_player="opp", lose_reason="out"),
     ]
 
 
@@ -113,8 +114,9 @@ def labelled_rally(match_id: str, rally: int) -> list[dict]:
     reply_group = "clear" if rally == 20 else "drop"
     winner = "B" if rally % 5 == 0 else "A"
     return [
-        shot_row("shuttleset", match_id, rally, 1, "A", type_en="short service", type_group="serve", landing_zone="rear_backhand" if rally % 4 == 0 else "front_forehand"),
-        shot_row("shuttleset", match_id, rally, 2, "B", type_en=reply_group, type_group=reply_group, hit_zone="rear_forehand", getpoint_player=winner,
+        shot_row("shuttleset", match_id, rally, 1, "A", type_en="short service", type_group="serve", hit_zone="mid_middle",
+                 landing_zone="rear_backhand" if rally % 4 == 0 else "front_forehand"),
+        shot_row("shuttleset", match_id, rally, 2, "B", type_en=reply_group, type_group=reply_group, hit_zone="rear_forehand", is_cross=rally % 3 == 0, getpoint_player=winner,
                  lose_reason="out" if winner == "A" else "opponent winner"),
     ]
 
@@ -160,14 +162,23 @@ def group_parts(section_page: str) -> list[tuple[str, list[str]]]:
     return [(unescape(heading), re.findall(r"<li>.*?</li>", body)) for heading, body in re.findall(r'<h3>(.*?)</h3><ol class="bullets">(.*?)</ol>', section_page)]
 
 
-def assert_section_shows_every_engine_entry_grouped(section: dict, section_page: str, engine: list[dict]) -> None:
+def expected_bullet_text(tendency: dict, other_player_possessive: str) -> str:
+    if tendency["family"] != "response":
+        return tendency["text"]
+    assert tendency["text"].count(OTHER_PLAYER_PHRASE) == 1
+    return tendency["text"].replace(OTHER_PLAYER_PHRASE, other_player_possessive)
+
+
+def assert_section_shows_every_engine_entry_grouped(section: dict, section_page: str, engine: list[dict], other_player_possessive: str) -> None:
     assert set(section) == SECTION_KEYS
     assert len(section["bullets"]) == len(engine)
     for bullet, tendency in zip(section["bullets"], engine, strict=True):
         assert set(bullet) == BULLET_KEYS
         assert (bullet["id"], bullet["family"], bullet["k"], bullet["n"], bullet["rate"], bullet["text"], bullet["label_source"], bullet["sets"]) == (
-            tendency["id"], tendency["family"], tendency["k"], tendency["n"], tendency["rate"], tendency["text"], tendency["label_source"], tendency["sets"])
-        assert bullet["evidence"] == f"{tendency['k']} of {tendency['n']}"
+            tendency["id"], tendency["family"], tendency["k"], tendency["n"], tendency["rate"], expected_bullet_text(tendency, other_player_possessive),
+            tendency["label_source"], tendency["sets"])
+        assert bullet["evidence"] == f"{tendency['k']} of {tendency['n']}" and "other player" not in bullet["text"]
+        assert (bullet["reply_rects"] is not None) == (bullet["family"] == "response")
     present = [family for family in FAMILIES if any(tendency["family"] == family for tendency in engine)]
     assert [group["family"] for group in section["groups"]] == present
     assert [group["heading"] for group in section["groups"]] == [FAMILY_HEADINGS[family] for family in present]
@@ -180,7 +191,10 @@ def assert_section_shows_every_engine_entry_grouped(section: dict, section_page:
         for item, bullet in zip(items, group["bullets"], strict=True):
             assert f'<p class="claim">{escape(bullet["text"])}</p>' in item
             assert f'<span class="evidence">{bullet["evidence"]}</span> for ' in item
-            assert ('<svg class="court"' in item) == (bullet["zone_rect"] is not None)
+            assert item.count('<svg class="court"') == (bullet["zone_rect"] is not None or bullet["reply_rects"] is not None)
+            if bullet["reply_rects"] is not None:
+                assert item.count('class="zone from"') == 1 and item.count('class="zone"') == 1
+                assert item.count('class="arrow"') == 1 and item.count('class="arrowhead"') == 1
             assert ("predicted shot types" in item) == (bullet["label_source"] != "labels")
 
 
@@ -208,7 +222,9 @@ def test_own_footage_only_database_without_a_matches_table(own_only_database):
     assert {bullet["label_source"] for bullet in bullets if bullet["family"] != "error_reason"} == {"predictions"}
     assert [bullet["label_source"] for bullet in bullets if bullet["family"] == "error_reason"] == ["labels"]
     assert [bullet["id"] for bullet in report["opponent"]["bullets"]] == ["serve_placement:serve:front_forehand"]
-    assert [bullet["id"] for bullet in report["me"]["bullets"]] == ["zone_mix:rear_forehand:drop", "response:serve:drop", "error_shot:error:drop", "error_reason:error:out"]
+    assert [bullet["id"] for bullet in report["me"]["bullets"]] == [
+        "zone_mix:rear_forehand:drop", "response:serve|mid_middle|front_forehand:drop straight", "error_shot:error:drop", "error_reason:error:out"]
+    assert report["me"]["bullets"][1]["text"] == "After a serve from Opponent's mid middle to the front forehand: drops straight 20 of 20 times."
     page = render_page(report)
     assert page.count("predicted shot types</span>") == len(bullets) - 1
     assert "use the classifier's predicted types; the others use labelled types" in page
@@ -222,11 +238,14 @@ def test_page_shows_every_engine_entry_for_both_players_grouped_by_family(labell
         page = render_page(report)
         opponent_page, me_page = section_pages(page)
         for section, section_page in ((report["opponent"], opponent_page), (report["me"], me_page)):
-            assert_section_shows_every_engine_entry_grouped(section, section_page, tendencies_from_observations(observations, HOSTILE_MATCH_ID, section["player"]))
+            possessive = "my" if section is report["opponent"] else f"{report['opponent']['name']}'s"
+            assert_section_shows_every_engine_entry_grouped(section, section_page, tendencies_from_observations(observations, HOSTILE_MATCH_ID, section["player"]), possessive)
     report = build_report(HOSTILE_MATCH_ID, me="A", database_path=labelled_database)
     assert [(bullet["id"], bullet["evidence"]) for bullet in report["opponent"]["bullets"]] == [
         ("zone_mix:rear_forehand:drop", "19 of 20"), ("zone_mix:rear_forehand:clear", "1 of 20"),
-        ("response:serve:drop", "19 of 20"), ("response:serve:clear", "1 of 20"),
+        ("response:serve|mid_middle|front_forehand:drop straight", "10 of 15"), ("response:serve|mid_middle|front_forehand:drop cross", "5 of 15"),
+        ("response:serve|mid_middle|rear_backhand:drop straight", "3 of 5"), ("response:serve|mid_middle|rear_backhand:clear straight", "1 of 5"),
+        ("response:serve|mid_middle|rear_backhand:drop cross", "1 of 5"),
         ("winning_shot:winner:drop", "3 of 4"), ("winning_shot:winner:clear", "1 of 4"),
         ("error_shot:error:drop", "16 of 16"), ("error_reason:error:out", "16 of 16"),
     ]
@@ -253,7 +272,7 @@ def test_a_player_with_no_counted_shots_shows_the_empty_text(labelled_database):
     report = build_report(HOSTILE_MATCH_ID, me="A", database_path=labelled_database)
     report["me"]["bullets"], report["me"]["groups"] = [], []
     page = render_page(report)
-    assert page.count(EMPTY_SECTION_TEXT) == 1 and page.count("<li>") == 8 and page.count("<h3>") == 5
+    assert page.count(EMPTY_SECTION_TEXT) == 1 and page.count("<li>") == 11 and page.count("<h3>") == 5
 
 
 def test_no_pros_comparison_hint_or_weaker_evidence_remains(labelled_database, own_only_database):
@@ -295,8 +314,10 @@ def test_pages_are_self_contained_with_a_viewport_meta(labelled_database, own_on
         assert not [item for item in structure.attributes if item[1] in ("src", "href", "onload", "onclick")]
         assert not re.search(r"https?://|url\(|@import|<!--|/\*", page)
         assert VIEWPORT_META in page and page.startswith("<!doctype html>") and page.count("<style>") == 1
+        report = build_report(HOSTILE_MATCH_ID, me=me, database_path=database)
         assert page.count('<svg class="court"') == sum(
-            bullet["zone_rect"] is not None for bullet in build_report(HOSTILE_MATCH_ID, me=me, database_path=database)["opponent"]["bullets"] + build_report(HOSTILE_MATCH_ID, me=me, database_path=database)["me"]["bullets"])
+            bullet["zone_rect"] is not None or bullet["reply_rects"] is not None for bullet in report["opponent"]["bullets"] + report["me"]["bullets"])
+        assert "<marker" not in page and " id=" not in page
 
 
 def test_unknown_match_and_player_raise(labelled_database):
@@ -371,7 +392,45 @@ def test_bullet_from_tendency_copies_the_numbers_unchanged():
     assert bullet["zone_rect"] == bullet_zone_rect(True, "zone_mix", "front_backhand")
     serve = dict(tendency, family="serve_placement", condition="serve", outcome="rear_backhand")
     assert bullet_from_tendency(serve, False, False, False)["zone_rect"] == bullet_zone_rect(False, "serve_placement", "rear_backhand")
-    assert bullet_from_tendency(dict(tendency, family="response", condition="net"), True, False, False)["zone_rect"] is None
+    assert bullet["reply_rects"] is None and bullet_from_tendency(serve, False, False, False)["reply_rects"] is None
+    reply = dict(tendency, family="response", condition="net|front_forehand|front_backhand", outcome="lift cross", id="response:net|front_forehand|front_backhand:lift cross",
+                 text="After a net shot from the other player's front forehand to the front backhand: lifts cross 42 of 71 times.")
+    mine = bullet_from_tendency(reply, True, False, True, "Ann <A>")
+    theirs = bullet_from_tendency(reply, False, False, True, "Me")
+    assert mine["text"] == "After a net shot from Ann <A>'s front forehand to the front backhand: lifts cross 42 of 71 times."
+    assert theirs["text"] == "After a net shot from my front forehand to the front backhand: lifts cross 42 of 71 times."
+    assert mine["zone_rect"] is None and mine["reply_rects"] == reply_zone_rects(True, reply["condition"], False, True)
+    assert theirs["reply_rects"] == reply_zone_rects(False, reply["condition"], False, True)
+    assert (mine["k"], mine["n"], mine["evidence"]) == (42, 71, "42 of 71")
+
+
+@pytest.mark.parametrize("hit_zone", ZONE_NAMES)
+@pytest.mark.parametrize("landing_zone", ZONE_NAMES)
+def test_reply_rects_keep_me_at_the_bottom_with_each_zone_on_its_players_half(hit_zone, landing_zone):
+    condition = f"clear|{hit_zone}|{landing_zone}"
+    for me_left, opponent_left in ((False, False), (True, False), (False, True), (True, True)):
+        my_from, my_to = reply_zone_rects(True, condition, me_left, opponent_left)
+        assert my_from == pytest.approx(rotate_rect_half_turn(zone_rect_in_near_half(hit_zone, opponent_left)))
+        assert my_to == pytest.approx(zone_rect_in_near_half(landing_zone, me_left))
+        assert my_from[1] >= NET_Y_M - 1e-9 and my_to[3] <= NET_Y_M + 1e-9
+        their_from, their_to = reply_zone_rects(False, condition, me_left, opponent_left)
+        assert their_from == pytest.approx(zone_rect_in_near_half(hit_zone, me_left))
+        assert their_to == pytest.approx(rotate_rect_half_turn(zone_rect_in_near_half(landing_zone, opponent_left)))
+        assert their_from[3] <= NET_Y_M + 1e-9 and their_to[1] >= NET_Y_M - 1e-9
+
+
+def test_reply_svg_draws_both_zones_and_an_arrow_from_the_hit_zone_to_the_landing_zone():
+    from_rect, to_rect = reply_zone_rects(True, "clear|rear_forehand|rear_forehand")
+    svg = court_svg(None, "label", (from_rect, to_rect))
+    arrow = re.search(r'<line x1="([-\d.]+)" y1="([-\d.]+)" x2="([-\d.]+)" y2="([-\d.]+)" class="arrow"/><polygon points="([^"]+)" class="arrowhead"/>', svg)
+    start, end = (float(arrow.group(1)), float(arrow.group(2))), (float(arrow.group(3)), float(arrow.group(4)))
+    assert start == pytest.approx((svg_x(rect_centre(from_rect)[0]), svg_y(rect_centre(from_rect)[1])))
+    assert end == pytest.approx((svg_x(rect_centre(to_rect)[0]), svg_y(rect_centre(to_rect)[1])))
+    tip = tuple(float(value) for value in arrow.group(5).split()[0].split(","))
+    assert tip == pytest.approx(end, abs=0.1) and len(arrow.group(5).split()) == 3
+    assert start[1] < svg_y(NET_Y_M) < end[1]
+    assert svg.index('class="zone from"') < svg.index('class="net"') < svg.index('class="arrow"')
+    assert svg.count('class="zone from"') == 1 and svg.count('class="zone"') == 1 and "id=" not in svg and svg.endswith("</svg>")
 
 
 def free_port() -> int:
@@ -528,13 +587,17 @@ def page_bullets(report: dict) -> list[dict]:
 def assert_page_shows_every_entry(report: dict, page: str, observations: pd.DataFrame) -> None:
     assert page.count("<h2>") == 2 and VIEWPORT_META in page and "<script" not in page and not re.search(PROS_PATTERN, page)
     for section, section_page in zip((report["opponent"], report["me"]), section_pages(page), strict=True):
-        assert_section_shows_every_engine_entry_grouped(section, section_page, tendencies_from_observations(observations, report["match_id"], section["player"]))
+        possessive = "my" if section is report["opponent"] else f"{report['opponent']['name']}'s"
+        assert_section_shows_every_engine_entry_grouped(section, section_page, tendencies_from_observations(observations, report["match_id"], section["player"]), possessive)
     for bullet in page_bullets(report):
         assert re.fullmatch(EVIDENCE_PATTERN, bullet["evidence"])
         if bullet["zone_rect"] is not None:
             x0, y0, x1, y1 = bullet["zone_rect"]
             assert 0 <= x0 < x1 <= COURT_WIDTH_M + 1e-9 and 0 <= y0 < y1 <= COURT_LENGTH_M + 1e-9
-    assert page.count('<svg class="court"') == sum(bullet["zone_rect"] is not None for bullet in page_bullets(report))
+        for x0, y0, x1, y1 in bullet["reply_rects"] or ():
+            assert 0 <= x0 < x1 <= COURT_WIDTH_M + 1e-9 and 0 <= y0 < y1 <= COURT_LENGTH_M + 1e-9
+    assert page.count('<svg class="court"') == sum(bullet["zone_rect"] is not None or bullet["reply_rects"] is not None for bullet in page_bullets(report))
+    assert page.count('class="arrowhead"') == sum(bullet["family"] == "response" for bullet in page_bullets(report))
 
 
 def test_every_shuttleset_page_shows_every_entry_of_both_players_grouped_by_family(real_pages):
@@ -549,9 +612,11 @@ def test_every_shuttleset_page_shows_every_entry_of_both_players_grouped_by_fami
 def test_tracked_match_page_shows_every_entry_and_matches_the_shipped_page(tracked_page):
     report, page = tracked_page
     assert_page_shows_every_entry(report, page, all_observations(DATABASE_PATH))
-    assert (len(report["opponent"]["bullets"]), len(report["me"]["bullets"])) == (39, 40)
+    assert (len(report["opponent"]["bullets"]), len(report["me"]["bullets"])) == (63, 68)
     assert {bullet["label_source"] for bullet in page_bullets(report)} == {"predictions"}
-    assert page.count("predicted shot types</span>") == 79 and "<title>Opponent: shot counts</title>" in page
+    assert page.count("predicted shot types</span>") == 131 and "<title>Opponent: shot counts</title>" in page
+    assert all(bullet["text"].startswith("After a") and " from my " in bullet["text"] for bullet in report["opponent"]["bullets"] if bullet["family"] == "response")
+    assert all(" from Opponent's " in bullet["text"] for bullet in report["me"]["bullets"] if bullet["family"] == "response")
     reference = PROJECT_ROOT / "data" / "reports" / TRACKED_MATCH_ID / "index.html"
     if reference.exists():
         assert reference.read_text(encoding="utf-8") == page
@@ -571,7 +636,12 @@ def test_results_doc_counts_match_the_generated_pages(real_pages, tracked_page):
     assert f"all {len(bullets):,} bullets (ShuttleSet pages + `match_tracked`)" in doc and f"in the HTML ({without_count} without)" in doc and without_count == 0
     mentioning = sum(bool(re.search(r"(?i)\bpros?\b", page)) for page in pages)
     assert f"{mentioning} of {len(pages)} pages mention pros ({mentioning} found)" in doc and mentioning == 0
-    assert f"{sum(bullet['zone_rect'] is not None for bullet in bullets):,} bullets (zone and serve placement) get one" in doc
+    replies = [bullet for bullet in bullets if bullet["family"] == "response"]
+    with_arrow = sum(bullet["reply_rects"] is not None for bullet in replies)
+    naming = sum("other player" not in bullet["text"] and re.search(r" from (my|.+'s) ", bullet["text"]) is not None for bullet in replies)
+    assert f"{sum(bullet['zone_rect'] is not None for bullet in bullets):,} bullets (zone and serve placement) get a shaded zone; {with_arrow:,} reply bullets get hit-from and landing zones with an arrow" in doc
+    assert with_arrow == len(replies) == naming
+    assert f"{naming:,} of {len(replies):,} reply bullets name the player; 0 say \"the other player\"" in doc
     median_size = (sizes[43] + sizes[44]) / 2
     assert f"ShuttleSet {sizes[0] / 1000:.0f} to {sizes[-1] / 1000:.0f} KB (median {median_size / 1000:.0f} KB)" in doc
     assert f"ShuttleSet pages are long ({per_page[-1]} bullets at most)" in doc

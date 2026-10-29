@@ -41,7 +41,9 @@ Default output: `data/checks/report/<report folder name>_390px.png`. Raises `Fil
   one sub-heading per family (`FAMILY_HEADINGS`: "Shots by court zone", "Replies to the other player's shot",
   "Serves", "Winning shots", "Shots that ended in an error", "How errors happened"). Each bullet has the
   engine's sentence, the evidence line (`k of n` for the player) and, for zone and serve-placement bullets, a court
-  diagram with the zone shaded. Replies, winners and errors have no zone, so no diagram.
+  diagram with the zone shaded. Reply bullets name the other player instead of "the other player" ("my" when that
+  is me, else "<name>'s") and get a diagram of that player's shot: the zone it was hit from (yellow), the zone it
+  landed in (red) and an arrow between them. Winners and errors have no zone, so no diagram.
 - Tag: `predicted shot types` on bullets whose shot types came from the classifier rather than labels
   (`label_source` not `labels`).
 - A player with no counted shots gets "No shots counted for this player yet." instead of nothing.
@@ -69,7 +71,8 @@ Returns the report as a `dict`:
 | `opponent`, `me` | sections: `player`, `name`, `bullets` (all, in plain order), `groups` (`[{family, heading, bullets}]`, families in `FAMILIES` order, empty families left out), `sets` (sets with evidence) |
 
 Each bullet: `id`, `family`, `text` (the engine's sentence), `evidence` (`"k of n"`), `k`, `n`,
-`rate`, `label_source`, `zone_rect` (court-meter rectangle to
+`rate`, `label_source`, `reply_rects` (for replies: `(hit-from rectangle, landing rectangle)`, me at the bottom;
+else `None`), `zone_rect` (court-meter rectangle to
 shade, me at the bottom, or `None`), `sets`.
 
 Errors: `UnknownMatchError` (no shots for that match), `UnknownPlayerError` (`--me` not in the match;
@@ -81,18 +84,26 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 - `match_title(connection, match_id)`: `(title, {player: display name})`; own matches (not in `matches`, or a database
   with no `matches` table at all) get the match id as title and `Me` / `Opponent` as names. `has_matches_table(connection)`.
 - `default_me(players)`: `me` if present, else `A`, else the first player. `opponent_of(me, players)`.
-- `bullet_from_tendency(tendency, hitter_is_me, me_left_handed, opponent_left_handed)`, `evidence_text(tendency)`.
+- `bullet_from_tendency(tendency, hitter_is_me, me_left_handed, opponent_left_handed, other_player_name="the other player")`,
+  `evidence_text(tendency)`, `named_text(text, other_player_name, other_player_is_me)`, `other_player_possessive(...)`
+  (`my` or `<name>'s`), `OTHER_PLAYER_PHRASE`.
 - `player_section(...)`, `family_groups(bullets)`, `rewrite_bullets(bullets)` (the seam above).
 - Constants: `OWN_PLAYER_NAMES`, `FAMILY_HEADINGS`, `MATCH_SQL`, `HAS_MATCHES_TABLE_SQL`, `MATCH_PLAYERS_SQL`.
 
 ```python
 >>> from report.build import *
->>> tendency = {"family": "response", "condition": "lift", "outcome": "drop", "k": 43, "n": 98, "rate": 43 / 98,
-...             "id": "response:lift:drop", "label_source": "labels", "sets": [1, 2, 3],
-...             "text": "After a lift: drops 43 of 98 times."}
->>> bullet = bullet_from_tendency(tendency, hitter_is_me=False, me_left_handed=False, opponent_left_handed=False)
+>>> tendency = {"family": "response", "condition": "lift|front_forehand|rear_backhand", "outcome": "drop cross", "k": 4, "n": 9,
+...             "rate": 4 / 9, "id": "response:lift|front_forehand|rear_backhand:drop cross", "label_source": "labels",
+...             "sets": [1, 2, 3], "text": "After a lift from the other player's front forehand to the rear backhand: drops cross 4 of 9 times."}
+>>> bullet = bullet_from_tendency(tendency, hitter_is_me=False, me_left_handed=False, opponent_left_handed=False, other_player_name="Me")
+>>> bullet["text"]
+'After a lift from my front forehand to the rear backhand: drops cross 4 of 9 times.'
+>>> bullet_from_tendency(tendency, hitter_is_me=True, me_left_handed=False, opponent_left_handed=False, other_player_name="Viktor AXELSEN")["text"]
+"After a lift from Viktor AXELSEN's front forehand to the rear backhand: drops cross 4 of 9 times."
 >>> bullet["evidence"], bullet["zone_rect"], sorted(bullet)
-('43 of 98', None, ['evidence', 'family', 'id', 'k', 'label_source', 'n', 'rate', 'sets', 'text', 'zone_rect'])
+('4 of 9', None, ['evidence', 'family', 'id', 'k', 'label_source', 'n', 'rate', 'reply_rects', 'sets', 'text', 'zone_rect'])
+>>> [tuple(round(value, 2) for value in rect) for rect in bullet["reply_rects"]]
+[(3.55, 4.47, 6.1, 6.7), (3.55, 11.17, 6.1, 13.4)]
 >>> [(group["family"], len(group["bullets"])) for group in family_groups([bullet, dict(bullet, family="zone_mix"), bullet])]
 [('zone_mix', 1), ('response', 2)]
 >>> default_me(["A", "B"]), default_me(["me", "opp"]), opponent_of("B", ["A", "B"])
@@ -108,8 +119,14 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 - `bullet_zone_rect(hitter_is_me, family, zone, me_left_handed, opponent_left_handed)`: the rectangle to
   shade with **me at the bottom**: the hitter's zone for `zone_mix`, the receiver's zone for
   `serve_placement`; `None` for other families and for `not_over_net`.
-- `court_svg(shaded_rect, label)`: the SVG string, `SVG_WIDTH_PX` (54) wide, with the court lines from
-  `analytics.spot_check.court_lines_m`, the net, and the shaded rectangle.
+- `reply_zone_rects(hitter_is_me, condition, me_left_handed, opponent_left_handed)`: for a reply, the other player's
+  hit zone (on their half) and the replier's landing zone (on the replier's half), both with **me at the bottom**: for
+  my replies the hit-from zone is on the far half and the landing zone on the near half; for the opponent's replies
+  it is the same picture seen from my end.
+- `rect_centre(rect)`, `rect_svg(rect, css_class)`, `arrowhead_points(from_point, to_point)`, `arrow_svg(from_rect, to_rect)`:
+  the arrow is a line between the two zone centres plus a small triangle (no shared SVG ids, so many diagrams can sit on one page).
+- `court_svg(shaded_rect, label, reply_rects=None)`: the SVG string, `SVG_WIDTH_PX` (54) wide, with the court lines from
+  `analytics.spot_check.court_lines_m`, the net, the shaded rectangle, or for replies the two zones and the arrow.
 
 ```python
 >>> from report.court_svg import *
@@ -121,11 +138,16 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 (3.55, 11.17, 6.1, 13.4)
 >>> tuple(round(value, 2) for value in bullet_zone_rect(False, "serve_placement", "front_middle"))
 (2.55, 4.47, 3.55, 6.7)
->>> bullet_zone_rect(True, "response", "drop") is None, bullet_zone_rect(True, "serve_placement", "not_over_net") is None
+>>> bullet_zone_rect(True, "response", "drop cross") is None, bullet_zone_rect(True, "serve_placement", "not_over_net") is None
 (True, True)
 >>> svg = court_svg(bullet_zone_rect(True, "zone_mix", "front_forehand"), "example")
 >>> svg.startswith('<svg class="court"'), svg.count("<line") , '<rect x="35.5" y="67" width="25.5" height="22.3" class="zone"/>' in svg
 (True, 13, True)
+>>> [tuple(round(value, 2) for value in rect) for rect in reply_zone_rects(True, "net|front_forehand|front_backhand")]
+[(0.0, 6.7, 2.55, 8.93), (0.0, 4.47, 2.55, 6.7)]
+>>> reply_svg = court_svg(None, "example", reply_zone_rects(True, "net|front_forehand|front_backhand"))
+>>> reply_svg.count('class="zone from"'), reply_svg.count('class="zone"'), reply_svg.count("<polygon"), "id=" in reply_svg
+(1, 1, 1, False)
 
 ```
 

@@ -20,12 +20,14 @@ from analytics.tendencies import (
     KNOWN_SWAPPED_RALLIES,
     UnknownMatchPlayerError,
     all_observations,
+    family_observations,
     load_tendency_shots,
     reliable_shots,
     tendencies_for,
     tendencies_from_observations,
     tendency_text,
 )
+from analytics.court import NOT_OVER_NET_ZONE
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_DATABASE_PATH = PROJECT_ROOT / "data" / "scout.duckdb"
@@ -68,7 +70,10 @@ def assert_plain_order(tendencies: list[dict]) -> None:
         if family == "zone_mix":
             assert conditions == [zone for zone in ZONE_NAMES if zone in conditions]
         if family == "response":
-            assert conditions == [group for group in GROUP_ORDER if group in conditions]
+            parts = [condition.split("|") for condition in conditions]
+            assert all(len(part) == 3 for part in parts)
+            keys = [(GROUP_ORDER.index(group), ZONE_NAMES.index(hit_zone), ZONE_NAMES.index(landing_zone)) for group, hit_zone, landing_zone in parts]
+            assert keys == sorted(keys) and len(set(keys)) == len(keys)
         for condition in conditions:
             choices = [(-tendency["k"], tendency["outcome"]) for tendency in family_entries if tendency["condition"] == condition]
             assert choices == sorted(choices)
@@ -78,7 +83,7 @@ def test_every_choice_is_kept_and_the_ks_of_a_situation_add_up_to_its_n():
     observations = pd.DataFrame(
         observation_rows("my_match", "me", 1, "rear_backhand", {"drop": 1})
         + observation_rows("my_match", "me", 1, "front_forehand", {"drop": 14, "clear": 3, "lift": 1})
-        + observation_rows("my_match", "me", 1, "net", {"lift": 7, "net": 1, "drive": 1}, family="response")
+        + observation_rows("my_match", "me", 1, "net|front_forehand|front_backhand", {"lift cross": 4, "lift straight": 3, "net straight": 1, "drive": 1}, family="response")
     )
     tendencies = tendencies_from_observations(observations, "my_match", "me")
     assert [(tendency["id"], tendency["k"], tendency["n"]) for tendency in tendencies] == [
@@ -86,12 +91,14 @@ def test_every_choice_is_kept_and_the_ks_of_a_situation_add_up_to_its_n():
         ("zone_mix:front_forehand:clear", 3, 18),
         ("zone_mix:front_forehand:lift", 1, 18),
         ("zone_mix:rear_backhand:drop", 1, 1),
-        ("response:net:lift", 7, 9),
-        ("response:net:drive", 1, 9),
-        ("response:net:net", 1, 9),
+        ("response:net|front_forehand|front_backhand:lift cross", 4, 9),
+        ("response:net|front_forehand|front_backhand:lift straight", 3, 9),
+        ("response:net|front_forehand|front_backhand:drive", 1, 9),
+        ("response:net|front_forehand|front_backhand:net straight", 1, 9),
     ]
     assert assert_choices_add_up_to_n(tendencies) == 3
-    assert tendencies[4]["text"] == "After a net shot: lifts 7 of 9 times."
+    assert tendencies[4]["text"] == "After a net shot from the other player's front forehand to the front backhand: lifts cross 4 of 9 times."
+    assert tendencies[6]["text"] == "After a net shot from the other player's front forehand to the front backhand: drives 1 of 9 times."
     assert tendencies[3]["text"] == "From the back court, backhand side: drops 1 of 1 times."
 
 
@@ -101,9 +108,11 @@ def test_order_is_family_then_situation_then_most_times_first_not_a_ranking():
         ("error_reason", "error", {"out": 2, "net": 2, "foul": 5}),
         ("winning_shot", "winner", {"smash": 1, "drop": 4}),
         ("serve_placement", "serve", {"front_middle": 3, "rear_backhand": 9}),
-        ("response", "drive", {"drive": 30}),
-        ("response", "serve", {"net": 1, "lift": 1}),
-        ("response", "clear", {"drop": 2, "clear": 6}),
+        ("response", "drive|front_forehand|mid_middle", {"drive cross": 30}),
+        ("response", "serve|mid_middle|rear_backhand", {"net straight": 1, "lift cross": 1}),
+        ("response", "serve|mid_middle|front_forehand", {"clear straight": 1}),
+        ("response", "clear|rear_backhand|front_forehand", {"drop cross": 2, "clear straight": 6}),
+        ("response", "clear|mid_forehand|front_forehand", {"smash straight": 1}),
         ("zone_mix", "rear_backhand", {"clear": 50}),
         ("zone_mix", "front_forehand", {"net": 1}),
         ("zone_mix", "mid_middle", {"drive": 2, "smash": 2}),
@@ -116,11 +125,13 @@ def test_order_is_family_then_situation_then_most_times_first_not_a_ranking():
         "zone_mix:mid_middle:drive",
         "zone_mix:mid_middle:smash",
         "zone_mix:rear_backhand:clear",
-        "response:serve:lift",
-        "response:serve:net",
-        "response:clear:clear",
-        "response:clear:drop",
-        "response:drive:drive",
+        "response:serve|mid_middle|front_forehand:clear straight",
+        "response:serve|mid_middle|rear_backhand:lift cross",
+        "response:serve|mid_middle|rear_backhand:net straight",
+        "response:clear|mid_forehand|front_forehand:smash straight",
+        "response:clear|rear_backhand|front_forehand:clear straight",
+        "response:clear|rear_backhand|front_forehand:drop cross",
+        "response:drive|front_forehand|mid_middle:drive cross",
         "serve_placement:serve:rear_backhand",
         "serve_placement:serve:front_middle",
         "winning_shot:winner:drop",
@@ -239,13 +250,16 @@ def test_one_shot_unknown_rallies_and_known_swapped_rallies_are_left_out(tmp_pat
 def test_own_rows_with_me_and_opp_end_to_end_with_no_shuttleset_rows(tmp_path):
     rows = []
     for rally in range(1, 11):
-        rows.append(shot_row("own", "my_game", 1, rally, 1, "opp", type_pred="serve", landing_zone="front_middle" if rally <= 9 else "rear_backhand"))
-        rows.append(shot_row("own", "my_game", 1, rally, 2, "me", type_pred="lift" if rally <= 7 else "net", hit_zone="front_forehand", getpoint_player="opp", lose_reason="out"))
+        rows.append(shot_row("own", "my_game", 1, rally, 1, "opp", type_pred="serve", hit_zone="mid_middle", landing_zone="front_middle" if rally <= 9 else "rear_backhand"))
+        rows.append(shot_row("own", "my_game", 1, rally, 2, "me", type_pred="lift" if rally <= 7 else "net", hit_zone="front_forehand", is_cross=rally % 2 == 0 if rally <= 8 else None,
+                             getpoint_player="opp", lose_reason="out"))
     database_path = write_shots_database(tmp_path / "scout.duckdb", rows)
     mine = tendencies_for("my_game", "me", database_path)
     assert [(tendency["id"], tendency["k"], tendency["n"]) for tendency in mine] == [
         ("zone_mix:front_forehand:lift", 7, 10), ("zone_mix:front_forehand:net", 3, 10),
-        ("response:serve:lift", 7, 10), ("response:serve:net", 3, 10),
+        ("response:serve|mid_middle|front_middle:lift straight", 4, 9), ("response:serve|mid_middle|front_middle:lift cross", 3, 9),
+        ("response:serve|mid_middle|front_middle:net", 1, 9), ("response:serve|mid_middle|front_middle:net cross", 1, 9),
+        ("response:serve|mid_middle|rear_backhand:net", 1, 1),
         ("error_shot:error:lift", 7, 10), ("error_shot:error:net", 3, 10),
         ("error_reason:error:out", 10, 10),
     ]
@@ -254,6 +268,41 @@ def test_own_rows_with_me_and_opp_end_to_end_with_no_shuttleset_rows(tmp_path):
     assert [tendency["text"] for tendency in theirs] == ["Serves short down the middle 9 of 10 times.", "Serves long to the receiver's backhand 1 of 10 times."]
     with pytest.raises(UnknownMatchPlayerError):
         tendencies_for("my_game", "nobody", database_path)
+
+
+def reply_shot_rows(previous: dict, reply: dict, rally: int) -> list[dict]:
+    return [
+        shot_row("shuttleset", "m", 1, rally, 1, "A", type_en="clear", type_group="clear", **previous),
+        shot_row("shuttleset", "m", 1, rally, 2, "B", type_en="drop", type_group="drop", hit_zone="rear_forehand", **reply),
+    ]
+
+
+def test_replies_count_only_previous_shots_by_the_other_player_with_a_type_and_both_zones_over_the_net(tmp_path):
+    counted = {"hit_zone": "rear_backhand", "landing_zone": "rear_forehand"}
+    rows = (
+        reply_shot_rows(counted, {"is_cross": True}, 1)
+        + reply_shot_rows(counted, {"is_cross": False}, 2)
+        + reply_shot_rows(counted, {}, 3)
+        + reply_shot_rows({"hit_zone": "rear_backhand", "landing_zone": NOT_OVER_NET_ZONE}, {"is_cross": True}, 4)
+        + reply_shot_rows({"hit_zone": None, "landing_zone": "rear_forehand"}, {"is_cross": True}, 5)
+        + reply_shot_rows({"hit_zone": "rear_backhand", "landing_zone": None}, {"is_cross": True}, 6)
+        + [shot_row("shuttleset", "m", 1, 7, 1, "A", type_en="unknown", type_group="unknown", hit_zone="rear_backhand", landing_zone="rear_forehand"),
+           shot_row("shuttleset", "m", 1, 7, 2, "B", type_en="drop", type_group="drop", hit_zone="rear_forehand", is_cross=True)]
+        + [shot_row("shuttleset", "m", 1, 8, 1, "B", type_en="clear", type_group="clear", hit_zone="rear_backhand", landing_zone="rear_forehand"),
+           shot_row("shuttleset", "m", 1, 8, 2, "B", type_en="drop", type_group="drop", hit_zone="rear_forehand", is_cross=True)]
+    )
+    connection = duckdb.connect(str(write_shots_database(tmp_path / "scout.duckdb", rows)), read_only=True)
+    observations = family_observations(reliable_shots(load_tendency_shots(connection)))
+    connection.close()
+    replies = observations[observations["family"] == "response"]
+    assert sorted(zip(replies["player"], replies["condition"], replies["outcome"])) == [
+        ("B", "clear|rear_backhand|rear_forehand", "drop"),
+        ("B", "clear|rear_backhand|rear_forehand", "drop cross"),
+        ("B", "clear|rear_backhand|rear_forehand", "drop straight"),
+    ]
+    tendencies = tendencies_from_observations(observations, "m", "B")
+    assert [(tendency["outcome"], tendency["k"], tendency["n"]) for tendency in tendencies if tendency["family"] == "response"] == [
+        ("drop", 1, 3), ("drop cross", 1, 3), ("drop straight", 1, 3)]
 
 
 def test_cli_prints_every_entry_and_exits_one_or_two_on_bad_input(tmp_path):
@@ -289,6 +338,12 @@ def test_every_real_player_keeps_every_choice_in_plain_order(real_entries):
         assert sum(tendency["k"] for tendency in tendencies) == len(player_observations)
         for tendency in tendencies:
             assert set(tendency) == TENDENCY_KEYS and not re.search(PROS_PATTERN, tendency["text"])
+            if tendency["family"] == "response":
+                group, hit_zone, landing_zone = tendency["condition"].split("|")
+                assert group in GROUP_ORDER and hit_zone in ZONE_NAMES and landing_zone in ZONE_NAMES
+                reply_group, _, direction = tendency["outcome"].partition(" ")
+                assert reply_group in GROUP_ORDER and direction in ("straight", "cross", "")
+                assert "from the other player's" in tendency["text"] and f"to the {landing_zone.replace('_', ' ')}:" in tendency["text"]
 
 
 def test_results_doc_numbers_equal_the_entries(real_entries):
@@ -308,13 +363,26 @@ def test_results_doc_numbers_equal_the_entries(real_entries):
     assert "Entries per family: " + ", ".join(f"{family} {families[family]:,}" for family in FAMILIES) + "." in doc
     shuttleset_sources = Counter(tendency["label_source"] for (source, _, _), tendencies in entries.items() if source == "shuttleset" for tendency in tendencies)
     own_sources = Counter(tendency["label_source"] for (source, _, _), tendencies in entries.items() if source == "own" for tendency in tendencies)
-    assert set(shuttleset_sources) == {"labels", "mixed"} and set(own_sources) == {"predictions"}
-    assert f"ShuttleSet {shuttleset_sources['labels']:,} `labels` and {shuttleset_sources['mixed']:,} `mixed`" in doc
-    assert f"my tracked match {own_sources['predictions']} `predictions`\n  and 0 `mixed`" in doc
-    after_net = [tendency for tendency in entries[("shuttleset", AXELSEN_GINTING, "B")] if tendency["family"] == "response" and tendency["condition"] == "net"]
-    for tendency in after_net:
+    assert set(own_sources) == {"predictions"}
+    label_source_line = re.sub(r"\s+", " ", doc.split("- Label source: ", 1)[1].split("\n\n", 1)[0])
+    for source_name, count in shuttleset_sources.items():
+        assert f"{count:,} `{source_name}`" in label_source_line.split("my tracked match")[0], (source_name, count, label_source_line)
+    assert f"my tracked match {own_sources['predictions']} `predictions` and 0 `mixed`" in label_source_line
+    ginting_replies = [tendency for tendency in entries[("shuttleset", AXELSEN_GINTING, "B")] if tendency["family"] == "response"]
+    most_frequent = max(ginting_replies, key=lambda tendency: tendency["n"])["condition"]
+    in_situation = [tendency for tendency in ginting_replies if tendency["condition"] == most_frequent]
+    for tendency in in_situation:
         assert f"- {tendency['text']}" in doc
-    assert " + ".join(str(tendency["k"]) for tendency in after_net) + f" = {after_net[0]['n']}." in doc
+    assert " + ".join(str(tendency["k"]) for tendency in in_situation) + f" = {in_situation[0]['n']}." in doc
+
+
+def test_results_doc_reply_counts_equal_the_observations(real_entries):
+    observations, _ = real_entries
+    doc = re.sub(r"\s+", " ", RESULTS_PATH.read_text())
+    replies = observations[observations["family"] == "response"]
+    directions = Counter(outcome.partition(" ")[2] for outcome in replies["outcome"])
+    assert f"{len(replies):,} counted replies, {directions['straight']:,} straight, {directions['cross']:,} cross and {directions['']} with no direction" in doc
+    assert all(condition.count("|") == 2 and not condition.endswith(NOT_OVER_NET_ZONE) for condition in replies["condition"])
 
 
 def test_validate_tendencies_is_gone_with_no_stale_references():
