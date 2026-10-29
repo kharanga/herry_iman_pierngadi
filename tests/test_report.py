@@ -7,7 +7,8 @@ import sys
 import tempfile
 import time
 import urllib.request
-from html import unescape
+from collections import Counter
+from html import escape, unescape
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -17,14 +18,15 @@ import pytest
 
 from analytics.build_shots import SCHEMA_PATH
 from analytics.court import COURT_LENGTH_M, COURT_WIDTH_M, NET_Y_M, ZONE_NAMES
-from analytics.tendencies import DATABASE_PATH, all_observations, tendencies_from_observations
+from analytics.tendencies import DATABASE_PATH, FAMILIES, all_observations, tendencies_from_observations
 from report.build import (
-    REPORT_BULLET_COUNT,
+    FAMILY_HEADINGS,
     UnknownMatchError,
     UnknownPlayerError,
     build_report,
     bullet_from_tendency,
     default_me,
+    family_groups,
     opponent_of,
     rewrite_bullets,
 )
@@ -37,8 +39,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_DATABASE_PATH = PROJECT_ROOT / "data" / "scout.duckdb"
 RESULTS_PATH = PROJECT_ROOT / "docs" / "results" / "report.md"
 AXELSEN_GINTING = "Viktor_Axelsen_Anthony_Sinisuka_Ginting_YONEX_Thailand_Open_2021_SemiFinals"
+TRACKED_MATCH_ID = "match_tracked"
 TASK_ID_PATTERN = r"\b(ANA|VIS|INT)-\d+\b"
 EVIDENCE_PATTERN = r"\d+ of \d+"
+PROS_PATTERN = r"(?i)\bpros?\b|professional|more than|weaker evidence|class=\"hint\""
+BULLET_KEYS = {"id", "family", "text", "evidence", "k", "n", "rate", "label_source", "zone_rect", "sets"}
+SECTION_KEYS = {"player", "name", "bullets", "groups", "sets"}
+EMPTY_SECTION_TEXT = "No shots counted for this player yet."
 VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1">'
 HOSTILE_MATCH_ID = 'club<game>&"1'
 HOSTILE_WINNER = "Ann <A> & Co"
@@ -103,9 +110,12 @@ def own_rally(match_id: str, rally: int) -> list[dict]:
 
 
 def labelled_rally(match_id: str, rally: int) -> list[dict]:
+    reply_group = "clear" if rally == 20 else "drop"
+    winner = "B" if rally % 5 == 0 else "A"
     return [
-        shot_row("shuttleset", match_id, rally, 1, "A", type_en="short service", type_group="serve", landing_zone="front_forehand"),
-        shot_row("shuttleset", match_id, rally, 2, "B", type_en="drop", type_group="drop", hit_zone="rear_forehand", getpoint_player="A", lose_reason="out"),
+        shot_row("shuttleset", match_id, rally, 1, "A", type_en="short service", type_group="serve", landing_zone="rear_backhand" if rally % 4 == 0 else "front_forehand"),
+        shot_row("shuttleset", match_id, rally, 2, "B", type_en=reply_group, type_group=reply_group, hit_zone="rear_forehand", getpoint_player=winner,
+                 lose_reason="out" if winner == "A" else "opponent winner"),
     ]
 
 
@@ -142,8 +152,40 @@ def labelled_database():
         yield write_database(Path(temp_dir) / "scout.duckdb", rows, matches)
 
 
+def section_pages(page: str) -> list[str]:
+    return re.findall(r"<section>.*?</section>", page)
+
+
+def group_parts(section_page: str) -> list[tuple[str, list[str]]]:
+    return [(unescape(heading), re.findall(r"<li>.*?</li>", body)) for heading, body in re.findall(r'<h3>(.*?)</h3><ol class="bullets">(.*?)</ol>', section_page)]
+
+
+def assert_section_shows_every_engine_entry_grouped(section: dict, section_page: str, engine: list[dict]) -> None:
+    assert set(section) == SECTION_KEYS
+    assert len(section["bullets"]) == len(engine)
+    for bullet, tendency in zip(section["bullets"], engine, strict=True):
+        assert set(bullet) == BULLET_KEYS
+        assert (bullet["id"], bullet["family"], bullet["k"], bullet["n"], bullet["rate"], bullet["text"], bullet["label_source"], bullet["sets"]) == (
+            tendency["id"], tendency["family"], tendency["k"], tendency["n"], tendency["rate"], tendency["text"], tendency["label_source"], tendency["sets"])
+        assert bullet["evidence"] == f"{tendency['k']} of {tendency['n']}"
+    present = [family for family in FAMILIES if any(tendency["family"] == family for tendency in engine)]
+    assert [group["family"] for group in section["groups"]] == present
+    assert [group["heading"] for group in section["groups"]] == [FAMILY_HEADINGS[family] for family in present]
+    assert [bullet for group in section["groups"] for bullet in group["bullets"]] == section["bullets"]
+    parts = group_parts(section_page)
+    assert [heading for heading, _ in parts] == [group["heading"] for group in section["groups"]]
+    assert section_page.count("<h3>") == len(parts) and section_page.count("<li>") == len(engine)
+    for (_, items), group in zip(parts, section["groups"], strict=True):
+        assert len(items) == len(group["bullets"])
+        for item, bullet in zip(items, group["bullets"], strict=True):
+            assert f'<p class="claim">{escape(bullet["text"])}</p>' in item
+            assert f'<span class="evidence">{bullet["evidence"]}</span> for ' in item
+            assert ('<svg class="court"' in item) == (bullet["zone_rect"] is not None)
+            assert ("predicted shot types" in item) == (bullet["label_source"] != "labels")
+
+
 def test_rewrite_bullets_is_the_identity_in_version_one():
-    bullets = [{"text": "a", "hint": "b", "evidence": "5 of 9", "k": 5, "n": 9}]
+    bullets = [{"text": "a", "evidence": "5 of 9", "k": 5, "n": 9}]
     assert rewrite_bullets(bullets) is bullets
     assert rewrite_bullets([]) == []
 
@@ -163,51 +205,72 @@ def test_own_footage_only_database_without_a_matches_table(own_only_database):
     assert (report["me"]["player"], report["me"]["name"]) == ("me", "Me")
     assert (report["opponent"]["player"], report["opponent"]["name"]) == ("opp", "Opponent")
     bullets = report["opponent"]["bullets"] + report["me"]["bullets"]
-    assert bullets and {bullet["label_source"] for bullet in bullets} == {"predictions"}
-    assert len(report["opponent"]["bullets"]) == 1 and len(report["me"]["bullets"]) == 3
+    assert {bullet["label_source"] for bullet in bullets if bullet["family"] != "error_reason"} == {"predictions"}
+    assert [bullet["label_source"] for bullet in bullets if bullet["family"] == "error_reason"] == ["labels"]
+    assert [bullet["id"] for bullet in report["opponent"]["bullets"]] == ["serve_placement:serve:front_forehand"]
+    assert [bullet["id"] for bullet in report["me"]["bullets"]] == ["zone_mix:rear_forehand:drop", "response:serve:drop", "error_shot:error:drop", "error_reason:error:out"]
     page = render_page(report)
-    assert page.count("predicted shot types") == len(bullets)
-    assert "predicted by the classifier" in page
+    assert page.count("predicted shot types</span>") == len(bullets) - 1
+    assert "use the classifier's predicted types; the others use labelled types" in page
     assert build_report(HOSTILE_MATCH_ID, me="opp", database_path=own_only_database)["opponent"]["player"] == "me"
 
 
-def test_page_bullets_equal_the_engine_top_three_and_carry_their_evidence(labelled_database):
+def test_page_shows_every_engine_entry_for_both_players_grouped_by_family(labelled_database):
     observations = all_observations(labelled_database)
     for me in ("A", "B"):
         report = build_report(HOSTILE_MATCH_ID, me=me, database_path=labelled_database)
         page = render_page(report)
-        for section in (report["opponent"], report["me"]):
-            engine = tendencies_from_observations(observations, HOSTILE_MATCH_ID, section["player"])
-            assert section["tendency_count"] == len(engine)
-            assert len(section["bullets"]) == min(REPORT_BULLET_COUNT, len(engine))
-            for bullet, tendency in zip(section["bullets"], engine, strict=True):
-                assert (bullet["id"], bullet["k"], bullet["n"], bullet["rate"], bullet["pros_rate"], bullet["text"], bullet["label_source"]) == (
-                    tendency["id"], tendency["k"], tendency["n"], tendency["rate"], tendency["reference_rate"], tendency["text"], tendency["label_source"])
-                assert bullet["evidence"] == f"{tendency['k']} of {tendency['n']}" and tendency["n"] >= 5
-                assert f'<span class="evidence">{bullet["evidence"]}</span>' in page
-                pros_in_text = re.search(r"\(pros: (\d+%)\)", tendency["text"]).group(1)
-                assert f" · pros {pros_in_text}<" in page
-
-
-def test_fewer_than_three_tendencies_shows_fewer_bullets_and_none_shows_the_empty_text(labelled_database):
+        opponent_page, me_page = section_pages(page)
+        for section, section_page in ((report["opponent"], opponent_page), (report["me"], me_page)):
+            assert_section_shows_every_engine_entry_grouped(section, section_page, tendencies_from_observations(observations, HOSTILE_MATCH_ID, section["player"]))
     report = build_report(HOSTILE_MATCH_ID, me="A", database_path=labelled_database)
-    assert len(report["me"]["bullets"]) == 1 and report["me"]["tendency_count"] == 1
-    page = render_page(report)
-    assert page.count("<h2>") == 2 and page.count("<li>") == 4 and "No clear tendency yet" not in page
-    report["me"]["bullets"] = []
-    page = render_page(report)
-    assert page.count("<h2>") == 2 and page.count("<li>") == 3 and "No clear tendency yet" in page
+    assert [(bullet["id"], bullet["evidence"]) for bullet in report["opponent"]["bullets"]] == [
+        ("zone_mix:rear_forehand:drop", "19 of 20"), ("zone_mix:rear_forehand:clear", "1 of 20"),
+        ("response:serve:drop", "19 of 20"), ("response:serve:clear", "1 of 20"),
+        ("winning_shot:winner:drop", "3 of 4"), ("winning_shot:winner:clear", "1 of 4"),
+        ("error_shot:error:drop", "16 of 16"), ("error_reason:error:out", "16 of 16"),
+    ]
+    assert [(bullet["id"], bullet["evidence"]) for bullet in report["me"]["bullets"]] == [
+        ("serve_placement:serve:front_forehand", "15 of 20"), ("serve_placement:serve:rear_backhand", "5 of 20")]
+    assert [group["heading"] for group in report["opponent"]["groups"]] == [
+        "Shots by court zone", "Replies to the other player's shot", "Winning shots", "Shots that ended in an error", "How errors happened"]
+    assert [group["heading"] for group in report["me"]["groups"]] == ["Serves"]
 
 
-def test_weaker_evidence_tag_only_on_error_families(labelled_database):
-    report = build_report(HOSTILE_MATCH_ID, me="B", database_path=labelled_database)
-    bullets = report["opponent"]["bullets"] + report["me"]["bullets"]
-    assert {bullet["family"] for bullet in bullets} >= {"error_shot", "zone_mix"}
-    for bullet in bullets:
-        assert bullet["weaker_evidence"] == (bullet["family"] in ("error_shot", "error_reason"))
+def test_family_groups_follow_the_family_order_and_skip_empty_families():
+    bullets = [{"family": family, "id": index} for index, family in enumerate(["error_reason", "zone_mix", "serve_placement", "zone_mix"])]
+    assert [(group["family"], group["heading"], [bullet["id"] for bullet in group["bullets"]]) for group in family_groups(bullets)] == [
+        ("zone_mix", "Shots by court zone", [1, 3]), ("serve_placement", "Serves", [2]), ("error_reason", "How errors happened", [0])]
+    assert family_groups([]) == []
+    assert set(FAMILY_HEADINGS) == set(FAMILIES)
+
+
+def test_a_player_with_no_counted_shots_shows_the_empty_text(labelled_database):
+    report = build_report(HOSTILE_MATCH_ID, me="A", database_path=labelled_database, sets=(2,))
+    assert report["opponent"]["bullets"] == [] and report["me"]["groups"] == []
     page = render_page(report)
-    assert page.count("weaker evidence</span>") == sum(bullet["weaker_evidence"] for bullet in bullets)
+    assert page.count("<h2>") == 2 and page.count("<li>") == 0 and page.count(EMPTY_SECTION_TEXT) == 2 and "<h3>" not in page
+    report = build_report(HOSTILE_MATCH_ID, me="A", database_path=labelled_database)
+    report["me"]["bullets"], report["me"]["groups"] = [], []
+    page = render_page(report)
+    assert page.count(EMPTY_SECTION_TEXT) == 1 and page.count("<li>") == 8 and page.count("<h3>") == 5
+
+
+def test_no_pros_comparison_hint_or_weaker_evidence_remains(labelled_database, own_only_database):
+    for database, me in ((labelled_database, "A"), (labelled_database, "B"), (own_only_database, None)):
+        report = build_report(HOSTILE_MATCH_ID, me=me, database_path=database)
+        page = render_page(report)
+        assert not re.search(PROS_PATTERN, page) and "weak" not in page and "hint" not in page
+        assert "tendency_count" not in report["opponent"] and "tendency_count" not in report["me"]
+        for bullet in report["opponent"]["bullets"] + report["me"]["bullets"]:
+            assert not {"pros_rate", "hint", "weaker_evidence", "reference_rate", "score"} & set(bullet)
+    assert not re.search(r"(?i)pros|weak|hint", PAGE_CSS)
+    build_source = (PROJECT_ROOT / "report" / "build.py").read_text() + (PROJECT_ROOT / "report" / "page.py").read_text()
+    for removed in ("REPORT_BULLET_COUNT", "WEAKER_EVIDENCE_FAMILIES", "opponent_hint", "me_hint", "pros_rate", "weaker_evidence", "tendency_count", "bullet_count", "reference_rate"):
+        assert removed not in build_source, removed
+    page = render_page(build_report(HOSTILE_MATCH_ID, me="B", database_path=labelled_database))
     assert page.count("predicted shot types") == 0 and "labelled types from the match data" in page
+    assert "Every choice is listed, however rare, with no comparison and no ranking." in page
 
 
 def test_hostile_names_and_ids_are_escaped_and_the_page_stays_well_formed(labelled_database, own_only_database):
@@ -220,7 +283,7 @@ def test_hostile_names_and_ids_are_escaped_and_the_page_stays_well_formed(labell
     labelled_text = "".join(parsed(labelled).texts)
     assert HOSTILE_WINNER in labelled_text and HOSTILE_LOSER in labelled_text and HOSTILE_TOURNAMENT in labelled_text
     assert HOSTILE_WINNER not in labelled and HOSTILE_TOURNAMENT not in labelled
-    assert f"<title>{HOSTILE_LOSER} scouting report" not in labelled and "Bob &quot;B&quot; scouting report</title>" in labelled
+    assert f"<title>{HOSTILE_LOSER}: shot counts" not in labelled and "<title>Bob &quot;B&quot;: shot counts</title>" in labelled
     assert HOSTILE_MATCH_ID in "".join(parsed(own).texts) and HOSTILE_MATCH_ID not in own
 
 
@@ -300,12 +363,15 @@ def test_svg_shades_the_rectangle_with_my_baseline_at_the_bottom():
 
 
 def test_bullet_from_tendency_copies_the_numbers_unchanged():
-    tendency = {"id": "zone_mix:front_backhand:lift", "family": "zone_mix", "condition": "front_backhand", "outcome": "lift", "k": 42, "n": 71,
-                "rate": 42 / 71, "reference_rate": 0.3712, "label_source": "mixed", "sets": [1, 2], "text": "From the front court, backhand side: lifts 42 of 71 times (pros: 37%)."}
+    tendency = {"id": "zone_mix:front_backhand:lift", "family": "zone_mix", "condition": "front_backhand", "outcome": "lift", "k": 42, "n": 71, "match_id": "m", "player": "A",
+                "rate": 42 / 71, "label_source": "mixed", "sets": [1, 2], "text": "From the front court, backhand side: lifts 42 of 71 times."}
     bullet = bullet_from_tendency(tendency, True, False, False)
-    assert (bullet["k"], bullet["n"], bullet["rate"], bullet["pros_rate"], bullet["evidence"]) == (42, 71, 42 / 71, 0.3712, "42 of 71")
-    assert bullet["zone_rect"] == bullet_zone_rect(True, "zone_mix", "front_backhand") and bullet["weaker_evidence"] is False
-    assert "you play lifts" in bullet["hint"] and "42" not in bullet["hint"]
+    assert set(bullet) == BULLET_KEYS
+    assert (bullet["k"], bullet["n"], bullet["rate"], bullet["evidence"], bullet["text"], bullet["sets"]) == (42, 71, 42 / 71, "42 of 71", tendency["text"], [1, 2])
+    assert bullet["zone_rect"] == bullet_zone_rect(True, "zone_mix", "front_backhand")
+    serve = dict(tendency, family="serve_placement", condition="serve", outcome="rear_backhand")
+    assert bullet_from_tendency(serve, False, False, False)["zone_rect"] == bullet_zone_rect(False, "serve_placement", "rear_backhand")
+    assert bullet_from_tendency(dict(tendency, family="response", condition="net"), True, False, False)["zone_rect"] is None
 
 
 def free_port() -> int:
@@ -379,16 +445,14 @@ def test_server_serves_only_a_copy_of_the_report_and_removes_it_on_ctrl_c(labell
     assert f"Report written: {output}" in stdout and re.search(rf"Open on your phone: http://[\d.]+:{port}/", stdout)
 
 
-def test_tag_font_size_and_bullet_word_count_match_the_results_doc(real_pages):
+def test_text_sizes_match_the_results_doc():
     doc = RESULTS_PATH.read_text()
     tag_rule = re.search(r"\.tag \{[^}]*font-size: (\d+)px", PAGE_CSS).group(1)
     footer_rule = re.search(r"footer \{[^}]*font-size: (\d+)px", PAGE_CSS).group(1)
-    assert tag_rule == footer_rule and f"smallest text (the tags and the footer) {tag_rule} px" in doc
-    _, page = real_pages[(AXELSEN_GINTING, "A")]
-    sentence_words = sum(len(unescape(text).split()) for text in re.findall(r'<p class="claim">(.*?)</p>', page))
-    reading_words = sum(len(unescape(text).split()) for text in re.findall(r'<p class="hint">(.*?)</p>', page))
-    assert f"{sentence_words + reading_words} words of bullets ({sentence_words} in the 6 bold sentences" in doc
-    assert f"{reading_words} in the 6 reading lines" in doc
+    body_rule = re.search(r"body \{ font: (\d+)px", PAGE_CSS).group(1)
+    smallest = min(int(size) for size in re.findall(r"font-size: (\d+)px", PAGE_CSS))
+    assert int(tag_rule) == int(footer_rule) == smallest
+    assert f"Bullet text is {body_rule} px,\nthe smallest text (the tag and the footer) {tag_rule} px" in doc
 
 
 def test_serve_without_arguments_exits_two():
@@ -444,54 +508,87 @@ def real_pages():
     return {key: (report, render_page(report)) for key, (report) in reports.items()}
 
 
-def test_every_shuttleset_match_builds_with_at_most_three_evidenced_bullets_per_section(real_pages):
+@pytest.fixture(scope="module")
+def tracked_page():
+    if not REAL_DATABASE_PATH.exists():
+        pytest.skip("data/scout.duckdb is not built")
+    connection = duckdb.connect(str(REAL_DATABASE_PATH), read_only=True)
+    has_tracked = connection.execute("SELECT COUNT(*) FROM shots WHERE shots.match_id = 'match_tracked'").fetchone()[0] > 0
+    connection.close()
+    if not has_tracked:
+        pytest.skip("run vision.features on the tracked match first")
+    report = build_report(TRACKED_MATCH_ID, me="me")
+    return report, render_page(report)
+
+
+def page_bullets(report: dict) -> list[dict]:
+    return report["opponent"]["bullets"] + report["me"]["bullets"]
+
+
+def assert_page_shows_every_entry(report: dict, page: str, observations: pd.DataFrame) -> None:
+    assert page.count("<h2>") == 2 and VIEWPORT_META in page and "<script" not in page and not re.search(PROS_PATTERN, page)
+    for section, section_page in zip((report["opponent"], report["me"]), section_pages(page), strict=True):
+        assert_section_shows_every_engine_entry_grouped(section, section_page, tendencies_from_observations(observations, report["match_id"], section["player"]))
+    for bullet in page_bullets(report):
+        assert re.fullmatch(EVIDENCE_PATTERN, bullet["evidence"])
+        if bullet["zone_rect"] is not None:
+            x0, y0, x1, y1 = bullet["zone_rect"]
+            assert 0 <= x0 < x1 <= COURT_WIDTH_M + 1e-9 and 0 <= y0 < y1 <= COURT_LENGTH_M + 1e-9
+    assert page.count('<svg class="court"') == sum(bullet["zone_rect"] is not None for bullet in page_bullets(report))
+
+
+def test_every_shuttleset_page_shows_every_entry_of_both_players_grouped_by_family(real_pages):
     observations = all_observations(DATABASE_PATH)
     assert len(real_pages) == 88
-    bullet_count = 0
-    for (match_id, me), (report, page) in real_pages.items():
-        assert page.count("<h2>") == 2 and VIEWPORT_META in page and "<script" not in page
-        for section in (report["opponent"], report["me"]):
-            engine = tendencies_from_observations(observations, match_id, section["player"])
-            assert 0 < len(section["bullets"]) <= 3 and section["tendency_count"] == len(engine)
-            for bullet, tendency in zip(section["bullets"], engine, strict=False):
-                bullet_count += 1
-                assert (bullet["id"], bullet["k"], bullet["n"], bullet["rate"], bullet["pros_rate"]) == (tendency["id"], tendency["k"], tendency["n"], tendency["rate"], tendency["reference_rate"])
-                assert re.fullmatch(EVIDENCE_PATTERN, bullet["evidence"]) and bullet["n"] >= 5
-                assert f'<span class="evidence">{bullet["evidence"]}</span>' in page
-                assert f" · pros {re.search(r'\(pros: (\d+%)\)', tendency['text']).group(1)}<" in page
-                if bullet["zone_rect"] is not None:
-                    x0, y0, x1, y1 = bullet["zone_rect"]
-                    assert 0 <= x0 < x1 <= COURT_WIDTH_M + 1e-9 and 0 <= y0 < y1 <= COURT_LENGTH_M + 1e-9
-    assert bullet_count == 528
+    for report, page in real_pages.values():
+        assert_page_shows_every_entry(report, page, observations)
+        assert min(entry["n"] for entry in page_bullets(report)) >= 1
+    assert sum(bullet["k"] == 1 for report, _ in real_pages.values() for bullet in page_bullets(report)) > 0
 
 
-def test_results_doc_counts_match_the_generated_pages(real_pages):
+def test_tracked_match_page_shows_every_entry_and_matches_the_shipped_page(tracked_page):
+    report, page = tracked_page
+    assert_page_shows_every_entry(report, page, all_observations(DATABASE_PATH))
+    assert (len(report["opponent"]["bullets"]), len(report["me"]["bullets"])) == (39, 40)
+    assert {bullet["label_source"] for bullet in page_bullets(report)} == {"predictions"}
+    assert page.count("predicted shot types</span>") == 79 and "<title>Opponent: shot counts</title>" in page
+    reference = PROJECT_ROOT / "data" / "reports" / TRACKED_MATCH_ID / "index.html"
+    if reference.exists():
+        assert reference.read_text(encoding="utf-8") == page
+
+
+def test_results_doc_counts_match_the_generated_pages(real_pages, tracked_page):
     doc = RESULTS_PATH.read_text()
-    bullets = [bullet for report, _ in real_pages.values() for bullet in report["opponent"]["bullets"] + report["me"]["bullets"]]
-    families = pd.Series([bullet["family"] for bullet in bullets]).value_counts()
-    sizes = [len(page.encode()) for _, page in real_pages.values()]
-    assert "88 pages built" in doc and f"{len(bullets)} bullets over {len(real_pages) * 2} sections" in doc
-    assert f"{sum(bullet['zone_rect'] is not None for bullet in bullets)} bullets (zone and serve placement)" in doc
-    assert ", ".join(f"{family} {families[family]}" for family in ("response", "zone_mix", "serve_placement", "winning_shot", "error_shot", "error_reason")) in doc
-    sources = pd.Series([bullet["label_source"] for bullet in bullets]).value_counts()
-    assert f"{sources['labels']} bullets from labels, {sources['mixed']} `mixed`" in doc and "predictions" not in sources
-    assert f"{min(sizes) / 1000:.1f} to {max(sizes) / 1000:.1f} KB" in doc
+    tracked_report, tracked_html = tracked_page
+    reports = [report for report, _ in real_pages.values()] + [tracked_report]
+    pages = [page for _, page in real_pages.values()] + [tracked_html]
+    bullets = [bullet for report in reports for bullet in page_bullets(report)]
+    per_page = sorted(len(page_bullets(report)) for report, _ in real_pages.values())
+    sizes = sorted(len(page.encode()) for _, page in real_pages.values())
+    assert "88 pages built (44 matches x me = A and me = B) without error" in doc
+    assert f"{per_page[0]} to {per_page[-1]} bullets a page (median {(per_page[43] + per_page[44]) / 2:g})" in doc
+    without_count = sum(f'<span class="evidence">{bullet["evidence"]}</span>' not in page for report, page in zip(reports, pages) for bullet in page_bullets(report))
+    assert f"all {len(bullets):,} bullets (ShuttleSet pages + `match_tracked`)" in doc and f"in the HTML ({without_count} without)" in doc and without_count == 0
+    mentioning = sum(bool(re.search(r"(?i)\bpros?\b", page)) for page in pages)
+    assert f"{mentioning} of {len(pages)} pages mention pros ({mentioning} found)" in doc and mentioning == 0
+    assert f"{sum(bullet['zone_rect'] is not None for bullet in bullets):,} bullets (zone and serve placement) get one" in doc
+    median_size = (sizes[43] + sizes[44]) / 2
+    assert f"ShuttleSet {sizes[0] / 1000:.0f} to {sizes[-1] / 1000:.0f} KB (median {median_size / 1000:.0f} KB)" in doc
+    assert f"ShuttleSet pages are long ({per_page[-1]} bullets at most)" in doc
+    opponent, me = tracked_report["opponent"], tracked_report["me"]
+    assert f"For `match_tracked`: {len(opponent['bullets'])} bullets for the opponent and {len(me['bullets'])} for me" in doc
+    assert ", ".join(group["heading"] for group in opponent["groups"]) + " (opponent) and " + ", ".join(group["heading"] for group in me["groups"]) + " (me)" in doc
+    sources = Counter(bullet["label_source"] for bullet in page_bullets(tracked_report))
+    assert f"{len(tracked_html.encode()) / 1000:.1f} KB of HTML; {sources['predictions']} bullets from predictions only, {sources['mixed']} mixed" in doc
+    first = opponent["bullets"][0]
+    assert f'("{first["text"]}")' in doc and f"(`{first['evidence']} for {opponent['name']}`)" in doc
+    assert ", ".join(f'"{heading}"' for heading in FAMILY_HEADINGS.values()) in re.sub(r"\s+", " ", doc)
 
 
 def test_results_doc_axelsen_ginting_page_matches(real_pages):
-    doc = RESULTS_PATH.read_text()
     report, page = real_pages[(AXELSEN_GINTING, "A")]
-    assert report["opponent"]["name"] == "Anthony Sinisuka GINTING" and "<title>Anthony Sinisuka GINTING scouting report</title>" in page
-    claims = [re.sub(r"\s+", " ", claim) for claim in re.findall(r'<p class="claim">(.*?)</p>', page)]
-    assert claims[:3] == [
-        "From the mid court, backhand side: drives 25 of 77 times (pros: 18%).",
-        "Serves mid-depth down the middle 3 of 12 times (pros: 4%).",
-        "From the front court, forehand side: drives 19 of 63 times (pros: 16%).",
-    ]
-    assert [bullet["evidence"] for bullet in report["me"]["bullets"]] == ["21 of 28", "88 of 148", "42 of 71"]
-    assert report["me"]["bullets"][0]["weaker_evidence"] and f"{len(page.encode()):,} bytes" in doc
-    for claim in claims[:3]:
-        assert claim[:-1] in doc
+    assert report["opponent"]["name"] == "Anthony Sinisuka GINTING" and "<title>Anthony Sinisuka GINTING: shot counts</title>" in page
+    assert [group["heading"] for group in report["opponent"]["groups"]] == list(FAMILY_HEADINGS.values())
     reference = PROJECT_ROOT / "data" / "reports" / AXELSEN_GINTING / "index.html"
     if reference.exists():
         assert reference.read_text(encoding="utf-8") == page

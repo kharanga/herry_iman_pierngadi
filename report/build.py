@@ -3,21 +3,18 @@ from pathlib import Path
 import duckdb
 
 from analytics.build_shots import LEFT_HANDED_PLAYER_NAMES
-from analytics.tendencies import (
-    DATABASE_PATH,
-    ERROR_REASON_PHRASES,
-    GROUP_PHRASES,
-    all_observations,
-    serve_landing_phrase,
-    tendencies_from_observations,
-    zone_phrase,
-)
-from analytics.court import NOT_OVER_NET_ZONE
+from analytics.tendencies import DATABASE_PATH, FAMILIES, all_observations, tendencies_from_observations
 from report.court_svg import bullet_zone_rect
 
-REPORT_BULLET_COUNT = 3
-WEAKER_EVIDENCE_FAMILIES = ("error_shot", "error_reason")
 OWN_PLAYER_NAMES = {"me": "Me", "opp": "Opponent"}
+FAMILY_HEADINGS = {
+    "zone_mix": "Shots by court zone",
+    "response": "Replies to the other player's shot",
+    "serve_placement": "Serves",
+    "winning_shot": "Winning shots",
+    "error_shot": "Shots that ended in an error",
+    "error_reason": "How errors happened",
+}
 
 MATCH_SQL = """
 SELECT matches.tournament, matches.round, matches.year, matches.winner, matches.loser
@@ -90,54 +87,17 @@ def evidence_text(tendency: dict) -> str:
     return f"{tendency['k']} of {tendency['n']}"
 
 
-def opponent_hint(tendency: dict) -> str:
-    family, condition, outcome = tendency["family"], tendency["condition"], tendency["outcome"]
-    if family == "zone_mix":
-        return f"From their {zone_phrase(condition)}, expect {GROUP_PHRASES[outcome][1]}."
-    if family == "response":
-        return f"After your {GROUP_PHRASES[condition][1]}, expect {GROUP_PHRASES[outcome][1]}."
-    if family == "serve_placement" and outcome == NOT_OVER_NET_ZONE:
-        return "Their serves go into the net more often than pros': free points now and then."
-    if family == "serve_placement":
-        return f"Be ready for a serve {serve_landing_phrase(outcome).replace("the receiver's", 'your')}."
-    if family == "winning_shot":
-        return f"Their winners are mostly {GROUP_PHRASES[outcome][1]}."
-    if family == "error_shot":
-        return f"Points come your way when they play {GROUP_PHRASES[outcome][1]}."
-    return f"Their errors tend to be {ERROR_REASON_PHRASES.get(outcome, outcome)}."
-
-
-def me_hint(tendency: dict) -> str:
-    family, condition, outcome = tendency["family"], tendency["condition"], tendency["outcome"]
-    if family == "zone_mix":
-        return f"From your {zone_phrase(condition)}, you play {GROUP_PHRASES[outcome][1]} more than pros do: an opponent can read it."
-    if family == "response":
-        return f"After their {GROUP_PHRASES[condition][1]}, you play {GROUP_PHRASES[outcome][1]} more than pros do: vary it."
-    if family == "serve_placement" and outcome == NOT_OVER_NET_ZONE:
-        return "Your serves go into the net more often than pros': these are free points for them."
-    if family == "serve_placement":
-        return f"Your serves go {serve_landing_phrase(outcome).replace("the receiver's", 'their')} more than pros': vary them."
-    if family == "winning_shot":
-        return f"Your winners come from {GROUP_PHRASES[outcome][1]}: keep creating those chances."
-    if family == "error_shot":
-        return f"Your errors come from {GROUP_PHRASES[outcome][1]}: these are costing points."
-    return f"Your errors tend to be {ERROR_REASON_PHRASES.get(outcome, outcome)} more than pros'."
-
-
 def bullet_from_tendency(tendency: dict, hitter_is_me: bool, me_left_handed: bool, opponent_left_handed: bool) -> dict:
     zone = tendency["condition"] if tendency["family"] == "zone_mix" else tendency["outcome"]
     return {
         "id": tendency["id"],
         "family": tendency["family"],
         "text": tendency["text"],
-        "hint": me_hint(tendency) if hitter_is_me else opponent_hint(tendency),
         "evidence": evidence_text(tendency),
         "k": tendency["k"],
         "n": tendency["n"],
         "rate": tendency["rate"],
-        "pros_rate": tendency["reference_rate"],
         "label_source": tendency["label_source"],
-        "weaker_evidence": tendency["family"] in WEAKER_EVIDENCE_FAMILIES,
         "zone_rect": bullet_zone_rect(hitter_is_me, tendency["family"], zone, me_left_handed, opponent_left_handed),
         "sets": tendency["sets"],
     }
@@ -147,19 +107,24 @@ def rewrite_bullets(bullets: list[dict]) -> list[dict]:
     return bullets
 
 
-def player_section(
-    observations, match_id: str, player: str, name: str, hitter_is_me: bool, left_handed: dict[str, bool], sets, bullet_count: int
-) -> dict:
-    tendencies = tendencies_from_observations(observations, match_id, player, sets)
-    bullets = [
-        bullet_from_tendency(tendency, hitter_is_me, left_handed["me"], left_handed["opponent"])
-        for tendency in tendencies[:bullet_count]
+def family_groups(bullets: list[dict]) -> list[dict]:
+    return [
+        {"family": family, "heading": FAMILY_HEADINGS[family], "bullets": [bullet for bullet in bullets if bullet["family"] == family]}
+        for family in FAMILIES
+        if any(bullet["family"] == family for bullet in bullets)
     ]
+
+
+def player_section(observations, match_id: str, player: str, name: str, hitter_is_me: bool, left_handed: dict[str, bool], sets) -> dict:
+    tendencies = tendencies_from_observations(observations, match_id, player, sets)
+    bullets = rewrite_bullets(
+        [bullet_from_tendency(tendency, hitter_is_me, left_handed["me"], left_handed["opponent"]) for tendency in tendencies]
+    )
     return {
         "player": player,
         "name": name,
-        "bullets": rewrite_bullets(bullets),
-        "tendency_count": len(tendencies),
+        "bullets": bullets,
+        "groups": family_groups(bullets),
         "sets": sorted({set_no for tendency in tendencies for set_no in tendency["sets"]}),
     }
 
@@ -169,7 +134,6 @@ def build_report(
     me: str | None = None,
     database_path: Path = DATABASE_PATH,
     sets: tuple[int, ...] | None = None,
-    bullet_count: int = REPORT_BULLET_COUNT,
     left_handed_names: frozenset[str] = LEFT_HANDED_PLAYER_NAMES,
 ) -> dict:
     connection = duckdb.connect(str(database_path), read_only=True)
@@ -189,6 +153,6 @@ def build_report(
         "match_id": match_id,
         "title": title,
         "sets": list(sets) if sets else None,
-        "opponent": player_section(observations, match_id, opponent, names[opponent], False, left_handed, sets, bullet_count),
-        "me": player_section(observations, match_id, me, names[me], True, left_handed, sets, bullet_count),
+        "opponent": player_section(observations, match_id, opponent, names[opponent], False, left_handed, sets),
+        "me": player_section(observations, match_id, me, names[me], True, left_handed, sets),
     }

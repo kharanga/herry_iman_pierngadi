@@ -1,10 +1,11 @@
 # `report/`: the phone report
 
-One page per match: the opponent's top tendencies and my own, at most 3 bullets each, every
-bullet with its "k of n" evidence and the pros' rate, served on the local network so it opens on
-my phone. The numbers all come from `analytics.tendencies`; the page only arranges them.
+One page per match: every habit of the opponent and every habit of mine, as plain counts from each
+player's own shots ("After a net shot: lifts 7 of 9 times."), grouped by family, served on the local
+network so it opens on my phone. No comparison, no ranking, no cap on the number of bullets. The numbers
+all come from `analytics.tendencies`; the page only arranges them.
 
-- `report/build.py`: picks the players, runs the tendency engine, turns the top tendencies into bullets.
+- `report/build.py`: picks the players, runs the tendency engine, turns every entry into a bullet, groups them by family.
 - `report/page.py`: renders the bullets as one self-contained HTML page (inline CSS, no scripts, no external files).
 - `report/court_svg.py`: the tiny inline-SVG court with one zone shaded.
 - `report/serve.py`: the command: write the page, serve it, print the URL.
@@ -34,29 +35,30 @@ Default output: `data/checks/report/<report folder name>_390px.png`. Raises `Fil
 
 ## The page
 
-- Header: "<opponent> scouting report", the match (tournament, round, year for ShuttleSet; the recording
+- Header: "<opponent>: shot counts", the match (tournament, round, year for ShuttleSet; the recording
   id otherwise), who is who, and the sets used.
-- **Opponent**: their top 3 tendencies, each with the engine's sentence, a one-line reading of it
-  ("After your lifts, expect drops."), the evidence (`k of n`), the pros' rate, and a court diagram
-  for zone and serve-placement bullets.
-- **Me**: my top 3, read as habits ("you play lifts more than pros do: an opponent can read it").
-- Tags: `weaker evidence` on `error_shot` / `error_reason` bullets (they carry over between sets least,
-  see `docs/results/tendencies.md`); `predicted shot types` on bullets whose shot types came from the
-  classifier rather than labels (`label_source` not `labels`).
-- A section with no tendency says so instead of showing nothing.
-- Footer: what "k of n", "pros", the tags and the diagrams mean, and whether shot types are labels or predictions.
+- **Opponent** and **Me**: every entry from `analytics.tendencies` for that player, in its plain order, under
+  one sub-heading per family (`FAMILY_HEADINGS`: "Shots by court zone", "Replies to the other player's shot",
+  "Serves", "Winning shots", "Shots that ended in an error", "How errors happened"). Each bullet has the
+  engine's sentence, the evidence line (`k of n` for the player) and, for zone and serve-placement bullets, a court
+  diagram with the zone shaded. Replies, winners and errors have no zone, so no diagram.
+- Tag: `predicted shot types` on bullets whose shot types came from the classifier rather than labels
+  (`label_source` not `labels`).
+- A player with no counted shots gets "No shots counted for this player yet." instead of nothing.
+- Footer: what "k of n" means, that every choice is listed with no comparison or ranking, whether shot types are
+  labels or predictions, and how to read the diagrams.
 - Court diagrams always show **me at the bottom** and the opponent at the top, whichever player the bullet
   is about. Forehand and backhand sides follow the player's handedness (`LEFT_HANDED_PLAYER_NAMES` from
   `analytics.build_shots`, or `left_handed_names`); own footage assumes right-handed unless `me` / `opp`
   is passed in that set.
 
 **Rewording seam.** `report.build.rewrite_bullets(bullets)` is called on every section's bullets before
-rendering and currently returns them unchanged. A later LLM pass would replace only `text` and `hint`;
-`evidence`, `k`, `n`, `rate`, `pros_rate` and the tags come from the engine and must stay as they are.
+rendering and currently returns them unchanged. A later LLM pass would replace only `text`;
+`evidence`, `k`, `n`, `rate` and the tag come from the engine and must stay as they are.
 
 ## `report/build.py`
 
-### `build_report(match_id, me=None, database_path=DATABASE_PATH, sets=None, bullet_count=3, left_handed_names=LEFT_HANDED_PLAYER_NAMES)`
+### `build_report(match_id, me=None, database_path=DATABASE_PATH, sets=None, left_handed_names=LEFT_HANDED_PLAYER_NAMES)`
 
 Returns the report as a `dict`:
 
@@ -64,10 +66,10 @@ Returns the report as a `dict`:
 |---|---|
 | `match_id`, `title` | title is "tournament round, year" for ShuttleSet, else the match id |
 | `sets` | the sets asked for, or `None` for the whole match |
-| `opponent`, `me` | sections: `player`, `name`, `bullets`, `tendency_count` (before the cut to 3), `sets` (sets with evidence) |
+| `opponent`, `me` | sections: `player`, `name`, `bullets` (all, in plain order), `groups` (`[{family, heading, bullets}]`, families in `FAMILIES` order, empty families left out), `sets` (sets with evidence) |
 
-Each bullet: `id`, `family`, `text` (the engine's sentence), `hint`, `evidence` (`"k of n"`), `k`, `n`,
-`rate`, `pros_rate`, `label_source`, `weaker_evidence` (bool), `zone_rect` (court-meter rectangle to
+Each bullet: `id`, `family`, `text` (the engine's sentence), `evidence` (`"k of n"`), `k`, `n`,
+`rate`, `label_source`, `zone_rect` (court-meter rectangle to
 shade, me at the bottom, or `None`), `sets`.
 
 Errors: `UnknownMatchError` (no shots for that match), `UnknownPlayerError` (`--me` not in the match;
@@ -79,23 +81,20 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 - `match_title(connection, match_id)`: `(title, {player: display name})`; own matches (not in `matches`, or a database
   with no `matches` table at all) get the match id as title and `Me` / `Opponent` as names. `has_matches_table(connection)`.
 - `default_me(players)`: `me` if present, else `A`, else the first player. `opponent_of(me, players)`.
-- `opponent_hint(tendency)`, `me_hint(tendency)`: the one-line readings, by family.
 - `bullet_from_tendency(tendency, hitter_is_me, me_left_handed, opponent_left_handed)`, `evidence_text(tendency)`.
-- `player_section(...)`, `rewrite_bullets(bullets)` (the seam above).
-- Constants: `REPORT_BULLET_COUNT = 3`, `WEAKER_EVIDENCE_FAMILIES`, `OWN_PLAYER_NAMES`, `MATCH_SQL`, `MATCH_PLAYERS_SQL`.
+- `player_section(...)`, `family_groups(bullets)`, `rewrite_bullets(bullets)` (the seam above).
+- Constants: `OWN_PLAYER_NAMES`, `FAMILY_HEADINGS`, `MATCH_SQL`, `HAS_MATCHES_TABLE_SQL`, `MATCH_PLAYERS_SQL`.
 
 ```python
 >>> from report.build import *
 >>> tendency = {"family": "response", "condition": "lift", "outcome": "drop", "k": 43, "n": 98, "rate": 43 / 98,
-...             "reference_rate": 0.31, "id": "response:lift:drop", "label_source": "labels", "sets": [1, 2, 3],
-...             "text": "After a lift: drops 43 of 98 times (pros: 31%)."}
->>> opponent_hint(tendency), me_hint(tendency)
-('After your lifts, expect drops.', 'After their lifts, you play drops more than pros do: vary it.')
->>> opponent_hint({"family": "serve_placement", "condition": "serve", "outcome": "rear_backhand"})
-'Be ready for a serve long to your backhand.'
+...             "id": "response:lift:drop", "label_source": "labels", "sets": [1, 2, 3],
+...             "text": "After a lift: drops 43 of 98 times."}
 >>> bullet = bullet_from_tendency(tendency, hitter_is_me=False, me_left_handed=False, opponent_left_handed=False)
->>> bullet["evidence"], bullet["weaker_evidence"], bullet["zone_rect"]
-('43 of 98', False, None)
+>>> bullet["evidence"], bullet["zone_rect"], sorted(bullet)
+('43 of 98', None, ['evidence', 'family', 'id', 'k', 'label_source', 'n', 'rate', 'sets', 'text', 'zone_rect'])
+>>> [(group["family"], len(group["bullets"])) for group in family_groups([bullet, dict(bullet, family="zone_mix"), bullet])]
+[('zone_mix', 1), ('response', 2)]
 >>> default_me(["A", "B"]), default_me(["me", "opp"]), opponent_of("B", ["A", "B"])
 ('A', 'me', 'A')
 
@@ -133,15 +132,15 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 ## `report/page.py`
 
 - `render_page(report)`: the full HTML page (`str`) for a `build_report` dict.
-- `section_html(section, heading, lead)`, `bullet_html(bullet, hitter_name)`, `tags_html(bullet)`,
+- `section_html(section, heading, lead)`, `group_html(group, hitter_name)`, `bullet_html(bullet, hitter_name)`, `tags_html(bullet)`,
   `footer_html(report)`, `sets_text(sets)`. All text is HTML-escaped. `PAGE_CSS` is the stylesheet.
 
 ```python
 >>> from report.page import sets_text, tags_html
 >>> sets_text(None), sets_text([1]), sets_text([1, 2])
 ('whole match', 'set 1', 'set 1, 2')
->>> tags_html({"label_source": "predictions", "weaker_evidence": True})
-'<span class="tag predicted">predicted shot types</span><span class="tag weak">weaker evidence</span>'
+>>> tags_html({"label_source": "predictions"}), tags_html({"label_source": "labels"})
+('<span class="tag predicted">predicted shot types</span>', '')
 
 ```
 
@@ -156,7 +155,8 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 
 ## Example on a small synthetic table
 
-Two pro matches where the back-court player mostly clears, and my match where the opponent drops 8 of 10:
+My match, where the opponent drops 8 times and clears twice from the back court and wins every rally; two other
+matches in the same table don't count, since every player is counted only from their own shots:
 
 ```python
 >>> import shutil, tempfile
@@ -188,13 +188,13 @@ Two pro matches where the back-court player mostly clears, and my match where th
 >>> report = build_report("club_2026_10_20", database_path=database_path)
 >>> report["title"], report["me"]["name"], report["opponent"]["name"], report["sets"]
 ('club_2026_10_20', 'Me', 'Opponent', None)
->>> [(bullet["evidence"], bullet["hint"]) for bullet in report["opponent"]["bullets"]]
-[('8 of 10', 'After your serves, expect drops.'), ('8 of 10', 'From their back court, backhand side, expect drops.')]
->>> report["me"]["bullets"], report["me"]["tendency_count"]
-([], 0)
+>>> [(group["heading"], [bullet["evidence"] for bullet in group["bullets"]]) for group in report["opponent"]["groups"]]
+[('Shots by court zone', ['8 of 10', '2 of 10']), ("Replies to the other player's shot", ['8 of 10', '2 of 10']), ('Winning shots', ['8 of 10', '2 of 10'])]
+>>> [bullet["text"] for bullet in report["me"]["bullets"]]
+['Serves short down the middle 10 of 10 times.']
 >>> page = render_page(report)
->>> page.count("<li>"), "8 of 10" in page, "No clear tendency yet" in page, "<script" in page
-(2, True, True, False)
+>>> page.count("<li>"), page.count("<h3>"), "2 of 10" in page, "<script" in page
+(7, 4, True, False)
 >>> output_path = write_report("club_2026_10_20", output_path=temp_dir / "report" / "index.html", database_path=database_path)
 >>> output_path.read_text(encoding="utf-8") == page
 True

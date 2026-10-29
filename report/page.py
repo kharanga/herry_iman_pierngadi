@@ -3,12 +3,13 @@ from html import escape
 from report.court_svg import court_svg
 
 PAGE_CSS = """
-:root { --ink: #1b1f23; --muted: #5c6670; --line: #d9dee3; --accent: #c8102e; --floor: #2f7d4f; --paper: #fafaf8; --weak: #8a6d00; }
+:root { --ink: #1b1f23; --muted: #5c6670; --line: #d9dee3; --accent: #c8102e; --floor: #2f7d4f; --paper: #fafaf8; }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 body { font: 17px/1.45 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 16px; max-width: 640px; margin: 0 auto; }
 h1 { font-size: 24px; line-height: 1.2; margin: 0 0 4px; }
 h2 { font-size: 20px; margin: 28px 0 4px; }
+h3 { font-size: 16px; margin: 18px 0 4px; color: var(--muted); }
 p { margin: 0; }
 .subtitle { color: var(--muted); font-size: 15px; overflow-wrap: anywhere; }
 .lead { color: var(--muted); font-size: 15px; margin-bottom: 10px; }
@@ -16,11 +17,9 @@ ol.bullets { list-style: none; padding: 0; margin: 0; }
 ol.bullets li { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0; border-top: 1px solid var(--line); }
 .bullet-body { flex: 1 1 auto; min-width: 0; }
 .claim { font-weight: 600; }
-.hint { margin-top: 2px; }
 .meta { margin-top: 6px; font-size: 14px; color: var(--muted); }
 .evidence { font-weight: 700; color: var(--ink); }
 .tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 13px; line-height: 19px; border: 1px solid var(--line); vertical-align: 1px; }
-.tag.weak { color: var(--weak); border-color: var(--weak); }
 .tag.predicted { color: var(--accent); border-color: var(--accent); }
 svg.court { flex: 0 0 auto; }
 svg.court .floor { fill: var(--floor); }
@@ -43,8 +42,6 @@ def tags_html(bullet: dict) -> str:
     tags = []
     if bullet["label_source"] != "labels":
         tags.append('<span class="tag predicted">predicted shot types</span>')
-    if bullet["weaker_evidence"]:
-        tags.append('<span class="tag weak">weaker evidence</span>')
     return "".join(tags)
 
 
@@ -56,21 +53,24 @@ def bullet_html(bullet: dict, hitter_name: str) -> str:
         "<li>"
         '<div class="bullet-body">'
         f'<p class="claim">{escape(bullet["text"])}</p>'
-        f'<p class="hint">{escape(bullet["hint"])}</p>'
         f'<p class="meta"><span class="evidence">{escape(bullet["evidence"])}</span> for {escape(hitter_name)}'
-        f' · pros {bullet["pros_rate"]:.0%}{tags_html(bullet)}</p>'
+        f'{tags_html(bullet)}</p>'
         "</div>"
         f"{diagram}"
         "</li>"
     )
 
 
+def group_html(group: dict, hitter_name: str) -> str:
+    bullets = "".join(bullet_html(bullet, hitter_name) for bullet in group["bullets"])
+    return f'<h3>{escape(group["heading"])}</h3><ol class="bullets">{bullets}</ol>'
+
+
 def section_html(section: dict, heading: str, lead: str) -> str:
-    bullets = section["bullets"]
-    if bullets:
-        body = '<ol class="bullets">' + "".join(bullet_html(bullet, section["name"]) for bullet in bullets) + "</ol>"
+    if section["groups"]:
+        body = "".join(group_html(group, section["name"]) for group in section["groups"])
     else:
-        body = '<p class="empty">No clear tendency yet: every situation has fewer than 5 shots, or nothing stands out from pro play.</p>'
+        body = '<p class="empty">No shots counted for this player yet.</p>'
     return f'<section><h2>{escape(heading)}</h2><p class="lead">{escape(lead)}</p>{body}</section>'
 
 
@@ -85,19 +85,18 @@ def footer_html(report: dict) -> str:
         types_note = "Bullets marked “predicted shot types” use the classifier's predicted types; the others use labelled types."
     return (
         "<footer>"
-        '<p>"k of n" is how often the player did this in that situation. "Pros" is how often professional players '
-        "in ShuttleSet do the same, which is what each bullet is compared with. A bullet is shown only when the player's "
-        "pessimistic rate still beats the pros.</p>"
-        '<p>"Weaker evidence" marks bullets about how rallies ended: those rest on few rallies and carry over between sets less reliably.</p>'
+        "<p>\"k of n\" counts the player's own shots: in n shots from that situation, they made this choice k times. "
+        "Every choice is listed, however rare, with no comparison and no ranking.</p>"
         f"<p>{types_note}</p>"
-        "<p>Court diagrams: you are at the bottom, the opponent at the top; the shaded zone is the one the bullet is about.</p>"
+        "<p>Court diagrams: you are at the bottom, the opponent at the top; the shaded zone is the one the bullet is about. "
+        "Replies, winners and errors have no zone, so no diagram.</p>"
         "</footer>"
     )
 
 
 def render_page(report: dict) -> str:
     opponent, me = report["opponent"], report["me"]
-    title = f"{opponent['name']} scouting report"
+    title = f"{opponent['name']}: shot counts"
     subtitle = f"{escape(report['title'])} · {escape(me['name'])} vs {escape(opponent['name'])} · {escape(sets_text(report['sets']))}"
     return (
         "<!doctype html>"
@@ -106,8 +105,8 @@ def render_page(report: dict) -> str:
         f"<title>{escape(title)}</title>"
         f"<style>{PAGE_CSS}</style></head><body>"
         f"<header><h1>{escape(title)}</h1><p class=\"subtitle\">{subtitle}</p></header>"
-        + section_html(opponent, f"Opponent: {opponent['name']}", "What they do more than pros, and what to expect.")
-        + section_html(me, f"Me: {me['name']}", "Habits an opponent could read, and errors costing points.")
+        + section_html(opponent, f"Opponent: {opponent['name']}", "Every choice they made, counted from their own shots.")
+        + section_html(me, f"Me: {me['name']}", "Every choice I made, counted from my own shots.")
         + footer_html(report)
         + "</body></html>"
     )

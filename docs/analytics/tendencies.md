@@ -1,8 +1,9 @@
 # `analytics/tendencies.py`
 
-Turns the `shots` table into ranked tendencies for one player in one match: what they do
-more often than pro players do in the same situation, with the evidence ("8 of 10 times").
-The phone report shows the top 3 per player.
+Counts one player's habits in one match from their own shots: for every situation and every choice
+they made in it, one entry with a plain count ("After a net shot: lifts 7 of 9 times."). No comparison
+with other players, no score, no ranking and no minimum sample size: every choice is listed, even
+"1 of 9". The phone report shows all of them.
 
 ## Command
 
@@ -12,7 +13,7 @@ The phone report shows the top 3 per player.
 
 - `player`: as in `shots.player`, e.g. `A`/`B` (ShuttleSet) or `me`/`opp` (own footage). Nothing is hard-coded.
 - `sets` (optional): comma-separated set numbers, e.g. `1` or `1,2`. Default: all sets.
-- Prints a JSON list, best first. Exit code 1 with `error: no shots for player ...` for an unknown match or player.
+- Prints a JSON list in plain order (below). Exit code 1 with `error: no shots for player ...` for an unknown match or player.
 
 ## Tendency families
 
@@ -36,24 +37,17 @@ counts as predicted if either shot's group was predicted.
 `docs/results/schema.md`, "Known data issues"): one-shot rallies whose only shot is typed `unknown`,
 and the 2 known rallies with A and B swapped (`KNOWN_SWAPPED_RALLIES`).
 
-## Score and ranking
+## Counting and order
 
-For a player, situation and outcome: `n` = times the player was in the situation, `k` = times they chose
-that outcome, `rate = k / n`. The **reference rate** is how often pros chose that outcome in the same
-situation: the share over all ShuttleSet matches *except the one being analysed*.
+For a player, situation (`family` + `condition`) and choice (`outcome`): `n` = times the player was in the
+situation, `k` = times they made that choice, `rate = k / n`. The `k` of a situation's choices add up to its `n`.
 
-`score = wilson_lower_bound(k, n) - reference_rate`
+Entries are ordered **family, then situation, then most times first**. Families follow `FAMILIES`; zones follow
+`analytics.court.ZONE_NAMES` (front, mid, rear; forehand, middle, backhand); `response` situations follow
+`GROUP_ORDER` (serve, clear, drop, smash, net, lift, drive); ties on `k` go by choice name. This is a reading order,
+not a ranking.
 
-The Wilson lower bound (one-sided 95%, z = 1.645) is the lowest rate that is still plausible given
-`k` of `n`. Small samples get a low bound, so "3 of 3" (bound 0.53) can't outrank "14 of 18" (0.59).
-A tendency is a candidate with `n >= MIN_SAMPLE_SIZE` (5) and `score > MIN_SCORE` (0): even the
-pessimistic rate beats what pros do. Situations pros never met are skipped, since there is nothing to
-compare with. Tendencies are sorted by score (then larger `n`, then `id`).
-
-Comparing with the pros, not with the player's own overall mix, keeps out tendencies that every player
-has ("plays net shots from the front court").
-
-## Output: one tendency
+## Output: one entry
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -61,28 +55,26 @@ has ("plays net shots from the front court").
 | `family`, `condition`, `outcome` | str | see the table above |
 | `match_id`, `player` | str | |
 | `sets` | list[int] | sets the counts come from |
-| `n`, `k` | int | evidence: `k` of `n` |
+| `n`, `k` | int | `k` of `n` |
 | `rate` | float | `k / n` |
-| `reference_rate` | float | pros in the same situation |
-| `score` | float | ranking score, > 0 |
-| `label_source` | str | `labels`, `predictions` or `mixed` |
-| `text` | str | plain English, e.g. `From the back court, backhand side: drops 8 of 10 times (pros: 20%).` |
+| `label_source` | str | `labels`, `predictions` or `mixed`, over the situation's `n` shots |
+| `text` | str | plain English, e.g. `From the back court, backhand side: drops 8 of 10 times.` |
 
 ## Constants
-`MIN_SAMPLE_SIZE = 5`, `CONFIDENCE_Z = 1.645`, `MIN_SCORE = 0.0`, `KNOWN_SWAPPED_RALLIES`, `FAMILIES`,
-the phrase tables used by `tendency_text` (`GROUP_PHRASES`, `DEPTH_PHRASES`, `SIDE_PHRASES`,
-`SERVE_DEPTH_PHRASES`, `ERROR_REASON_PHRASES`), and the SQL (`TENDENCY_SHOTS_SQL`, `MATCH_PLAYERS_SQL`).
+`KNOWN_SWAPPED_RALLIES`, `FAMILIES`, `GROUP_ORDER`, `CONDITION_ORDER_BY_FAMILY`, the phrase tables used by
+`tendency_text` (`GROUP_PHRASES`, `DEPTH_PHRASES`, `SIDE_PHRASES`, `SERVE_DEPTH_PHRASES`, `ERROR_REASON_PHRASES`),
+and the SQL (`TENDENCY_SHOTS_SQL`, `MATCH_PLAYERS_SQL`).
 
 ## Functions
 
-### `tendencies_for(match_id, player, database_path=DATABASE_PATH, sets=None, min_sample_size=5)`
-Loads the shots (read-only), builds observations and returns the ranked list of tendency `dict`s.
+### `tendencies_for(match_id, player, database_path=DATABASE_PATH, sets=None)`
+Loads the shots (read-only), builds observations and returns every entry for the player, in plain order.
 Errors: `UnknownMatchPlayerError` (a `ValueError`, with `match_id` and `player`) if the player has no
 usable shots in that match; `duckdb.IOException` / `CatalogException` for a missing database or table.
 
-### `tendencies_from_observations(observations, match_id, player, sets=None, min_sample_size=5, min_score=0.0)`
+### `tendencies_from_observations(observations, match_id, player, sets=None)`
 The same from an observations table (see `all_observations`), for computing many players without
-reloading. Returns `[]` if the player has no observations.
+reloading. Only that player's own observations are counted. Returns `[]` if the player has none.
 
 ### `all_observations(database_path=DATABASE_PATH)`
 `family_observations(reliable_shots(load_tendency_shots(connection)))` for the whole table:
@@ -93,29 +85,24 @@ one row per (family, shot) with `family, source, match_id, set_no, player, condi
   previous shot's player and group, `is_last_shot` and `rally_shot_count`.
 - `is_unreliable_player_rally(shot_rows)`, `reliable_shots(shot_rows)`: the exclusion rule above.
 - `family_observations(shot_rows)`: the 6 families as observation rows.
-- `reference_rates(observations, excluded_match_id)`: pro rates per family, condition and outcome, without that match.
-- `candidate_tendencies(player_observations, references)`: `k`, `n`, prediction counts and reference per candidate.
-- `wilson_lower_bound(k, n, z=1.645)`, `tendency_score(k, n, reference_rate, z=1.645)`.
+- `situation_counts(player_observations)`: `k` per choice, `n` and the predicted-shot count per situation.
+- `plain_order_key(tendency)`, `position_in(order, value)`: the order above.
 - `label_source_name(prediction_count, n)`.
-- `tendency_text(family, condition, outcome, k, n, reference_rate)`, `zone_phrase(zone)`, `serve_landing_phrase(landing_zone)`.
+- `tendency_text(family, condition, outcome, k, n)`, `zone_phrase(zone)`, `serve_landing_phrase(landing_zone)`.
   `tendency_text` raises `ValueError` for an unknown family.
 - `match_players(connection)`: `[(source, match_id, player), ...]` for every player in `shots`.
 - `parse_sets(sets_text)`: `"1,2"` -> `(1, 2)`, empty -> `None`.
 
 ```python
 >>> from analytics.tendencies import *
->>> round(wilson_lower_bound(3, 3), 3), round(wilson_lower_bound(14, 18), 3), wilson_lower_bound(0, 0)
-(0.526, 0.587, 0.0)
->>> round(tendency_score(14, 18, 0.3), 3)
-0.287
->>> tendency_text("zone_mix", "rear_backhand", "drop", 9, 14, 0.31)
-'From the back court, backhand side: drops 9 of 14 times (pros: 31%).'
->>> tendency_text("response", "smash", "lift", 8, 12, 0.4)
-'After a smash: lifts 8 of 12 times (pros: 40%).'
->>> tendency_text("serve_placement", "serve", "rear_backhand", 6, 10, 0.12)
-"Serves long to the receiver's backhand 6 of 10 times (pros: 12%)."
->>> tendency_text("error_reason", "error", "net", 6, 9, 0.35)
-'Errors into the net: 6 of 9 errors (pros: 35%).'
+>>> tendency_text("zone_mix", "rear_backhand", "drop", 9, 14)
+'From the back court, backhand side: drops 9 of 14 times.'
+>>> tendency_text("response", "net", "lift", 7, 9)
+'After a net shot: lifts 7 of 9 times.'
+>>> tendency_text("serve_placement", "serve", "rear_backhand", 6, 10)
+"Serves long to the receiver's backhand 6 of 10 times."
+>>> tendency_text("error_reason", "error", "net", 6, 9)
+'Errors into the net: 6 of 9 errors.'
 >>> label_source_name(0, 10), label_source_name(10, 10), label_source_name(3, 10)
 ('labels', 'predictions', 'mixed')
 >>> parse_sets("1,2"), parse_sets("")
@@ -125,8 +112,9 @@ one row per (family, shot) with `family, source, match_id, set_no, player, condi
 
 ## Example on a small synthetic table
 
-Two "pro" matches where the player at the back usually clears (drops 1 rally in 5), and one of my matches
-where the opponent drops 8 times in 10 from the back court, backhand side:
+My match, where the opponent, from the back court on the backhand side, drops 8 times and clears twice,
+and wins every rally with that shot. Two other matches in the same table are ignored: only the player's
+own shots count.
 
 ```python
 >>> import shutil, tempfile
@@ -153,10 +141,12 @@ where the opponent drops 8 times in 10 from the back court, backhand side:
 ...     "landing_zone, getpoint_player, lose_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
 >>> connection.close()
 >>> tendencies = tendencies_for("club_2026_10_20", "opp", database_path)
->>> [(tendency["id"], tendency["k"], tendency["n"], tendency["reference_rate"], round(tendency["score"], 3)) for tendency in tendencies]
-[('response:serve:drop', 8, 10, 0.2, 0.341), ('zone_mix:rear_backhand:drop', 8, 10, 0.2, 0.341)]
->>> tendencies[1]["text"], tendencies[1]["label_source"], tendencies[1]["sets"]
-('From the back court, backhand side: drops 8 of 10 times (pros: 20%).', 'labels', [1])
+>>> [(tendency["id"], tendency["k"], tendency["n"]) for tendency in tendencies]
+[('zone_mix:rear_backhand:drop', 8, 10), ('zone_mix:rear_backhand:clear', 2, 10), ('response:serve:drop', 8, 10), ('response:serve:clear', 2, 10), ('winning_shot:winner:drop', 8, 10), ('winning_shot:winner:clear', 2, 10)]
+>>> tendencies[1]["text"], tendencies[1]["label_source"], tendencies[1]["sets"], sorted(tendencies[0])
+('From the back court, backhand side: clears 2 of 10 times.', 'labels', [1], ['condition', 'family', 'id', 'k', 'label_source', 'match_id', 'n', 'outcome', 'player', 'rate', 'sets', 'text'])
+>>> [tendency["text"] for tendency in tendencies_for("club_2026_10_20", "me", database_path)]
+['Serves short down the middle 10 of 10 times.']
 >>> try:
 ...     tendencies_for("club_2026_10_20", "nobody", database_path)
 ... except UnknownMatchPlayerError as error:
@@ -165,8 +155,3 @@ no shots for player 'nobody' in match 'club_2026_10_20'
 >>> shutil.rmtree(temp_dir)
 
 ```
-
-The opponent also won all 10 rallies with their last shot, 8 of them drops. There is no `winning_shot`
-tendency because the pro matches have no data for that situation: there, every rally ends with an error
-by the player at the back. With nothing to compare against, the candidate is skipped rather than compared
-with 0%.

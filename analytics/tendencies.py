@@ -1,15 +1,13 @@
 import json
-import math
 import sys
 from pathlib import Path
 
 import duckdb
 import pandas as pd
 
+from analytics.court import ZONE_NAMES
+
 DATABASE_PATH = Path("data/scout.duckdb")
-MIN_SAMPLE_SIZE = 5
-CONFIDENCE_Z = 1.645
-MIN_SCORE = 0.0
 KNOWN_SWAPPED_RALLIES = frozenset(
     {
         ("CHEN_Long_CHOU_Tien_Chen_Denmark_Open_2019_QuarterFinal", 2, 6),
@@ -36,6 +34,8 @@ ERROR_REASON_PHRASES = {
     "misjudged landing": "misjudged landings",
     "foul": "faults",
 }
+GROUP_ORDER = ("serve", "clear", "drop", "smash", "net", "lift", "drive")
+CONDITION_ORDER_BY_FAMILY = {"zone_mix": ZONE_NAMES, "response": GROUP_ORDER}
 
 TENDENCY_SHOTS_SQL = """
 WITH shots_with_group AS (
@@ -161,28 +161,6 @@ def family_observations(shot_rows: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(observations, ignore_index=True)
 
 
-def reference_rates(observations: pd.DataFrame, excluded_match_id: str) -> pd.DataFrame:
-    pro_observations = observations[(observations["source"] == "shuttleset") & (observations["match_id"] != excluded_match_id)]
-    outcome_counts = pro_observations.groupby(["family", "condition", "outcome"]).size().rename("reference_k")
-    condition_counts = pro_observations.groupby(["family", "condition"]).size().rename("reference_n")
-    references = outcome_counts.reset_index().merge(condition_counts.reset_index(), on=["family", "condition"])
-    references["reference_rate"] = references["reference_k"] / references["reference_n"]
-    return references[["family", "condition", "outcome", "reference_rate", "reference_n"]]
-
-
-def wilson_lower_bound(k: int, n: int, z: float = CONFIDENCE_Z) -> float:
-    if n == 0:
-        return 0.0
-    rate = k / n
-    centre = rate + z * z / (2 * n)
-    margin = z * math.sqrt(rate * (1 - rate) / n + z * z / (4 * n * n))
-    return (centre - margin) / (1 + z * z / n)
-
-
-def tendency_score(k: int, n: int, reference_rate: float, z: float = CONFIDENCE_Z) -> float:
-    return wilson_lower_bound(k, n, z) - reference_rate
-
-
 def label_source_name(prediction_count: int, n: int) -> str:
     if prediction_count == 0:
         return "labels"
@@ -204,44 +182,48 @@ def serve_landing_phrase(landing_zone: str) -> str:
     return f"{SERVE_DEPTH_PHRASES[depth]} {side_text}"
 
 
-def tendency_text(family: str, condition: str, outcome: str, k: int, n: int, reference_rate: float) -> str:
+def tendency_text(family: str, condition: str, outcome: str, k: int, n: int) -> str:
     evidence = f"{k} of {n} times"
-    pros = f"(pros: {reference_rate:.0%})"
     if family == "zone_mix":
-        return f"From the {zone_phrase(condition)}: {GROUP_PHRASES[outcome][1]} {evidence} {pros}."
+        return f"From the {zone_phrase(condition)}: {GROUP_PHRASES[outcome][1]} {evidence}."
     if family == "response":
-        return f"After {GROUP_PHRASES[condition][0]}: {GROUP_PHRASES[outcome][1]} {evidence} {pros}."
+        return f"After {GROUP_PHRASES[condition][0]}: {GROUP_PHRASES[outcome][1]} {evidence}."
     if family == "serve_placement":
-        return f"Serves {serve_landing_phrase(outcome)} {evidence} {pros}."
+        return f"Serves {serve_landing_phrase(outcome)} {evidence}."
     if family == "winning_shot":
-        return f"Wins rallies with {GROUP_PHRASES[outcome][1]}: {k} of {n} winners {pros}."
+        return f"Wins rallies with {GROUP_PHRASES[outcome][1]}: {k} of {n} winners."
     if family == "error_shot":
-        return f"Errors come from {GROUP_PHRASES[outcome][1]}: {k} of {n} errors {pros}."
+        return f"Errors come from {GROUP_PHRASES[outcome][1]}: {k} of {n} errors."
     if family == "error_reason":
-        return f"Errors {ERROR_REASON_PHRASES.get(outcome, outcome)}: {k} of {n} errors {pros}."
+        return f"Errors {ERROR_REASON_PHRASES.get(outcome, outcome)}: {k} of {n} errors."
     raise ValueError(f"unknown tendency family: {family!r}")
 
 
-def candidate_tendencies(player_observations: pd.DataFrame, references: pd.DataFrame) -> pd.DataFrame:
+def situation_counts(player_observations: pd.DataFrame) -> pd.DataFrame:
     keys = ["family", "condition", "outcome"]
     is_prediction = (player_observations["group_source"] == "prediction").rename("is_prediction")
     outcome_counts = (
-        pd.concat([player_observations[keys], is_prediction], axis=1)
-        .groupby(keys)
-        .agg(k=("is_prediction", "size"), prediction_count=("is_prediction", "sum"))
-        .reset_index()
+        pd.concat([player_observations[keys], is_prediction], axis=1).groupby(keys).agg(k=("is_prediction", "size")).reset_index()
     )
     condition_counts = player_observations.groupby(["family", "condition"]).agg(
         n=("outcome", "size"), condition_prediction_count=("group_source", lambda sources: int((sources == "prediction").sum()))
     )
-    reference_condition_sizes = references[["family", "condition", "reference_n"]].drop_duplicates()
-    candidates = (
-        outcome_counts.merge(condition_counts.reset_index(), on=["family", "condition"])
-        .merge(reference_condition_sizes, on=["family", "condition"], how="inner")
-        .merge(references.drop(columns="reference_n"), on=keys, how="left")
+    return outcome_counts.merge(condition_counts.reset_index(), on=["family", "condition"])
+
+
+def position_in(order: tuple[str, ...], value: str) -> int:
+    return order.index(value) if value in order else len(order)
+
+
+def plain_order_key(tendency: dict) -> tuple:
+    family_order = CONDITION_ORDER_BY_FAMILY.get(tendency["family"], ())
+    return (
+        position_in(FAMILIES, tendency["family"]),
+        position_in(family_order, tendency["condition"]),
+        tendency["condition"],
+        -tendency["k"],
+        tendency["outcome"],
     )
-    candidates["reference_rate"] = candidates["reference_rate"].fillna(0.0)
-    return candidates
 
 
 def tendencies_from_observations(
@@ -249,8 +231,6 @@ def tendencies_from_observations(
     match_id: str,
     player: str,
     sets: tuple[int, ...] | None = None,
-    min_sample_size: int = MIN_SAMPLE_SIZE,
-    min_score: float = MIN_SCORE,
 ) -> list[dict]:
     is_player = (observations["match_id"] == match_id) & (observations["player"] == player)
     if sets is not None:
@@ -258,32 +238,27 @@ def tendencies_from_observations(
     player_observations = observations[is_player]
     if player_observations.empty:
         return []
-    candidates = candidate_tendencies(player_observations, reference_rates(observations, match_id))
+    played_sets = sorted(int(set_no) for set_no in player_observations["set_no"].unique())
     tendencies = []
-    for candidate in candidates.itertuples(index=False):
-        k, n = int(candidate.k), int(candidate.n)
-        score = tendency_score(k, n, float(candidate.reference_rate))
-        if n < min_sample_size or score <= min_score:
-            continue
+    for situation in situation_counts(player_observations).itertuples(index=False):
+        k, n = int(situation.k), int(situation.n)
         tendencies.append(
             {
-                "id": f"{candidate.family}:{candidate.condition}:{candidate.outcome}",
-                "family": candidate.family,
+                "id": f"{situation.family}:{situation.condition}:{situation.outcome}",
+                "family": situation.family,
                 "match_id": match_id,
                 "player": player,
-                "sets": sorted(int(set_no) for set_no in player_observations["set_no"].unique()),
-                "condition": candidate.condition,
-                "outcome": candidate.outcome,
+                "sets": played_sets,
+                "condition": situation.condition,
+                "outcome": situation.outcome,
                 "n": n,
                 "k": k,
                 "rate": k / n,
-                "reference_rate": float(candidate.reference_rate),
-                "score": score,
-                "label_source": label_source_name(int(candidate.condition_prediction_count), n),
-                "text": tendency_text(candidate.family, candidate.condition, candidate.outcome, k, n, float(candidate.reference_rate)),
+                "label_source": label_source_name(int(situation.condition_prediction_count), n),
+                "text": tendency_text(situation.family, situation.condition, situation.outcome, k, n),
             }
         )
-    return sorted(tendencies, key=lambda tendency: (-tendency["score"], -tendency["n"], tendency["id"]))
+    return sorted(tendencies, key=plain_order_key)
 
 
 def match_players(connection: duckdb.DuckDBPyConnection) -> list[tuple[str, str, str]]:
@@ -303,12 +278,11 @@ def tendencies_for(
     player: str,
     database_path: Path = DATABASE_PATH,
     sets: tuple[int, ...] | None = None,
-    min_sample_size: int = MIN_SAMPLE_SIZE,
 ) -> list[dict]:
     observations = all_observations(database_path)
     if not ((observations["match_id"] == match_id) & (observations["player"] == player)).any():
         raise UnknownMatchPlayerError(match_id, player)
-    return tendencies_from_observations(observations, match_id, player, sets, min_sample_size)
+    return tendencies_from_observations(observations, match_id, player, sets)
 
 
 def parse_sets(sets_text: str | None) -> tuple[int, ...] | None:
