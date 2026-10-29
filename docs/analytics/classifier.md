@@ -175,6 +175,8 @@ transaction; no other column changes.
 
 ### Helpers
 - `load_model(model_path)`: loads and checks the joblib `dict`.
+- `prediction_summary(database_path)`: counts for the results doc, ShuttleSet rows only (own rows come and go):
+  `shots`, `predicted_shots`, `lowest_conf`, `mean_conf`, `in_sample_agreement`, `unknown_shot_predictions`.
 - `predictions_for(model, shot_rows)`: `DataFrame` of `row_id`, `type_pred`, `type_conf`, with
   `None` / `<NA>` for rows without a hitter point and a landing point.
 - `ModelFeatureMismatchError(model_feature_names)`: a `RuntimeError` with `model_feature_names`.

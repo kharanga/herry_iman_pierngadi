@@ -146,7 +146,7 @@ row is the same 5 folds as the Accuracy table and matches it exactly.
 
 | | |
 |---|---|
-| Shots in `shots` | 36,483 |
+| ShuttleSet shots in `shots` | 36,483 |
 | With a prediction | 35,293 |
 | Left NULL (no hitter point or no landing point) | 1,190 |
 | `type_conf` mean / lowest | 0.89 / 0.25 |

@@ -1,5 +1,7 @@
 # `ingest/load_shuttleset.py`
 
+Examples need: data/CoachAI-Projects/ShuttleSet/set (run ./ingest/fetch_shuttleset.sh)
+
 Loads the ShuttleSet CSVs into a DuckDB database: one row per shot in `raw_shots`,
 one row per match in `matches` (with its frame rate), and one row per match in
 `homography`. Run `ingest/fetch_shuttleset.sh` first (see `fetch_shuttleset.md`).

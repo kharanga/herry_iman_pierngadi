@@ -60,7 +60,7 @@ def predictions_table(summary: dict) -> str:
         [
             "| | |",
             "|---|---|",
-            f"| Shots in `shots` | {thousands(summary['shots'])} |",
+            f"| ShuttleSet shots in `shots` | {thousands(summary['shots'])} |",
             f"| With a prediction | {thousands(summary['predicted_shots'])} |",
             f"| Left NULL (no hitter point or no landing point) | {thousands(summary['shots'] - summary['predicted_shots'])} |",
             f"| `type_conf` mean / lowest | {summary['mean_conf']:.2f} / {summary['lowest_conf']:.2f} |",

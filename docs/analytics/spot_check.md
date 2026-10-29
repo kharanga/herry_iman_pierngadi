@@ -1,5 +1,7 @@
 # `analytics/spot_check.py`
 
+Examples need: data/CoachAI-Projects/ShuttleSet/set (run ./ingest/fetch_shuttleset.sh)
+
 Draws a few random ShuttleSet shots from the `shots` table on a top-down court
 diagram, to check by eye that positions, normalization, zones and `is_cross` make sense.
 

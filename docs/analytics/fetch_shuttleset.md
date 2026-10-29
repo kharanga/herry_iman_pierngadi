@@ -1,5 +1,7 @@
 # `ingest/fetch_shuttleset.sh`
 
+Examples need: data/CoachAI-Projects/ShuttleSet/set (run ./ingest/fetch_shuttleset.sh)
+
 Downloads the ShuttleSet dataset (MIT license, KDD 2023) from
 https://github.com/wywyWang/CoachAI-Projects. Only the `ShuttleSet/` folder is
 checked out; the rest of the repo is skipped.

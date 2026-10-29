@@ -27,12 +27,13 @@ SELECT
     AVG(CASE WHEN shots.type_pred = shots.type_group THEN 1.0 ELSE 0.0 END)
         FILTER (WHERE shots.type_pred IS NOT NULL AND shots.type_group <> 'unknown') AS in_sample_agreement
 FROM shots
+WHERE shots.source = 'shuttleset'
 """
 
 UNKNOWN_SHOT_PREDICTIONS_SQL = """
 SELECT shots.type_pred, COUNT(*) AS shot_count
 FROM shots
-WHERE shots.type_group = 'unknown'
+WHERE shots.source = 'shuttleset' AND shots.type_group = 'unknown'
 GROUP BY shots.type_pred
 ORDER BY shot_count DESC, shots.type_pred
 """

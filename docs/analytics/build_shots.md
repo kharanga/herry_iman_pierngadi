@@ -1,5 +1,7 @@
 # `analytics/build_shots.py` and `analytics/schema.sql`
 
+Examples need: data/CoachAI-Projects/ShuttleSet/set (run ./ingest/fetch_shuttleset.sh)
+
 Builds the `shots` table: one row per shot, the same columns whether the shot came
 from ShuttleSet or from my own footage. Everything downstream (classifier,
 tendencies, report) reads only this table.
