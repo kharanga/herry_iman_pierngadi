@@ -11,6 +11,7 @@ import pytest
 import vision.court as court
 from vision.alignment import open_video, read_frame
 from vision.court import (
+    video_id,
     COURT_LENGTH_M,
     COURT_WIDTH_M,
     NET_Y_M,
@@ -287,8 +288,14 @@ def test_load_missing_calibration_names_path(tmp_path):
         load_calibration(tmp_path / "missing.json")
 
 
-def test_calibration_path_is_per_video_stem():
-    assert calibration_path(Path("videos/game_3.mp4"), Path("out")) == Path("out/game_3/court.json")
+def test_calibration_path_is_per_video_id(tmp_path, monkeypatch):
+    assert calibration_path(Path("videos/game_3.mp4"), Path("out")) == Path("out/videos_game_3/court.json")
+    assert calibration_path(Path("data/match.mp4")) == Path("data/calibration/match/court.json")
+    assert video_id(Path("data/recordings/stand_in/set1.mp4")) == "stand_in_set1" and video_id(Path("set1.mp4")) == "set1"
+    assert video_id(Path("2026_11_02/club/set1.mp4")) == video_id(Path("2026_11_09/club/set1.mp4")) == "club_set1"
+    monkeypatch.chdir(PROJECT_ROOT)
+    assert video_id((PROJECT_ROOT / "data" / "match.mp4").resolve()) == "match" == video_id(Path("data") / "match.mp4")
+    assert video_id((PROJECT_ROOT / "data" / "recordings" / "stand_in" / "set1.mp4").resolve()) == video_id(Path("data/recordings/stand_in/set1.mp4"))
 
 
 def test_shuttleset_corner_pixels_errors(tmp_path):
@@ -315,10 +322,10 @@ def test_main_headless_corners_writes_calibration_and_overlay(tmp_path, capsys):
     video_path = write_blank_video(tmp_path / "tiny.avi", 500, 400, 3)
     output_dir = tmp_path / "calibration"
     assert main([str(video_path), "--frame", "2", "--corners", *corner_arguments(SYNTHETIC_CORNERS), "--output-dir", str(output_dir)]) == 0
-    calibration = load_calibration(output_dir / "tiny" / "court.json")
+    calibration = load_calibration(output_dir / video_id(video_path) / "court.json")
     assert calibration["frame_index"] == 2
     assert (calibration["frame_width"], calibration["frame_height"]) == (500, 400)
-    assert (output_dir / "tiny" / "court_overlay.jpg").is_file()
+    assert (output_dir / video_id(video_path) / "court_overlay.jpg").is_file()
     assert "saved" in capsys.readouterr().out
 
 
@@ -384,7 +391,7 @@ def test_main_without_corners_saves_clicked_corners(tmp_path, monkeypatch):
     video_path = write_blank_video(tmp_path / "tiny.avi", 500, 400, 3)
     monkeypatch.setattr(court, "click_corners", lambda frame: np.array(SYNTHETIC_CORNERS))
     assert main([str(video_path), "--output-dir", str(tmp_path / "out")]) == 0
-    np.testing.assert_allclose(load_calibration(tmp_path / "out" / "tiny" / "court.json")["corner_pixels"], SYNTHETIC_CORNERS)
+    np.testing.assert_allclose(load_calibration(tmp_path / "out" / video_id(video_path) / "court.json")["corner_pixels"], SYNTHETIC_CORNERS)
 
 
 @requires_shuttleset_csv
@@ -392,7 +399,7 @@ def test_shuttleset_corners_are_scaled_to_video_resolution(tmp_path, monkeypatch
     monkeypatch.chdir(PROJECT_ROOT)
     video_path = write_blank_video(tmp_path / "half_size.avi", 640, 360, 1)
     assert main([str(video_path), "--shuttleset-match", AXELSEN_GINTING, "--output-dir", str(tmp_path / "out")]) == 0
-    saved_corners = load_calibration(tmp_path / "out" / "half_size" / "court.json")["corner_pixels"]
+    saved_corners = load_calibration(tmp_path / "out" / video_id(video_path) / "court.json")["corner_pixels"]
     np.testing.assert_allclose(saved_corners, shuttleset_corner_pixels(AXELSEN_GINTING, REAL_HOMOGRAPHY_CSV) * 0.5)
 
 
@@ -481,10 +488,11 @@ def test_court_docs_have_no_task_ids(doc_path):
     assert re.findall(TASK_ID_PATTERN, doc_path.read_text()) == []
 
 
-def test_court_doc_states_shuttleset_frame_assumption_and_file_name_limitation():
+def test_court_doc_states_shuttleset_frame_assumption_and_the_video_id_naming():
     doc_text = (PROJECT_ROOT / "docs" / "vision" / "court.md").read_text()
     assert "1280 x 720" in doc_text and "16:9" in doc_text
-    assert "a/match.mp4" in doc_text and "overwrites" in doc_text
+    assert "**Video id.**" in doc_text and "`data/recordings/stand_in/set1.mp4` -> `stand_in_set1`" in re.sub(r"\s+", " ", doc_text)
+    assert "same stem in two folders of the same name would still collide" in re.sub(r"\s+", " ", doc_text)
 
 
 @requires_shuttleset_csv
@@ -493,13 +501,13 @@ def test_shuttleset_match_end_to_end_on_other_resolutions(tmp_path, monkeypatch,
     monkeypatch.chdir(PROJECT_ROOT)
     video_path = write_blank_video(tmp_path / f"video_{width}.avi", width, height, 2)
     assert main([str(video_path), "--frame", "1", "--shuttleset-match", AXELSEN_GINTING, "--output-dir", str(tmp_path / "out")]) == 0
-    calibration = load_calibration(tmp_path / "out" / f"video_{width}" / "court.json")
+    calibration = load_calibration(tmp_path / "out" / video_id(video_path) / "court.json")
     expected_corners = shuttleset_corner_pixels(AXELSEN_GINTING, REAL_HOMOGRAPHY_CSV) * scale
     np.testing.assert_allclose(calibration["corner_pixels"], expected_corners)
     assert (calibration["frame_width"], calibration["frame_height"]) == (width, height)
     np.testing.assert_allclose(pixels_to_court(calibration["pixel_to_court_homography"], expected_corners), court_corner_meters(), atol=1e-9)
     assert np.all(calibration["corner_pixels"][:, 0] < width) and np.all(calibration["corner_pixels"][:, 1] < height)
-    overlay = cv2.imread(str(tmp_path / "out" / f"video_{width}" / "court_overlay.jpg"))
+    overlay = cv2.imread(str(tmp_path / "out" / video_id(video_path) / "court_overlay.jpg"))
     assert overlay.shape == (height, width, 3)
 
 
@@ -507,7 +515,7 @@ def test_explicit_corners_are_never_scaled(tmp_path):
     video_path = write_blank_video(tmp_path / "small.avi", 640, 360, 1)
     corners = [[100.0, 300.0], [500.0, 300.0], [420.0, 80.0], [180.0, 80.0]]
     assert main([str(video_path), "--corners", *corner_arguments(corners), "--output-dir", str(tmp_path / "out")]) == 0
-    np.testing.assert_allclose(load_calibration(tmp_path / "out" / "small" / "court.json")["corner_pixels"], corners)
+    np.testing.assert_allclose(load_calibration(tmp_path / "out" / video_id(video_path) / "court.json")["corner_pixels"], corners)
 
 
 def test_label_frame_scaling_uses_width_only_on_non_16_by_9_video(tmp_path):

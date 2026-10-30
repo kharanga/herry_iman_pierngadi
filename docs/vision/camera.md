@@ -35,7 +35,7 @@ behind the near baseline and 8.5 m up, reference errors 0.9 to 3.5 px, court lin
 | `--net-posts` | pixels of the left and right net-post tops (the top of each post, where the net cord is tied); without it a click window opens on the frame (`click_net_post_tops` in `vision/court.py`: click left, then right, `u` undoes, Enter saves, Esc cancels) |
 | `--frame` | frame to show and check on (default: the court calibration's frame) |
 
-Writes `data/calibration/<video stem>/camera.json` (focal length, intrinsic matrix,
+Writes `data/calibration/<video id>/camera.json` (focal length, intrinsic matrix,
 rotation, translation, camera position, the 6 reference points and their errors, and
 the court-line check) and `camera_check.jpg` next to it: all floor lines reprojected
 in red, the net top line and both posts in yellow, the clicked post tops circled in

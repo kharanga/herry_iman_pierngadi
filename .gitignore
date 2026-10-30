@@ -12,3 +12,5 @@ docs/PLAN.md
 docs/overview.md
 *.pt
 *.onnx
+*.h264
+*.mjpeg

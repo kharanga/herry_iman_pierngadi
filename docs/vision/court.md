@@ -101,10 +101,14 @@ the point reprojected through the homography), `max_reference_error_px` and
 with more they show how consistent the clicks are. The overlay marks each clicked
 point with its name and error.
 
-Limitation: the folder is keyed by the video file name without its extension only,
-so two different videos with the same name (for example `a/match.mp4` and
-`b/match.mp4`) share `data/calibration/match/court.json`, and the second
-calibration overwrites the first. Give recordings unique file names.
+**Video id.** Every per-video output folder of the vision steps is named by
+`video_id(video_path)`: `data/calibration/<video id>/`, `data/players/<video id>/`,
+`data/shuttle/<video id>/`, `data/hits/<video id>/`, `data/contact/<video id>/`, and the
+check images start with it. A video directly under `data/` (or given as a bare file
+name) keeps its stem (`data/match.mp4` -> `match`); any other gets its parent folder's
+name in front (`data/recordings/stand_in/set1.mp4` -> `stand_in_set1`), so the usual
+`set1.mp4` of different recordings no longer share a calibration. Two videos with the
+same stem in two folders of the same name would still collide.
 
 ## Constants
 
@@ -374,8 +378,22 @@ array([-1., -1., -1., -1., -1.])
 
 ```
 
+### `video_id(video_path, data_dir=DATA_DIR) -> str`, `is_directly_under(folder, path) -> bool`
+The name of a video's output folders (see "Video id" above). `DATA_DIR` is
+`Path("data")`; paths are compared after resolving, so absolute and relative paths to
+the same video get the same id.
+
+```python
+>>> from pathlib import Path
+>>> from vision.court import video_id
+>>> video_id(Path("data/match.mp4")), video_id(Path("data/recordings/stand_in/set1.mp4")), video_id(Path("videos/game_3.mp4")), video_id(Path("match.mp4"))
+('match', 'stand_in_set1', 'videos_game_3', 'match')
+
+```
+
 ### `calibration_path(video_path, calibration_dir=CALIBRATION_DIR) -> Path`
-Where the calibration for `video_path` is stored: `<calibration_dir>/<video stem>/court.json`.
+Where the calibration for `video_path` is stored: `<calibration_dir>/<video id>/court.json`
+(`video_id` above).
 
 ```python
 >>> from pathlib import Path
@@ -647,8 +665,8 @@ can't be read or the corners are invalid.
 ...     _ = writer.write(np.zeros((400, 500, 3), dtype=np.uint8))
 >>> writer.release()
 >>> saved_path = calibrate_video(video_path, 1, corner_pixels, Path(temporary_folder.name) / "calibration")
->>> saved_path.relative_to(temporary_folder.name).as_posix(), overlay_path_for(saved_path).is_file()
-('calibration/tiny/court.json', True)
+>>> saved_path == Path(temporary_folder.name) / "calibration" / video_id(video_path) / "court.json", overlay_path_for(saved_path).is_file()
+(True, True)
 >>> shuttleset_style_corners = [[200, 600], [800, 600], [700, 200], [300, 200]]
 >>> scaled_path = calibrate_video(video_path, 1, shuttleset_style_corners, Path(temporary_folder.name) / "scaled", corners_in_shuttleset_label_frame=True)
 >>> load_calibration(scaled_path)["corner_pixels"].tolist()
@@ -675,8 +693,8 @@ Errors: invalid arguments raise `SystemExit(2)` from argparse.
 >>> error_output.getvalue()
 'error: corners do not form a convex quadrilateral; give them in order near_left, near_right, far_right, far_left\n'
 >>> main([str(video_path), "--frame", "1", "--corners", "100,300", "400,300", "350,100", "150,100", "--output-dir", temporary_folder.name])  # doctest: +ELLIPSIS
-saved .../tiny/court.json
-saved .../tiny/court_overlay.jpg
+saved ..._tiny/court.json
+saved ..._tiny/court_overlay.jpg
 0
 >>> with contextlib.redirect_stderr(io.StringIO()):
 ...     main([str(video_path), "--corners", "1;2", "3,4", "5,6", "7,8"])

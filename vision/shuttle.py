@@ -11,6 +11,7 @@ from PIL import Image
 
 from vision.alignment import SHUTTLESET_SET_DIR, load_set_shots, open_video
 from vision.players import check_frame_range, frames_in_range, rally_frame_range, require_video_file
+from vision.court import video_id
 from vision.tracknet import load_inpaintnet, load_tracknet
 
 CHECKPOINT_DIR = Path("data/models/tracknetv3")
@@ -290,11 +291,11 @@ def write_overlay_video(video_path: Path, positions: pd.DataFrame, output_path: 
 
 
 def positions_path(video_path: Path, start_frame: int, end_frame: int, shuttle_dir: Path = SHUTTLE_DIR) -> Path:
-    return shuttle_dir / Path(video_path).stem / f"shuttle_{start_frame}_{end_frame}.csv"
+    return shuttle_dir / video_id(video_path) / f"shuttle_{start_frame}_{end_frame}.csv"
 
 
 def overlay_path(video_path: Path, start_frame: int, end_frame: int, checks_dir: Path = CHECKS_DIR) -> Path:
-    return checks_dir / f"{Path(video_path).stem}_shuttle_{start_frame}_{end_frame}.mp4"
+    return checks_dir / f"{video_id(video_path)}_shuttle_{start_frame}_{end_frame}.mp4"
 
 
 def save_positions(positions: pd.DataFrame, output_path: Path) -> Path:

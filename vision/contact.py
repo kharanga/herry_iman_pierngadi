@@ -1,4 +1,6 @@
 import argparse
+import hashlib
+import json
 import os
 import sys
 from dataclasses import dataclass, replace
@@ -10,7 +12,7 @@ import pandas as pd
 
 from vision.alignment import SHUTTLESET_SET_DIR, label_scale, load_set_shots, open_video, read_frame
 from vision.camera import Camera, camera_path, load_camera, pixel_ray, project_points
-from vision.court import calibration_path, load_calibration, pixels_to_court
+from vision.court import calibration_path, court_to_pixels, load_calibration, pixels_to_court, video_id
 from vision.hits import frames_for_fps, match_hits, video_fps_and_width
 from vision.hits import output_paths as hit_output_paths
 from vision.players import PLAYERS, boxes_path, require_video_file
@@ -19,6 +21,8 @@ from vision.shuttle import positions_path as shuttle_positions_path
 
 POSE_MODEL_PATH = Path("data/models/yolo11s-pose.pt")
 CONTACT_DIR = Path("data/contact")
+FINGERPRINT_BYTES = 1024 * 1024
+SOURCE_RECORD_SUFFIX = ".source.json"
 SHUTTLE_MAX_FRAME_GAP = 2
 FEET_MAX_FRAME_GAP = 3
 REACH_RADIUS_M = 1.0
@@ -252,7 +256,7 @@ def detect_poses(video_path: Path, frames, model_path: Path = POSE_MODEL_PATH) -
 
 
 def contact_paths(video_path: Path, start_frame: int, end_frame: int, contact_dir: Path = CONTACT_DIR) -> tuple[Path, Path]:
-    folder = contact_dir / Path(video_path).stem
+    folder = contact_dir / video_id(video_path)
     return folder / f"poses_{start_frame}_{end_frame}.csv", folder / f"contacts_{start_frame}_{end_frame}.csv"
 
 
@@ -274,6 +278,41 @@ def range_inputs(video_path: Path, start_frame: int, end_frame: int) -> dict[str
     return {name: pd.read_csv(require_file(path, command)) for name, (path, command) in files.items()}
 
 
+def video_fingerprint(video_path: Path) -> dict:
+    path = Path(video_path)
+    size = path.stat().st_size
+    with path.open("rb") as video_file:
+        head = video_file.read(FINGERPRINT_BYTES)
+        video_file.seek(max(size - FINGERPRINT_BYTES, 0))
+        tail = video_file.read(FINGERPRINT_BYTES)
+    return {"size": size, "head_sha256": hashlib.sha256(head).hexdigest(), "tail_sha256": hashlib.sha256(tail).hexdigest()}
+
+
+def source_record_path(output_path: Path) -> Path:
+    return Path(output_path).with_name(Path(output_path).name + SOURCE_RECORD_SUFFIX)
+
+
+def write_source_record(output_path: Path, video_path: Path, fingerprint: dict) -> Path:
+    record_path = source_record_path(output_path)
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(json.dumps({"video": str(Path(video_path).resolve()), **fingerprint}, indent=2), encoding="utf-8")
+    return record_path
+
+
+def read_source_record(output_path: Path) -> dict | None:
+    record_path = source_record_path(output_path)
+    if not record_path.is_file():
+        return None
+    try:
+        return json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def is_same_source(record: dict | None, fingerprint: dict) -> bool:
+    return record is not None and all(record.get(key) == value for key, value in fingerprint.items())
+
+
 def is_newer(path: Path, than: Path) -> bool:
     return Path(path).is_file() and Path(path).stat().st_mtime >= Path(than).stat().st_mtime
 
@@ -281,11 +320,13 @@ def is_newer(path: Path, than: Path) -> bool:
 def poses_for_range(video_path: Path, start_frame: int, end_frame: int, hits: pd.DataFrame, model_path: Path = POSE_MODEL_PATH) -> pd.DataFrame:
     poses_file, _ = contact_paths(video_path, start_frame, end_frame)
     hits_file, _ = hit_output_paths(video_path, start_frame, end_frame)
-    if is_newer(poses_file, hits_file):
+    fingerprint = video_fingerprint(video_path)
+    if is_newer(poses_file, hits_file) and is_same_source(read_source_record(poses_file), fingerprint):
         return pd.read_csv(poses_file)
     poses = detect_poses(video_path, hits["frame"], model_path)
     poses_file.parent.mkdir(parents=True, exist_ok=True)
     poses.to_csv(poses_file, index=False)
+    write_source_record(poses_file, video_path, fingerprint)
     return poses
 
 
@@ -443,6 +484,84 @@ def spot_check_sample(comparison: pd.DataFrame, hit_count: int = SPOT_CHECK_HITS
     return comparison.iloc[sorted(picks)]
 
 
+HIT_SPOT_CHECK_DIR = Path("data/checks/hits")
+HIT_SPOT_CHECK_OFFSET_FRAMES = 6
+NEAR_BOX_COLOR_BGR, FAR_BOX_COLOR_BGR = (255, 160, 0), (0, 0, 255)
+
+
+def hit_spot_check_path(video_path: Path, start_frame: int, end_frame: int, checks_dir: Path = HIT_SPOT_CHECK_DIR) -> Path:
+    return checks_dir / f"{video_id(video_path)}_hit_spot_check_{start_frame}_{end_frame}.jpg"
+
+
+def spot_check_hits(hits: pd.DataFrame, hit_count: int, seed: int = SPOT_CHECK_SEED) -> pd.DataFrame:
+    ordered = hits.sort_values("frame").reset_index(drop=True)
+    picks = np.random.default_rng(seed).choice(len(ordered), size=min(hit_count, len(ordered)), replace=False)
+    return ordered.iloc[sorted(picks)]
+
+
+def draw_box(frame: np.ndarray, box_row, color) -> None:
+    if box_row is not None:
+        cv2.rectangle(frame, (int(box_row["left"]), int(box_row["top"])), (int(box_row["right"]), int(box_row["bottom"])), color, 2)
+
+
+def hit_tile(frame: np.ndarray, frame_index: int, centre, inputs: dict, contact, homography: np.ndarray, caption: str, trail_frames: int) -> np.ndarray:
+    drawn = frame.copy()
+    for player, color in (("me", NEAR_BOX_COLOR_BGR), ("opp", FAR_BOX_COLOR_BGR)):
+        draw_box(drawn, player_row_near(inputs["boxes"], player, frame_index, 0), color)
+    shuttle = inputs["shuttle"]
+    trail = shuttle[(shuttle["frame"] > frame_index - trail_frames) & (shuttle["frame"] <= frame_index) & (shuttle["visibility"] == 1)]
+    points = trail[["x", "y"]].to_numpy(int)
+    for start_point, end_point in zip(points, points[1:]):
+        cv2.line(drawn, tuple(start_point), tuple(end_point), SHUTTLE_COLOR_BGR, 2, cv2.LINE_AA)
+    if len(points):
+        cv2.circle(drawn, tuple(points[-1]), 7, SHUTTLE_COLOR_BGR, 2)
+    if contact is not None and pd.notna(contact["hit_x"]):
+        floor_pixel = court_to_pixels(homography, [[contact["hit_x"], contact["hit_y"]]])[0]
+        marked(drawn, floor_pixel, CONTACT_COLOR_BGR, "contact")
+    return crop_around(drawn, centre, caption)
+
+
+def spot_check_centre(shuttle_pixel, hitter_box) -> tuple[float, float]:
+    if shuttle_pixel is not None:
+        return shuttle_pixel
+    if hitter_box is not None:
+        return (hitter_box["left"] + hitter_box["right"]) / 2, (hitter_box["top"] + hitter_box["bottom"]) / 2
+    return 0.0, 0.0
+
+
+def write_hit_spot_check(video_path: Path, start_frame: int, end_frame: int, hit_count: int, output_path: Path | None = None) -> Path:
+    inputs = range_inputs(Path(video_path), start_frame, end_frame)
+    homography = load_calibration(calibration_path(Path(video_path)))["pixel_to_court_homography"]
+    _, contacts_file = contact_paths(Path(video_path), start_frame, end_frame)
+    contacts = pd.read_csv(contacts_file).set_index("frame") if contacts_file.is_file() else None
+    fps = video_fps_and_width(Path(video_path))[0]
+    offset = frames_for_fps(HIT_SPOT_CHECK_OFFSET_FRAMES, fps)
+    capture = open_video(Path(video_path))
+    rows = []
+    try:
+        for hit in spot_check_hits(inputs["hits"], hit_count).itertuples():
+            frame_index = int(hit.frame)
+            shuttle_pixel = shuttle_pixel_near(inputs["shuttle"], frame_index, frames_for_fps(SHUTTLE_MAX_FRAME_GAP, fps))
+            box = player_row_near(inputs["boxes"], hit.hitter, frame_index, 0)
+            centre = spot_check_centre(shuttle_pixel, box)
+            contact = contacts.loc[frame_index] if contacts is not None and frame_index in contacts.index else None
+            tiles = []
+            for shift, label in ((-offset, "before"), (0, "hit"), (offset, "after")):
+                frame = read_frame(capture, frame_index + shift)
+                if frame is None:
+                    tiles.append(np.zeros((TILE_HEIGHT, TILE_WIDTH, 3), dtype=np.uint8))
+                    continue
+                caption = f"r{hit.rally} f{frame_index} {hit.hitter} score {hit.score:.2f}" if shift == 0 else f"{label} f{frame_index + shift}"
+                tiles.append(hit_tile(frame, frame_index + shift, centre, inputs, contact if shift == 0 else None, homography, caption, 3 * offset))
+            rows.append(np.hstack(tiles))
+    finally:
+        capture.release()
+    output_path = hit_spot_check_path(Path(video_path), start_frame, end_frame) if output_path is None else Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), np.vstack(rows), [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return output_path
+
+
 def parse_range(text: list[str]) -> tuple[int, int, int]:
     start_frame, end_frame, set_no = (int(value) for value in text)
     if set_no not in (1, 2, 3):
@@ -460,6 +579,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--left-handed", default="", help="comma-separated left-handed players: me, opp")
     parser.add_argument("--model", type=Path, default=POSE_MODEL_PATH, help="YOLO pose weights")
     parser.add_argument("--compare", metavar="SHUTTLESET_MATCH", help="compare with ShuttleSet's labelled hit points and draw the spot-check image")
+    parser.add_argument("--hit-spot-check", type=int, metavar="N", help="also draw N random hits of each range (before, at and after the hit) for checking by eye")
     return parser.parse_args(arguments)
 
 
@@ -477,12 +597,14 @@ def main(arguments: list[str]) -> int:
             contacts.to_csv(contacts_file, index=False)
             print(f"{start_frame}-{end_frame}: hits {len(contacts)}, " + ", ".join(f"{method}: {count}" for method, count in method_counts(contacts).items()))
             print(f"saved {contacts_file}")
+            if parsed.hit_spot_check:
+                print(f"saved {write_hit_spot_check(parsed.video, start_frame, end_frame, parsed.hit_spot_check)}")
         if parsed.compare:
             comparison = compare_ranges(parsed.video, ranges, parsed.compare, camera, left_handed, model_path=parsed.model)
             for set_name, set_rows in (("sets 1-2", comparison[comparison["set_no"] < 3]), ("set 3", comparison[comparison["set_no"] == 3]), ("all", comparison)):
                 for line in comparison_lines(set_rows, set_name):
                     print(line)
-            output_path = CHECKS_DIR / f"{Path(parsed.video).stem}_contact_spot_check.jpg"
+            output_path = CHECKS_DIR / f"{video_id(parsed.video)}_contact_spot_check.jpg"
             print(f"saved {write_contact_spot_check(parsed.video, camera, spot_check_sample(comparison), output_path)}")
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

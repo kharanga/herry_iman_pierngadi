@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from vision.alignment import SHUTTLESET_SET_DIR, load_set_shots
-from vision.court import NET_Y_M, calibration_path, load_calibration, pixels_to_court
+from vision.court import NET_Y_M, calibration_path, load_calibration, pixels_to_court, video_id
 from vision.players import PLAYERS, boxes_path, split_frames_by_view
 from vision.players import positions_path as player_positions_path
 from vision.shuttle import positions_path as shuttle_positions_path
@@ -314,7 +314,7 @@ def load_frame_tracks(video_path: Path, start_frame: int, end_frame: int) -> Fra
 
 
 def output_paths(video_path: Path, start_frame: int, end_frame: int, hits_dir: Path = HITS_DIR) -> tuple[Path, Path]:
-    folder = hits_dir / Path(video_path).stem
+    folder = hits_dir / video_id(video_path)
     return folder / f"hits_{start_frame}_{end_frame}.csv", folder / f"rallies_{start_frame}_{end_frame}.csv"
 
 

@@ -167,8 +167,8 @@ def test_command_with_points_writes_a_point_calibration_and_rejects_bad_input(tm
     names = list(HIDDEN_CORNER_POINTS)
     arguments = point_arguments(dict(zip(names, map(tuple, exact_pixels(names)))))
     assert main([str(video), "--frame", "1", "--output-dir", str(tmp_path / "out"), "--points", *arguments]) == 0
-    saved = load_calibration(tmp_path / "out" / "club" / "court.json")
-    assert saved["max_reference_error_px"] < 1e-3 and (tmp_path / "out" / "club" / "court_overlay.jpg").exists()
+    saved = load_calibration(tmp_path / "out" / court.video_id(video) / "court.json")
+    assert saved["max_reference_error_px"] < 1e-3 and (tmp_path / "out" / court.video_id(video) / "court_overlay.jpg").exists()
     for bad in (arguments[:3], arguments[:4] + ["nowhere=1,2"], arguments + ["near_baseline x right_doubles_sideline=987,657"]):
         assert main([str(video), "--frame", "1", "--output-dir", str(tmp_path / "bad"), "--points", *bad]) == 1
     assert not (tmp_path / "bad").exists() or not list((tmp_path / "bad").rglob("court.json"))

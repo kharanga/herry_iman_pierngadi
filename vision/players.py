@@ -20,6 +20,7 @@ from vision.court import (
     line_sample_counts,
     load_calibration,
     pixels_to_court,
+    video_id,
 )
 
 PLAYERS = ("me", "opp")
@@ -324,7 +325,7 @@ def track_players(
             box_rows.extend(player_box_rows(detections, frame_rows))
             if frame_index in overlay_frames:
                 checks_dir.mkdir(parents=True, exist_ok=True)
-                overlay_path = checks_dir / f"{Path(video_path).stem}_players_frame{frame_index}.jpg"
+                overlay_path = checks_dir / f"{video_id(video_path)}_players_frame{frame_index}.jpg"
                 cv2.imwrite(str(overlay_path), draw_players(frame, detections, frame_rows))
                 overlay_paths.append(overlay_path)
     finally:
@@ -360,11 +361,11 @@ def split_frames_by_view(
 
 
 def positions_path(video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR) -> Path:
-    return players_dir / Path(video_path).stem / f"positions_{start_frame}_{end_frame}.csv"
+    return players_dir / video_id(video_path) / f"positions_{start_frame}_{end_frame}.csv"
 
 
 def boxes_path(video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR) -> Path:
-    return players_dir / Path(video_path).stem / f"boxes_{start_frame}_{end_frame}.csv"
+    return players_dir / video_id(video_path) / f"boxes_{start_frame}_{end_frame}.csv"
 
 
 def save_positions(positions: pd.DataFrame, output_path: Path) -> Path:

@@ -291,7 +291,7 @@ def test_draw_players_colours_players_and_greys_bystanders_without_changing_inpu
 
 
 def test_positions_path_and_save_positions_round_trip(tmp_path):
-    assert positions_path(Path("videos/game_2.mp4"), 5, 9, tmp_path) == tmp_path / "game_2" / "positions_5_9.csv"
+    assert positions_path(Path("videos/game_2.mp4"), 5, 9, tmp_path) == tmp_path / "videos_game_2" / "positions_5_9.csv"
     table = positions_table([(1, "me", 2.0, 5)])
     saved_path = save_positions(table, tmp_path / "nested" / "positions.csv")
     pd.testing.assert_frame_equal(pd.read_csv(saved_path), table)

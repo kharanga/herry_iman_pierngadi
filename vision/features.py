@@ -30,6 +30,7 @@ HIT_COLOR_BGR, OPPONENT_COLOR_BGR, LANDING_COLOR_BGR, LABEL_COLOR_BGR, TEXT_COLO
 FEET_MAX_FRAME_GAP = 3
 POINT_NAMES = ("hit", "landing", "player", "opponent")
 DELETE_OWN_MATCH_SQL = "DELETE FROM shots WHERE shots.source = 'own' AND shots.match_id = ?"
+DELETE_OWN_MATCH_SET_SQL = "DELETE FROM shots WHERE shots.source = 'own' AND shots.match_id = ? AND shots.set_no = ?"
 OWN_MATCH_COUNT_SQL = "SELECT COUNT(*) FROM shots WHERE shots.source = 'own' AND shots.match_id = ?"
 SHUTTLESET_MATCH_SHOTS_SQL = """
 SELECT
@@ -255,12 +256,16 @@ def schema_frame(rows: list[dict]) -> pd.DataFrame:
     return frame
 
 
-def write_own_shots(database_path: Path, match_id: str, shots_frame: pd.DataFrame) -> int:
+def write_own_shots(database_path: Path, match_id: str, shots_frame: pd.DataFrame, replace_sets=None) -> int:
     connection = duckdb.connect(str(database_path))
     try:
         connection.execute("BEGIN TRANSACTION")
         create_shots_table(connection)
-        connection.execute(DELETE_OWN_MATCH_SQL, [match_id])
+        if replace_sets is None:
+            connection.execute(DELETE_OWN_MATCH_SQL, [match_id])
+        else:
+            for set_no in sorted(set(int(set_no) for set_no in replace_sets)):
+                connection.execute(DELETE_OWN_MATCH_SET_SQL, [match_id, set_no])
         connection.register("own_shot_rows", shots_frame)
         connection.execute(f"INSERT INTO shots ({', '.join(shots_frame.columns)}) SELECT * FROM own_shot_rows")
         connection.unregister("own_shot_rows")
@@ -378,6 +383,7 @@ def build_own_match(
     database_path: Path = DATABASE_PATH,
     left_handed: frozenset[str] = frozenset(),
     hit_point: str = "contact",
+    keep_other_sets: bool = False,
 ) -> pd.DataFrame:
     if hit_point not in HIT_POINT_SOURCES:
         raise ValueError(f"hit point must be one of {HIT_POINT_SOURCES}, got {hit_point!r}")
@@ -402,7 +408,8 @@ def build_own_match(
         next_rally_by_set[set_no] = first_rally + hits["rally"].nunique()
     shots_frame = schema_frame(rows)
     shots_frame.attrs["hit_point_methods"] = fallback_counts
-    write_own_shots(database_path, match_id, shots_frame)
+    replace_sets = sorted({set_no for _, _, set_no in ranges}) if keep_other_sets else None
+    write_own_shots(database_path, match_id, shots_frame, replace_sets)
     return shots_frame
 
 
@@ -596,6 +603,9 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--hit-point", choices=HIT_POINT_SOURCES, default="contact", help="contact: estimated racket contact (needs the camera and pose weights); feet: the hitter's feet"
     )
+    parser.add_argument(
+        "--keep-other-sets", action="store_true", help="replace only this match's rows of the sets in --range, keep its other sets (one video per set)"
+    )
     parser.add_argument("--database", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
     parser.add_argument("--compare", metavar="SHUTTLESET_MATCH", help="after writing, compare with this ShuttleSet match's labelled rows")
     parser.add_argument("--spot-check", action="store_true", help="don't write rows; draw the spot-check sheets for the match's rows already in the database (with --compare, also label vs feet)")
@@ -624,7 +634,9 @@ def main(arguments: list[str]) -> int:
             return run_spot_check(parsed)
         ranges = [parse_range(text) for text in parsed.range]
         left_handed = frozenset(player for player in parsed.left_handed.split(",") if player)
-        shots_frame = build_own_match(parsed.video, parsed.match_id, ranges, parsed.database, left_handed, parsed.hit_point)
+        shots_frame = build_own_match(
+            parsed.video, parsed.match_id, ranges, parsed.database, left_handed, parsed.hit_point, parsed.keep_other_sets
+        )
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

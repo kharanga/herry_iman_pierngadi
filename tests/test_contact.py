@@ -1,4 +1,5 @@
 import filecmp
+import json
 import re
 import subprocess
 import sys
@@ -32,6 +33,11 @@ from vision.contact import (
     hitter_pose,
     hitting_shoulder_pixel,
     is_newer,
+    is_same_source,
+    poses_for_range,
+    read_source_record,
+    source_record_path,
+    video_fingerprint,
     main,
     method_counts,
     parse_range,
@@ -218,7 +224,14 @@ def test_range_parsing_and_command_errors(tmp_path):
 
 
 def pose_caches_are_fresh() -> bool:
-    return all(is_newer(contact_paths(VIDEO_PATH, start, end)[0], hit_output_paths(VIDEO_PATH, start, end)[0]) for start, end, _ in TRACKED_RANGES)
+    if not (PROJECT_ROOT / VIDEO_PATH).exists():
+        return False
+    fingerprint = video_fingerprint(VIDEO_PATH)
+    return all(
+        is_newer(contact_paths(VIDEO_PATH, start, end)[0], hit_output_paths(VIDEO_PATH, start, end)[0])
+        and is_same_source(read_source_record(contact_paths(VIDEO_PATH, start, end)[0]), fingerprint)
+        for start, end, _ in TRACKED_RANGES
+    )
 
 
 real_contacts_required = pytest.mark.skipif(
@@ -323,3 +336,39 @@ def test_contact_source_has_no_comments_or_docstrings_and_docs_have_no_task_ids(
     for doc in ("docs/vision/contact.md", "docs/results/contact.md"):
         assert not re.search(TASK_ID_PATTERN, (PROJECT_ROOT / doc).read_text())
     assert "Examples need:" not in (PROJECT_ROOT / "docs" / "vision" / "contact.md").read_text()
+
+
+def test_pose_cache_is_reused_only_for_the_same_video_and_newer_than_its_hits(tmp_path, monkeypatch):
+    import time
+    import vision.contact as contact_module
+
+    monkeypatch.setattr(contact_module, "contact_paths", lambda video, start, end, *rest: (tmp_path / "contact" / f"poses_{start}_{end}.csv", tmp_path / "contact" / f"contacts_{start}_{end}.csv"))
+    monkeypatch.setattr(contact_module, "hit_output_paths", lambda video, start, end, *rest: (tmp_path / "hits" / f"hits_{start}_{end}.csv", tmp_path / "hits" / f"rallies_{start}_{end}.csv"))
+    detections = []
+
+    def fake_detect_poses(video_path, frames, model_path=None):
+        detections.append(Path(video_path).name)
+        return pd.DataFrame([{column: 1.0 for column in POSE_COLUMNS}]).assign(frame=len(detections))
+
+    monkeypatch.setattr(contact_module, "detect_poses", fake_detect_poses)
+    first, second = tmp_path / "a" / "set1.avi", tmp_path / "b" / "set1.avi"
+    for video, content in ((first, b"first recording" * 1000), (second, b"second recording" * 1000)):
+        video.parent.mkdir(parents=True)
+        video.write_bytes(content)
+    (tmp_path / "hits").mkdir()
+    (tmp_path / "hits" / "hits_0_9.csv").write_text("frame\n1\n")
+    hits_table = pd.DataFrame({"frame": [1]})
+    poses_for_range(first, 0, 9, hits_table)
+    poses_for_range(first, 0, 9, hits_table)
+    assert detections == ["set1.avi"]
+    record = json.loads(source_record_path(tmp_path / "contact" / "poses_0_9.csv").read_text())
+    assert record == {"video": str(first.resolve()), **video_fingerprint(first)}
+    poses_for_range(second, 0, 9, hits_table)
+    assert len(detections) == 2 and json.loads(source_record_path(tmp_path / "contact" / "poses_0_9.csv").read_text())["video"] == str(second.resolve())
+    time.sleep(0.01)
+    (tmp_path / "hits" / "hits_0_9.csv").write_text("frame\n1\n2\n")
+    poses_for_range(second, 0, 9, hits_table)
+    assert len(detections) == 3
+    source_record_path(tmp_path / "contact" / "poses_0_9.csv").write_text("not json")
+    poses_for_range(second, 0, 9, hits_table)
+    assert len(detections) == 4

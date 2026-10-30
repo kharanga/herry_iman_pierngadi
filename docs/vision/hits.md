@@ -56,7 +56,7 @@ hitter's position to a side).
 | `--start`, `--end` | the tracked range (inclusive) |
 | `--evaluate` | compare with ShuttleSet's hit frames for this match folder and set: precision and recall within ±5 frames, hitter accuracy, frame offset |
 
-Output under `data/hits/<video stem>/`:
+Output under `data/hits/<video id>/`:
 - `hits_<start>_<end>.csv` (`HIT_COLUMNS`): `rally` (1-based within the range),
   `frame`, `hitter` (`me` near side, `opp` far side), `score`, `reach` (of the hitter,
   body heights).

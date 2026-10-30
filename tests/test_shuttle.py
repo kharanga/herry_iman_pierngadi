@@ -199,9 +199,9 @@ def test_draw_shuttle_trail_marks_the_current_position_and_keeps_the_input():
     assert draw_shuttle_trail(frame, []).sum() == 0
 
 
-def test_output_paths_follow_the_video_stem():
-    assert positions_path(Path("videos/game.mp4"), 5, 9).as_posix() == "data/shuttle/game/shuttle_5_9.csv"
-    assert overlay_path(Path("videos/game.mp4"), 5, 9).as_posix() == "data/checks/shuttle/game_shuttle_5_9.mp4"
+def test_output_paths_follow_the_video_id():
+    assert positions_path(Path("videos/game.mp4"), 5, 9).as_posix() == "data/shuttle/videos_game/shuttle_5_9.csv"
+    assert overlay_path(Path("videos/game.mp4"), 5, 9).as_posix() == "data/checks/shuttle/videos_game_shuttle_5_9.mp4"
 
 
 def test_networks_produce_the_expected_shapes_on_small_inputs():

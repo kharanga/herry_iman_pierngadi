@@ -18,6 +18,7 @@ DOUBLES_LONG_SERVICE_LINE_FROM_BASELINE_M = 0.76
 PAINTED_LINE_WIDTH_M = 0.04
 SEARCH_RADIUS_LINE_WIDTHS = 1.5
 CORNER_NAMES = ("near_left", "near_right", "far_right", "far_left")
+DATA_DIR = Path("data")
 CALIBRATION_DIR = Path("data/calibration")
 SHUTTLESET_HOMOGRAPHY_CSV = Path("data/CoachAI-Projects/ShuttleSet/set/homography.csv")
 LINE_COLOR_BGR = (0, 0, 255)
@@ -331,8 +332,19 @@ def line_offsets_to_bright_pixels(
     return np.array(offsets)
 
 
+def is_directly_under(folder: Path, path: Path) -> bool:
+    return path.parent.resolve() == folder.resolve()
+
+
+def video_id(video_path: Path, data_dir: Path = DATA_DIR) -> str:
+    path = Path(video_path)
+    if path.parent == Path(".") or is_directly_under(data_dir, path):
+        return path.stem
+    return f"{path.parent.name}_{path.stem}"
+
+
 def calibration_path(video_path: Path, calibration_dir: Path = CALIBRATION_DIR) -> Path:
-    return calibration_dir / Path(video_path).stem / "court.json"
+    return calibration_dir / video_id(video_path) / "court.json"
 
 
 def point_calibration(video_path: Path, frame_index: int, frame_size: tuple[int, int], point_pixels: dict) -> dict:

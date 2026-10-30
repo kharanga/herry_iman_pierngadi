@@ -39,7 +39,7 @@ functions) is pure; `detect_poses`, `poses_for_range`, `contacts_for_range`,
 ## Command
 
 ```
-.venv/bin/python -m vision.contact <video> --range START END SET [--range ...] [--left-handed me,opp] [--model path] [--compare SHUTTLESET_MATCH]
+.venv/bin/python -m vision.contact <video> --range START END SET [--range ...] [--left-handed me,opp] [--model path] [--compare SHUTTLESET_MATCH] [--hit-spot-check N]
 ```
 
 Needs the camera (`python -m vision.camera`), and for each range the player, shuttle
@@ -47,9 +47,13 @@ and hit files (`python -m vision.players`, `vision.shuttle`, `vision.hits` with 
 `--start`/`--end`), and the pose weights `data/models/yolo11s-pose.pt` (download:
 `cd data/models && ../../.venv/bin/python -c "from ultralytics import YOLO; YOLO('yolo11s-pose.pt')"`).
 
-Writes per range `data/contact/<video stem>/poses_<start>_<end>.csv` (the pose model's
-shoulders on each hit frame, reused while it is newer than the hits file; about 1 s
-per hit on the CPU) and `contacts_<start>_<end>.csv` (`CONTACT_COLUMNS`: `frame`,
+Writes per range `data/contact/<video id>/poses_<start>_<end>.csv` (the pose model's
+shoulders on each hit frame; about 1 s per hit on the CPU) with a source record next to
+it, `poses_<start>_<end>.csv.source.json` (the video's resolved path, size and SHA-256
+of its first and last MB, the same format `scout` writes). The cached poses are reused
+only while they are newer than the hits file and the record matches the video; a
+different video with the same video id, a missing record or a newer hits file means
+the poses are computed again and `contacts_<start>_<end>.csv` (`CONTACT_COLUMNS`: `frame`,
 `hitter`, `hit_x`, `hit_y` (the contact floor point, or the feet on a fallback),
 `contact_z`, `feet_x`, `feet_y`, `method`). `method` is `contact: sphere`,
 `contact: closest to sphere`, `feet: no shuttle pixel`, `feet: no pose` or `no feet`;
@@ -58,7 +62,7 @@ the counts are printed per range.
 With `--compare`: matches the hits to ShuttleSet's labelled hit points (±5 frames),
 prints the median and mean distance of the contact estimate and of the feet to the
 labelled hit point for sets 1-2, set 3 and all, and writes
-`data/checks/contact/<video stem>_contact_spot_check.jpg`: 10 random matched hits
+`data/checks/contact/<video id>_contact_spot_check.jpg`: 10 random matched hits
 (numpy seed 1) with the shuttle pixel (yellow), the contact floor point (green, with a
 line up to the contact in the air), the feet (blue) and the labelled hit point (red).
 
@@ -232,6 +236,58 @@ summary; all ranges together; the sampled hits and their image.
 1    130          129              0.0           1.0
 >>> print(comparison_lines(contact_comparison(contacts, labels), "example")[0])
 example: 2 matched hits, distance to the labelled hit point: contact median 0.10 m (mean 0.10), feet median 1.10 m (mean 1.10); contact closer on 2 of 2
+
+```
+
+With `--hit-spot-check N`: for each range also writes
+`data/checks/hits/<video id>_hit_spot_check_<start>_<end>.jpg`, N random hits (numpy
+seed 1), each as three frames 6 frames (at 30 fps, scaled with the frame rate) before,
+at and after the hit, cropped around the shuttle, with the shuttle's path in yellow,
+`me`'s box blue, `opp`'s red and the contact floor point green; for checking hits,
+hitters and hit points by eye where there are no labels.
+
+## Source records and the hit spot check
+
+### `video_fingerprint(video_path) -> dict`, `source_record_path(output_path)`, `write_source_record(output_path, video_path, fingerprint)`, `read_source_record(output_path) -> dict | None`, `is_same_source(record, fingerprint) -> bool`
+`FINGERPRINT_BYTES` (1 MB) from the start and from the end of the file are hashed;
+`is_same_source` compares size and both hashes (not the path, so a moved video still
+matches). `read_source_record` is `None` for a missing or unreadable record.
+
+```python
+>>> import tempfile
+>>> from vision.contact import is_same_source, read_source_record, source_record_path, video_fingerprint, write_source_record
+>>> folder = Path(tempfile.mkdtemp())
+>>> _ = (folder / "clip.mp4").write_bytes(b"abc" * 1000)
+>>> fingerprint = video_fingerprint(folder / "clip.mp4")
+>>> fingerprint["size"], len(fingerprint["head_sha256"])
+(3000, 64)
+>>> source_record_path(folder / "poses_0_9.csv").name
+'poses_0_9.csv.source.json'
+>>> _ = write_source_record(folder / "poses_0_9.csv", folder / "clip.mp4", fingerprint)
+>>> record = read_source_record(folder / "poses_0_9.csv")
+>>> sorted(record), is_same_source(record, fingerprint), is_same_source(record, {**fingerprint, "size": 1})
+(['head_sha256', 'size', 'tail_sha256', 'video'], True, False)
+>>> read_source_record(folder / "missing.csv") is None, is_same_source(None, fingerprint)
+(True, False)
+
+```
+
+### `hit_spot_check_path(video_path, start_frame, end_frame)`, `spot_check_hits(hits, hit_count, seed=1)`, `spot_check_centre(shuttle_pixel, hitter_box)`, `draw_box(...)`, `hit_tile(...)`, `write_hit_spot_check(video_path, start_frame, end_frame, hit_count, output_path=None) -> Path`
+The image's path; the sampled hits (in frame order); where a tile is centred (the
+shuttle pixel, else the hitter's box centre); the drawing; the whole image. Needs the
+range's track and hit files (`FileNotFoundError` naming the command otherwise); the
+contacts file is optional.
+
+```python
+>>> import pandas as pd
+>>> from vision.contact import hit_spot_check_path, spot_check_centre, spot_check_hits
+>>> hit_spot_check_path(Path("data/recordings/stand_in/set1.mp4"), 0, 3599).as_posix()
+'data/checks/hits/stand_in_set1_hit_spot_check_0_3599.jpg'
+>>> hits = pd.DataFrame({"rally": 1, "frame": [50, 10, 30, 70, 90], "hitter": "me", "score": 0.9, "reach": 0.0})
+>>> spot_check_hits(hits, 3)["frame"].tolist(), spot_check_hits(hits, 10)["frame"].tolist()
+([30, 50, 70], [10, 30, 50, 70, 90])
+>>> spot_check_centre((640.0, 300.0), None), spot_check_centre(None, {"left": 100, "top": 200, "right": 140, "bottom": 300})
+((640.0, 300.0), (120.0, 250.0))
 
 ```
 

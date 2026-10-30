@@ -43,7 +43,7 @@ from vision.features import (
     with_labelled_sides,
     write_own_shots,
 )
-from vision.contact import contact_paths, is_newer
+from vision.contact import contact_paths, is_newer, is_same_source, read_source_record, video_fingerprint
 from vision.hits import output_paths as hit_output_paths
 from shots.predict import predict_shot_types
 
@@ -214,6 +214,7 @@ def test_range_parsing_and_command_errors(tmp_path):
 def pose_caches_are_fresh() -> bool:
     return all(
         is_newer(contact_paths(Path("data/match.mp4"), start, end)[0], hit_output_paths(Path("data/match.mp4"), start, end)[0])
+        and is_same_source(read_source_record(contact_paths(Path("data/match.mp4"), start, end)[0]), video_fingerprint(Path("data/match.mp4")))
         for start, end, _ in TRACKED_RANGES
     )
 
@@ -466,3 +467,21 @@ def test_features_source_has_no_comments_or_docstrings_and_docs_have_no_task_ids
     for doc in ("docs/vision/features.md", "docs/results/features.md", "docs/vision/court.md"):
         assert not re.search(TASK_ID_PATTERN, (PROJECT_ROOT / doc).read_text())
     assert "Examples need:" not in (PROJECT_ROOT / "docs" / "vision" / "features.md").read_text()
+
+
+def test_keep_other_sets_replaces_only_the_written_sets(tmp_path):
+    database_path = tmp_path / "scout.duckdb"
+    rows = lambda set_no, count, match_id="club": schema_frame([shot_row(match_id, set_no, 1, ball_round, 100 + ball_round, 30.0, "me", (3.0, 2.0), None, None, frozenset()) for ball_round in range(1, count + 1)])
+    write_own_shots(database_path, "club", rows(1, 3))
+    write_own_shots(database_path, "club", rows(2, 2), replace_sets=[2])
+    write_own_shots(database_path, "other", rows(1, 1, "other"))
+    write_own_shots(database_path, "club", rows(2, 4), replace_sets=[2])
+    connection = duckdb.connect(str(database_path), read_only=True)
+    counts = connection.execute("SELECT shots.match_id, shots.set_no, COUNT(*) FROM shots GROUP BY shots.match_id, shots.set_no ORDER BY shots.match_id, shots.set_no").fetchall()
+    connection.close()
+    assert counts == [("club", 1, 3), ("club", 2, 4), ("other", 1, 1)]
+    write_own_shots(database_path, "club", rows(3, 1))
+    connection = duckdb.connect(str(database_path), read_only=True)
+    counts = connection.execute("SELECT shots.match_id, shots.set_no, COUNT(*) FROM shots GROUP BY shots.match_id, shots.set_no ORDER BY shots.match_id, shots.set_no").fetchall()
+    connection.close()
+    assert counts == [("club", 3, 1), ("other", 1, 1)]

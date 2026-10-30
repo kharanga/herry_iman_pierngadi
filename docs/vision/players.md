@@ -75,12 +75,12 @@ needs `lap`, which is in `requirements.txt`. Ultralytics is AGPL-3.0.
 | `--start`, `--end` | first and last frame to track (inclusive) |
 | `--shuttleset-rally` | track one labelled rally: ShuttleSet match folder, set number, rally number. Tracks from the rally's first hit frame to its last, plus `--padding` frames each side |
 | `--padding` | frames before and after a ShuttleSet rally (default 30); the start is clamped to frame 0 |
-| `--calibration` | `court.json` to use (default `data/calibration/<video stem>/court.json`) |
+| `--calibration` | `court.json` to use (default `data/calibration/<video id>/court.json`) |
 | `--model` | YOLO weights (default `data/models/yolo11s.pt`) |
-| `--overlay-frame N` | save an overlay of frame N to `data/checks/players/<video stem>_players_frame<N>.jpg`; repeatable. `me` in blue, `opp` in red with track id and meters, everyone else grey |
+| `--overlay-frame N` | save an overlay of frame N to `data/checks/players/<video id>_players_frame<N>.jpg`; repeatable. `me` in blue, `opp` in red with track id and meters, everyone else grey |
 | `--views-only` | only run the view check and print how many frames are main view and how many are skipped; no YOLO, about 12 ms per frame |
 
-Output: `data/players/<video stem>/positions_<start>_<end>.csv`, one row per
+Output: `data/players/<video id>/positions_<start>_<end>.csv`, one row per
 player per main-view frame where that player was found, and next to it
 `boxes_<start>_<end>.csv` with the same rows' pixel boxes (`BOX_COLUMNS`: `frame`,
 `player`, `left`, `top`, `right`, `bottom`), which hit detection uses to measure how

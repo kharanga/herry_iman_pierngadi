@@ -48,11 +48,12 @@ and `main` read files or the database.
 
 | Argument | Meaning |
 |---|---|
-| `video` | the video; its calibration (`data/calibration/<stem>/court.json`) and, for each range, the files of `python -m vision.players`, `python -m vision.shuttle` and `python -m vision.hits` must exist; with `--hit-point contact` also the camera (`python -m vision.camera`) and the pose weights (`docs/vision/contact.md`) |
+| `video` | the video; its calibration (`data/calibration/<video id>/court.json`) and, for each range, the files of `python -m vision.players`, `python -m vision.shuttle` and `python -m vision.hits` must exist; with `--hit-point contact` also the camera (`python -m vision.camera`) and the pose weights (`docs/vision/contact.md`) |
 | `--match-id` | recording id for the rows (any text; `report.serve` shows it as the title) |
 | `--range START END SET` | a tracked range and its set number (1-3); repeat for several ranges, rallies are numbered on per set |
 | `--left-handed` | comma-separated players who are left-handed (`me`, `opp`); zones and the hitting shoulder depend on it |
 | `--hit-point` | `contact` (default: the estimated contact's floor point) or `feet` |
+| `--keep-other-sets` | replace only the match's rows of the sets given in `--range` and keep its other sets, so one match can be written one video (set) at a time; without it every own row of the match id is replaced |
 | `--database` | DuckDB file (default `data/scout.duckdb`) |
 | `--compare` | after writing, compare the rows with this ShuttleSet match's labelled rows (below) |
 | `--spot-check` | write nothing; draw check images for the match's rows already in the database: `data/checks/features/<match-id>_spot_check_<k>.jpg` (20 random rows, 5 per sheet: the hit frame with the hit point in yellow (the contact floor point, or the feet) and the opponent in blue, and the next hit's frame with the landing point in red, captioned with the row's values and, with `--compare`, the matched label) and, with `--compare`, `<match-id>_label_vs_feet.jpg` (6 matched rows: ShuttleSet's hit pixel in red, the tracked feet, `player_x/y`, in yellow). Prints the `not_over_net` breakdown and the sample tally |
@@ -242,12 +243,29 @@ pandas types (`Int64`, `float64`, `boolean`, `object`).
 
 ```
 
-### `write_own_shots(database_path, match_id, shots_frame) -> int`
+### `write_own_shots(database_path, match_id, shots_frame, replace_sets=None) -> int`
 In one transaction: create the table if needed (`analytics.build_shots.create_shots_table`),
-delete the own rows with that `match_id`, insert the frame; returns the number of own
-rows of that `match_id` afterwards. Raises (and rolls back) on any constraint violation.
+delete the own rows with that `match_id` (only those of the set numbers in
+`replace_sets`, if given), insert the frame; returns the number of own rows of that
+`match_id` afterwards. Raises (and rolls back) on any constraint violation.
 
-### `build_own_match(video_path, match_id, ranges, database_path=DATABASE_PATH, left_handed=frozenset(), hit_point="contact") -> DataFrame`
+```python
+>>> import tempfile
+>>> from pathlib import Path
+>>> from vision.features import write_own_shots
+>>> database = Path(tempfile.mkdtemp()) / "scout.duckdb"
+>>> def set_rows(set_no, count):
+...     return schema_frame([shot_row("club_1", set_no, 1, index + 1, 100 + index, 60.0, "me", (3.0, 2.0), None, None, frozenset())
+...                          for index in range(count)])
+>>> write_own_shots(database, "club_1", set_rows(1, 3)), write_own_shots(database, "club_1", set_rows(2, 2), replace_sets=[2])
+(3, 5)
+>>> write_own_shots(database, "club_1", set_rows(2, 4), replace_sets=[2]), write_own_shots(database, "club_1", set_rows(1, 1))
+(7, 1)
+
+```
+
+### `build_own_match(video_path, match_id, ranges, database_path=DATABASE_PATH, left_handed=frozenset(), hit_point="contact", keep_other_sets=False) -> DataFrame`
+With `keep_other_sets=True` only the sets in `ranges` are replaced (one call per set video).
 The whole thing for a list of `(start_frame, end_frame, set_no)`: loads each range's
 track files (`load_range_tracks`; `FileNotFoundError` naming the command for a missing
 one), with `hit_point="contact"` estimates the contacts (`vision.contact.contacts_for_range`,

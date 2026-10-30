@@ -81,9 +81,9 @@ be installed (it pins old torch, numpy and OpenCV).
 | `--shuttleset-rally` | ShuttleSet match folder, set number, rally number: tracks from the rally's first hit to its last, plus `--padding` frames each side (start clamped to 0) |
 | `--padding` | frames before and after a ShuttleSet rally (default 30) |
 | `--ensemble` | `weighted` (default, about 1.6 s per frame on CPU) or `nonoverlap` (about 0.25 s per frame, 6 times faster) |
-| `--overlay` | also write `data/checks/shuttle/<video stem>_shuttle_<start>_<end>.mp4`: the last 8 visible positions as a yellow trail and the current one as a red circle |
+| `--overlay` | also write `data/checks/shuttle/<video id>_shuttle_<start>_<end>.mp4`: the last 8 visible positions as a yellow trail and the current one as a red circle |
 
-Output: `data/shuttle/<video stem>/shuttle_<start>_<end>.csv`, one row per frame:
+Output: `data/shuttle/<video id>/shuttle_<start>_<end>.csv`, one row per frame:
 
 | Column | Type | Meaning |
 |---|---|---|

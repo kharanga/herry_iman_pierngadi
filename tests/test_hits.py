@@ -277,10 +277,10 @@ def test_player_box_rows_follow_the_labelled_players_and_round_to_a_tenth():
     assert player_box_rows(detections, []) == []
 
 
-def test_output_paths_follow_the_video_stem():
-    assert boxes_path(Path("videos/game.mp4"), 5, 9).as_posix() == "data/players/game/boxes_5_9.csv"
+def test_output_paths_follow_the_video_id():
+    assert boxes_path(Path("videos/game.mp4"), 5, 9).as_posix() == "data/players/videos_game/boxes_5_9.csv"
     hits_file, rallies_file = output_paths(Path("videos/game.mp4"), 5, 9)
-    assert (hits_file.as_posix(), rallies_file.as_posix()) == ("data/hits/game/hits_5_9.csv", "data/hits/game/rallies_5_9.csv")
+    assert (hits_file.as_posix(), rallies_file.as_posix()) == ("data/hits/videos_game/hits_5_9.csv", "data/hits/videos_game/rallies_5_9.csv")
 
 
 def test_main_missing_track_file_exits_one_with_the_command_to_run(tmp_path, monkeypatch, capsys):
