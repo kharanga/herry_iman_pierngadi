@@ -5,7 +5,7 @@ import duckdb
 import joblib
 import pandas as pd
 
-from shots.features import FEATURE_NAMES, has_hitter_and_landing_point, load_shot_feature_rows, shot_features
+from shots.features import FEATURE_NAMES, SHIPPED_FEATURE_SET, has_hitter_and_landing_point, load_shot_feature_rows, shot_features
 
 DATABASE_PATH = Path("data/scout.duckdb")
 MODEL_PATH = Path("data/models/shot_type_classifier.joblib")
@@ -30,6 +30,18 @@ FROM shots
 WHERE shots.source = 'shuttleset'
 """
 
+OWN_PREDICTION_SUMMARY_SQL = """
+SELECT
+    shots.match_id,
+    COUNT(*) AS shots,
+    COUNT(shots.type_pred) AS predicted_shots,
+    COUNT(DISTINCT (shots.set_no, shots.rally)) AS rallies
+FROM shots
+WHERE shots.source = 'own'
+GROUP BY shots.match_id
+ORDER BY shots.match_id
+"""
+
 UNKNOWN_SHOT_PREDICTIONS_SQL = """
 SELECT shots.type_pred, COUNT(*) AS shot_count
 FROM shots
@@ -40,20 +52,21 @@ ORDER BY shot_count DESC, shots.type_pred
 
 
 class ModelFeatureMismatchError(RuntimeError):
-    def __init__(self, model_feature_names: tuple[str, ...]):
+    def __init__(self, model_feature_names: tuple[str, ...], model_feature_set: str | None = None):
         super().__init__(
-            f"model was trained on features {list(model_feature_names)}, "
-            f"but shots/features.py now produces {list(FEATURE_NAMES)}; retrain with python -m shots.train"
+            f"model was trained on the {model_feature_set!r} feature set with features {list(model_feature_names)}, "
+            f"but shots/features.py now produces the {SHIPPED_FEATURE_SET!r} set {list(FEATURE_NAMES)}; retrain with python -m shots.train"
         )
         self.model_feature_names = model_feature_names
+        self.model_feature_set = model_feature_set
 
 
 def load_model(model_path: Path) -> dict:
     if not Path(model_path).is_file():
         raise FileNotFoundError(f"model not found: {model_path} (run python -m shots.train first)")
     model = joblib.load(model_path)
-    if tuple(model["feature_names"]) != FEATURE_NAMES:
-        raise ModelFeatureMismatchError(tuple(model["feature_names"]))
+    if tuple(model["feature_names"]) != FEATURE_NAMES or model.get("feature_set") != SHIPPED_FEATURE_SET:
+        raise ModelFeatureMismatchError(tuple(model["feature_names"]), model.get("feature_set"))
     return model
 
 
@@ -80,6 +93,10 @@ def prediction_summary(database_path: Path = DATABASE_PATH) -> dict:
         cursor = connection.execute(PREDICTION_SUMMARY_SQL)
         summary = dict(zip([description[0] for description in cursor.description], cursor.fetchone()))
         summary["unknown_shot_predictions"] = dict(connection.execute(UNKNOWN_SHOT_PREDICTIONS_SQL).fetchall())
+        summary["own_matches"] = {
+            match_id: {"shots": shots, "predicted_shots": predicted_shots, "rallies": rallies}
+            for match_id, shots, predicted_shots, rallies in connection.execute(OWN_PREDICTION_SUMMARY_SQL).fetchall()
+        }
     finally:
         connection.close()
     return summary

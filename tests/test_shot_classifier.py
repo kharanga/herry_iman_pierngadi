@@ -11,12 +11,14 @@ import pytest
 
 import shots.train
 from analytics.build_shots import SCHEMA_PATH
-from shots.features import FEATURE_NAMES, load_shot_feature_rows, shot_features
+from analytics.court import COURT_LENGTH_M, COURT_WIDTH_M
+from shots.features import FEATURE_NAMES, FEATURE_SET_NAMES, SHIPPED_FEATURE_SET, has_hitter_and_landing_point, load_shot_feature_rows, shot_features
+from shots.jitter import JITTER_OFFSETS_FRAMES, jitter_label
 from shots.predict import ModelFeatureMismatchError, load_model, predict_shot_types
 from shots.train import TRAINED_GROUPS, grouped_cross_validation, train_classifier
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-RESULTS_PATH = PROJECT_ROOT / "docs" / "results" / "classifier.md"
+RESULTS_PATH = PROJECT_ROOT / "docs" / "results" / "classifier_feet.md"
 REAL_REPORT_PATH = PROJECT_ROOT / "data" / "models" / "shot_type_classifier_report.json"
 TASK_ID_PATTERN = r"\b(ANA|VIS|INT)-\d+\b"
 LABEL_OR_IDENTITY_WORDS = ("type", "group", "player", "match", "source", "set", "rally", "score", "reason", "backhand", "height", "aroundhead", "getpoint", "flaw")
@@ -62,10 +64,28 @@ def synthetic_shot_rows(match_count: int, shots_per_group: int, random_seed: int
                         "is_cross": False,
                     }
                 )
-                rows.append({**labelled_shot, "ball_round": ball_round - 1 if ball_round > 1 else 0, "frame_num": 60, "hit_x": landing[0], "hit_y": 13.4 - landing[1], "type_group": "unknown", "type_en": "unknown"})
+                previous_hitter = (landing[0], COURT_LENGTH_M - landing[1])
+                reply_hitter = (COURT_WIDTH_M - labelled_shot["landing_x"], COURT_LENGTH_M - labelled_shot["landing_y"])
+                rows.append({**labelled_shot, "ball_round": ball_round - 1 if ball_round > 1 else 0, "frame_num": 60, "hit_x": previous_hitter[0], "hit_y": previous_hitter[1], "player_x": previous_hitter[0], "player_y": previous_hitter[1], "type_group": "unknown", "type_en": "unknown"})
                 rows.append(labelled_shot)
-                rows.append({**labelled_shot, "ball_round": ball_round + 1, "frame_num": 100 + flight_frames, "type_group": "unknown", "type_en": "unknown"})
+                rows.append({**labelled_shot, "ball_round": ball_round + 1, "frame_num": 100 + flight_frames, "player_x": reply_hitter[0], "player_y": reply_hitter[1], "type_group": "unknown", "type_en": "unknown"})
     return rows
+
+
+SHOTS_PER_RALLY = 3
+PREDICTABLE_SHOTS_PER_RALLY = SHOTS_PER_RALLY - 1
+
+
+def predictable_synthetic_shots(match_count: int, shots_per_group: int) -> int:
+    return match_count * shots_per_group * len(GROUP_SHOT_PATTERNS) * PREDICTABLE_SHOTS_PER_RALLY
+
+
+def feature_rows_of(database_path: Path) -> pd.DataFrame:
+    connection = duckdb.connect(str(database_path), read_only=True)
+    try:
+        return load_shot_feature_rows(connection)
+    finally:
+        connection.close()
 
 
 def write_shots_database(database_path: Path, rows: list[dict]) -> Path:
@@ -113,6 +133,69 @@ def test_shot_features_do_not_change_when_labels_or_identities_are_shuffled(tmp_
         shuffled[column_name] = random.permutation(shuffled[column_name].to_numpy())
     pd.testing.assert_frame_equal(shot_features(shot_rows), shot_features(shuffled))
     assert list(shot_features(shot_rows).columns) == list(FEATURE_NAMES)
+
+
+def test_shipped_feature_set_is_feet_and_unknown_sets_are_refused():
+    assert SHIPPED_FEATURE_SET == "feet" and set(FEATURE_SET_NAMES) == {"contact", "feet"}
+    with pytest.raises(ValueError, match="unknown feature set 'shuttle'"):
+        shot_features(pd.DataFrame(synthetic_shot_rows(1, 1)), "shuttle")
+
+
+def test_feet_features_come_from_the_feet_and_the_reply_hitters_feet_only(tmp_path):
+    rows = synthetic_shot_rows(1, 2)
+    rows = [{**row, "hit_x": None, "hit_y": None, "landing_x": None, "landing_y": None, "is_cross": None} for row in rows]
+    shot_rows = feature_rows_of(write_shots_database(tmp_path / "scout.duckdb", rows)).sort_values(["rally", "ball_round"])
+    feet = shot_features(shot_rows, "feet")
+    ordered = shot_rows.reset_index(drop=True)
+    feet = feet.reset_index(drop=True)
+    assert feet["hit_x"].tolist() == pytest.approx(ordered["player_x"].tolist())
+    assert feet["hit_y"].tolist() == pytest.approx(ordered["player_y"].tolist())
+    assert feet["receiver_x"].tolist() == pytest.approx(ordered["opponent_x"].tolist())
+    for position in range(0, len(ordered), SHOTS_PER_RALLY):
+        first, second, last = position, position + 1, position + 2
+        assert feet.loc[first, "landing_x"] == pytest.approx(COURT_WIDTH_M - ordered.loc[second, "player_x"])
+        assert feet.loc[first, "landing_y"] == pytest.approx(COURT_LENGTH_M - ordered.loc[second, "player_y"])
+        assert feet.loc[second, "landing_y"] == pytest.approx(COURT_LENGTH_M - ordered.loc[last, "player_y"])
+        assert np.isnan(feet.loc[last, "landing_x"]) and np.isnan(feet.loc[last, "landing_y"])
+        assert np.isnan(feet.loc[first, "previous_shot_distance"]) and np.isnan(feet.loc[first, "previous_hit_y"])
+        assert feet.loc[second, "previous_hit_y"] == pytest.approx(ordered.loc[first, "player_y"])
+        expected_previous_distance = np.hypot(
+            COURT_WIDTH_M - ordered.loc[second, "player_x"] - ordered.loc[first, "player_x"],
+            COURT_LENGTH_M - ordered.loc[second, "player_y"] - ordered.loc[first, "player_y"],
+        )
+        assert feet.loc[second, "previous_shot_distance"] == pytest.approx(expected_previous_distance)
+    assert has_hitter_and_landing_point(feet).tolist() == [True, True, False] * (len(ordered) // SHOTS_PER_RALLY)
+
+
+def test_feet_is_cross_is_recomputed_from_the_two_feet_points():
+    base = {
+        "ball_round": 2, "frame_num": 100, "fps": 30.0, "hit_x": None, "hit_y": None, "landing_x": None, "landing_y": None,
+        "opponent_x": 3.0, "opponent_y": 9.0, "is_cross": True, "previous_frame_num": None, "next_frame_num": 130,
+        "previous_hit_x": None, "previous_hit_y": None, "previous_landing_x": None, "previous_landing_y": None,
+        "previous_player_x": None, "previous_player_y": None,
+    }
+    shot_rows = pd.DataFrame(
+        [
+            {**base, "player_x": 1.0, "player_y": 2.0, "next_player_x": 1.0, "next_player_y": 2.0},
+            {**base, "player_x": 1.0, "player_y": 2.0, "next_player_x": 5.0, "next_player_y": 2.0},
+            {**base, "player_x": 2.8, "player_y": 2.0, "next_player_x": 2.6, "next_player_y": 2.0},
+            {**base, "player_x": 1.0, "player_y": 2.0, "next_player_x": None, "next_player_y": None},
+        ]
+    )
+    feet = shot_features(shot_rows, "feet")
+    assert feet["landing_x"].tolist()[:3] == pytest.approx([COURT_WIDTH_M - 1.0, COURT_WIDTH_M - 5.0, COURT_WIDTH_M - 2.6])
+    assert feet["is_cross"].tolist()[:3] == [1.0, 0.0, 0.0]
+    assert np.isnan(feet["is_cross"].iloc[3])
+
+
+def test_contact_features_still_use_the_labelled_points(tmp_path):
+    shot_rows = feature_rows_of(write_shots_database(tmp_path / "scout.duckdb", synthetic_shot_rows(1, 2)))
+    contact = shot_features(shot_rows, "contact")
+    assert contact["hit_x"].tolist() == pytest.approx(shot_rows["hit_x"].tolist())
+    assert contact["landing_x"].tolist() == pytest.approx(shot_rows["landing_x"].tolist())
+    assert contact["landing_y"].tolist() == pytest.approx(shot_rows["landing_y"].tolist())
+    assert contact["is_cross"].tolist() == pytest.approx(shot_rows["is_cross"].astype(float).tolist())
+    assert has_hitter_and_landing_point(contact).all()
 
 
 def test_timing_features_come_from_neighbouring_hit_frames_only(tmp_path):
@@ -171,6 +254,7 @@ def test_training_excludes_unknown_and_own_rows_and_saves_model_and_report(train
     database_path, model_path, report = trained_synthetic_model
     assert report["training_shots"] == 5 * 12 * len(GROUP_SHOT_PATTERNS)
     assert report["training_matches"] == 5
+    assert report["feature_set"] == "feet"
     assert set(report["group_counts"]) == set(TRAINED_GROUPS)
     assert model_path.is_file() and model_path.with_name("classifier_report.json").is_file()
     assert json.loads(model_path.with_name("classifier_report.json").read_text())["accuracy_mean"] == report["accuracy_mean"]
@@ -178,7 +262,28 @@ def test_training_excludes_unknown_and_own_rows_and_saves_model_and_report(train
     assert all(fold["test_matches"] == 1 for fold in report["folds"])
     model = joblib.load(model_path)
     assert tuple(model["feature_names"]) == FEATURE_NAMES
+    assert model["feature_set"] == "feet"
     assert "unknown" not in model["groups"]
+
+
+def test_training_report_scores_every_fold_on_jittered_hit_frames_too(trained_synthetic_model):
+    _, _, report = trained_synthetic_model
+    assert list(report["variants"]) == [jitter_label(offset) for offset in JITTER_OFFSETS_FRAMES] == ["hit frames +/- 5", "hit frames +/- 10"]
+    for scores in report["variants"].values():
+        assert 0.0 <= scores["accuracy_mean"] <= 1.0 and 0.0 <= scores["out_of_fold_accuracy"] <= 1.0
+        assert set(scores["per_group"]) == set(TRAINED_GROUPS)
+        assert sum(group["support"] for group in scores["per_group"].values()) == report["training_shots"]
+    assert report["subsets"]["rally's last shot (no next hit, so no flight time)"] == {"shots": 0, "accuracy": None}
+    assert report["subsets"]["all other shots"]["shots"] == report["training_shots"]
+
+
+def test_training_on_the_contact_set_evaluates_the_labelled_points(trained_synthetic_model, tmp_path):
+    database_path, _, feet_report = trained_synthetic_model
+    report = train_classifier(database_path, tmp_path / "contact.joblib", fold_count=5, permutation_repeats=0, feature_set="contact")
+    assert report["feature_set"] == "contact" and joblib.load(tmp_path / "contact.joblib")["feature_set"] == "contact"
+    assert report["training_shots"] == feet_report["training_shots"]
+    assert all(np.isnan(value) for value in report["permutation_importance"].values())
+    assert list(report["variants"]) == list(feet_report["variants"])
 
 
 def test_predict_fills_only_type_pred_and_type_conf_for_every_source(trained_synthetic_model, tmp_path):
@@ -187,18 +292,24 @@ def test_predict_fills_only_type_pred_and_type_conf_for_every_source(trained_syn
     database_path.write_bytes(source_database.read_bytes())
     connection = duckdb.connect(str(database_path))
     connection.execute(
-        "INSERT INTO shots (source, match_id, set_no, rally, ball_round, frame_num, fps, player, hit_x, hit_y, landing_x, landing_y) "
-        "VALUES ('own', 'my_game', 1, 1, 1, 10, 30.0, 'me', 3.0, 5.5, 2.8, 7.4), ('own', 'my_game', 1, 1, 2, 30, 30.0, 'opp', 3.0, 5.6, 3.1, 7.5)"
+        "INSERT INTO shots (source, match_id, set_no, rally, ball_round, frame_num, fps, player, player_x, player_y, opponent_x, opponent_y) "
+        "VALUES ('own', 'my_game', 1, 1, 1, 10, 30.0, 'me', 3.0, 5.5, 3.1, 7.5), ('own', 'my_game', 1, 1, 2, 30, 30.0, 'opp', 3.0, 5.6, 3.1, 7.9), "
+        "('own', 'my_game', 1, 1, 3, 60, 30.0, 'me', 2.0, 1.0, 3.0, 8.0)"
     )
     connection.execute("CREATE TABLE before_predict AS SELECT * FROM shots")
     connection.close()
-    assert predict_shot_types(database_path, model_path) == 5 * 12 * len(GROUP_SHOT_PATTERNS) * 3 + 2
+    assert predict_shot_types(database_path, model_path) == predictable_synthetic_shots(5, 12) + 2
     other_columns = "* EXCLUDE (type_pred, type_conf)"
     for first_table, second_table in (("shots", "before_predict"), ("before_predict", "shots")):
         assert all_rows(database_path, f"SELECT COUNT(*) FROM (SELECT {other_columns} FROM {first_table} EXCEPT ALL SELECT {other_columns} FROM {second_table})") == [(0,)]
-    assert all_rows(database_path, "SELECT COUNT(*) FROM shots WHERE shots.type_pred IS NULL OR shots.type_conf IS NULL") == [(0,)]
+    assert all_rows(database_path, "SELECT COUNT(*) FROM shots WHERE (shots.type_pred IS NULL) <> (shots.type_conf IS NULL)") == [(0,)]
+    last_shot_of_rally = (
+        "shots.ball_round = (SELECT MAX(last_shots.ball_round) FROM shots AS last_shots WHERE last_shots.source = shots.source "
+        "AND last_shots.match_id = shots.match_id AND last_shots.set_no = shots.set_no AND last_shots.rally = shots.rally)"
+    )
+    assert all_rows(database_path, f"SELECT COUNT(*) FROM shots WHERE (shots.type_pred IS NULL) <> ({last_shot_of_rally})") == [(0,)]
     assert all_rows(database_path, "SELECT COUNT(*) FROM shots WHERE shots.type_conf < 0 OR shots.type_conf > 1 OR shots.type_pred NOT IN ('serve', 'clear', 'drop', 'smash', 'net', 'lift', 'drive')") == [(0,)]
-    assert all_rows(database_path, "SELECT COUNT(*) FROM shots WHERE shots.source = 'own' AND shots.type_pred IS NOT NULL") == [(2,)]
+    assert all_rows(database_path, "SELECT shots.ball_round FROM shots WHERE shots.source = 'own' AND shots.type_pred IS NOT NULL ORDER BY shots.ball_round") == [(1,), (2,)]
 
 
 def test_predict_twice_gives_the_same_table(trained_synthetic_model, tmp_path):
@@ -221,6 +332,21 @@ def test_load_model_missing_or_with_other_features_raises(trained_synthetic_mode
     joblib.dump(model, stale_model_path)
     with pytest.raises(ModelFeatureMismatchError):
         load_model(stale_model_path)
+
+
+def test_load_model_refuses_a_model_trained_on_the_contact_set(trained_synthetic_model, tmp_path):
+    _, model_path, _ = trained_synthetic_model
+    contact_model = {**joblib.load(model_path), "feature_set": "contact"}
+    contact_model_path = tmp_path / "contact.joblib"
+    joblib.dump(contact_model, contact_model_path)
+    with pytest.raises(ModelFeatureMismatchError, match="'contact' feature set") as raised:
+        load_model(contact_model_path)
+    assert raised.value.model_feature_set == "contact" and raised.value.model_feature_names == FEATURE_NAMES
+    model_without_set = {key: value for key, value in joblib.load(model_path).items() if key != "feature_set"}
+    joblib.dump(model_without_set, tmp_path / "old.joblib")
+    with pytest.raises(ModelFeatureMismatchError):
+        load_model(tmp_path / "old.joblib")
+    assert load_model(model_path)["feature_set"] == "feet"
 
 
 def documented_table_rows(heading: str) -> list[list[str]]:
@@ -247,6 +373,13 @@ def test_results_doc_numbers_equal_the_training_report():
     assert documented_matrix == report["confusion_matrix"]["rows_true_columns_predicted"]
     for feature_name, accuracy_drop in documented_table_rows("## Feature importance"):
         assert accuracy_drop == f"{report['permutation_importance'][feature_name]:.3f}", feature_name
+    assert report["feature_set"] == "feet"
+    assert f"**{report['training_shots']:,} shots from {report['training_matches']} matches**" in results_text
+    jitter_rows = {row[0]: row for row in documented_table_rows("## Timing jitter")}
+    assert jitter_rows["exact"][3] == f"{report['accuracy_mean']:.1%}"
+    for max_offset in JITTER_OFFSETS_FRAMES:
+        jittered_accuracy = report["variants"][jitter_label(max_offset)]["accuracy_mean"]
+        assert jitter_rows[f"+/- {max_offset}"][3] == f"{jittered_accuracy:.1%} ({(jittered_accuracy - report['accuracy_mean']) * 100:+.1f})"
 
 
 @pytest.mark.parametrize("source_path", sorted((PROJECT_ROOT / "shots").glob("*.py")), ids=lambda path: path.name)
@@ -260,33 +393,46 @@ def test_shots_source_has_no_comments_or_docstrings(source_path):
     assert [line for line in source_text.splitlines() if line.lstrip().startswith("#")] == []
 
 
-@pytest.mark.parametrize("doc_name", ["analytics/classifier.md", "results/classifier.md"])
+@pytest.mark.parametrize("doc_name", ["analytics/classifier.md", "results/classifier.md", "results/classifier_feet.md"])
 def test_classifier_docs_have_no_task_ids(doc_name):
     assert re.findall(TASK_ID_PATTERN, (PROJECT_ROOT / "docs" / doc_name).read_text()) == []
 
 
+FEET = {"player_x": 3.0, "player_y": 5.5}
+NO_FEET = {"player_x": None, "player_y": None}
+LABELLED_POINTS = {"hit_x": 3.0, "hit_y": 5.5, "landing_x": 2.8, "landing_y": 7.4}
+NO_LABELLED_POINTS = {"hit_x": None, "hit_y": None, "landing_x": None, "landing_y": None}
 GEOMETRY_CASES = {
-    "both points": {"hit_x": 3.0, "hit_y": 5.5, "player_x": 3.0, "player_y": 5.5, "landing_x": 2.8, "landing_y": 7.4},
-    "hitter position only, no hit point": {"hit_x": None, "hit_y": None, "player_x": 3.0, "player_y": 5.5, "landing_x": 2.8, "landing_y": 7.4},
-    "no landing": {"hit_x": 3.0, "hit_y": 5.5, "player_x": 3.0, "player_y": 5.5, "landing_x": None, "landing_y": None},
-    "no hitter point": {"hit_x": None, "hit_y": None, "player_x": None, "player_y": None, "landing_x": 2.8, "landing_y": 7.4},
-    "nothing": {"hit_x": None, "hit_y": None, "player_x": None, "player_y": None, "landing_x": None, "landing_y": None},
+    "feet and a reply with feet": [{**FEET, **NO_LABELLED_POINTS}, {**FEET, **NO_LABELLED_POINTS}],
+    "feet and labelled points, reply with feet": [{**FEET, **LABELLED_POINTS}, {**FEET, **LABELLED_POINTS}],
+    "feet, no reply": [{**FEET, **LABELLED_POINTS}],
+    "feet, reply without feet": [{**FEET, **LABELLED_POINTS}, {**NO_FEET, **LABELLED_POINTS}],
+    "labelled points only, reply with feet": [{**NO_FEET, **LABELLED_POINTS}, {**FEET, **LABELLED_POINTS}],
+    "nothing": [{**NO_FEET, **NO_LABELLED_POINTS}, {**NO_FEET, **NO_LABELLED_POINTS}],
 }
-EXPECTED_PREDICTED = {"both points": True, "hitter position only, no hit point": True, "no landing": False, "no hitter point": False, "nothing": False}
+EXPECTED_PREDICTED = {
+    "feet and a reply with feet": True,
+    "feet and labelled points, reply with feet": True,
+    "feet, no reply": False,
+    "feet, reply without feet": False,
+    "labelled points only, reply with feet": False,
+    "nothing": False,
+}
 
 
 def insert_own_geometry_cases(database_path: Path) -> None:
     connection = duckdb.connect(str(database_path))
-    for rally, (case_name, points) in enumerate(GEOMETRY_CASES.items(), start=1):
-        connection.execute(
-            "INSERT INTO shots (source, match_id, set_no, rally, ball_round, frame_num, fps, player, type_pred, type_conf, "
-            "hit_x, hit_y, player_x, player_y, landing_x, landing_y) VALUES ('own', ?, 1, ?, 2, 100, 30.0, 'me', 'smash', 0.99, ?, ?, ?, ?, ?, ?)",
-            [case_name, rally, points["hit_x"], points["hit_y"], points["player_x"], points["player_y"], points["landing_x"], points["landing_y"]],
-        )
+    for rally, (case_name, shots_of_case) in enumerate(GEOMETRY_CASES.items(), start=1):
+        for ball_round, points in enumerate(shots_of_case, start=2):
+            connection.execute(
+                "INSERT INTO shots (source, match_id, set_no, rally, ball_round, frame_num, fps, player, type_pred, type_conf, "
+                "hit_x, hit_y, player_x, player_y, landing_x, landing_y) VALUES ('own', ?, 1, ?, ?, ?, 30.0, 'me', 'smash', 0.99, ?, ?, ?, ?, ?, ?)",
+                [case_name, rally, ball_round, 100 + 30 * ball_round, points["hit_x"], points["hit_y"], points["player_x"], points["player_y"], points["landing_x"], points["landing_y"]],
+            )
     connection.close()
 
 
-def test_predict_leaves_rows_without_hitter_or_landing_point_null_and_clears_stale_predictions(trained_synthetic_model, tmp_path):
+def test_predict_leaves_rows_without_feet_or_reply_feet_null_and_clears_stale_predictions(trained_synthetic_model, tmp_path):
     source_database, model_path, _ = trained_synthetic_model
     database_path = tmp_path / "geometry.duckdb"
     database_path.write_bytes(source_database.read_bytes())
@@ -294,23 +440,29 @@ def test_predict_leaves_rows_without_hitter_or_landing_point_null_and_clears_sta
     predicted_count = predict_shot_types(database_path, model_path)
     own_predictions = dict(
         (match_id, (type_pred, type_conf))
-        for match_id, type_pred, type_conf in all_rows(database_path, "SELECT shots.match_id, shots.type_pred, shots.type_conf FROM shots WHERE shots.source = 'own'")
+        for match_id, type_pred, type_conf in all_rows(
+            database_path, "SELECT shots.match_id, shots.type_pred, shots.type_conf FROM shots WHERE shots.source = 'own' AND shots.ball_round = 2"
+        )
     )
     for case_name, should_predict in EXPECTED_PREDICTED.items():
         type_pred, type_conf = own_predictions[case_name]
         assert (type_pred is not None) == should_predict, case_name
         assert (type_conf is not None) == should_predict, case_name
+    assert all_rows(database_path, "SELECT COUNT(*) FROM shots WHERE shots.source = 'own' AND shots.ball_round = 3 AND shots.type_pred IS NOT NULL") == [(0,)]
     assert predicted_count == all_rows(database_path, "SELECT COUNT(shots.type_pred) FROM shots")[0][0]
 
 
-def test_training_drops_labelled_shots_without_hitter_or_landing_point(tmp_path):
+def test_training_drops_labelled_shots_without_feet_or_reply_feet_but_keeps_those_without_labelled_points(tmp_path):
     rows = synthetic_shot_rows(5, 12)
-    labelled_index = next(index for index, row in enumerate(rows) if row["type_group"] == "drop")
-    rows[labelled_index] = {**rows[labelled_index], "landing_x": None, "landing_y": None}
+    first_of = lambda group: next(index for index, row in enumerate(rows) if row["type_group"] == group)
+    rows[first_of("drop")] = {**rows[first_of("drop")], "landing_x": None, "landing_y": None, "hit_x": None, "hit_y": None}
+    rows[first_of("clear")] = {**rows[first_of("clear")], "player_x": None, "player_y": None}
+    rows[first_of("smash") + 1] = {**rows[first_of("smash") + 1], "player_x": None, "player_y": None}
+    del rows[first_of("lift") + 1]
     database_path = write_shots_database(tmp_path / "scout.duckdb", rows)
     report = train_classifier(database_path, tmp_path / "models" / "classifier.joblib", fold_count=5, permutation_repeats=1)
-    assert report["training_shots"] == 5 * 12 * len(GROUP_SHOT_PATTERNS) - 1
-    assert report["group_counts"]["drop"] == 5 * 12 - 1
+    assert report["training_shots"] == 5 * 12 * len(GROUP_SHOT_PATTERNS) - 3
+    assert report["group_counts"] == {**{group: 5 * 12 for group in TRAINED_GROUPS}, "clear": 5 * 12 - 1, "smash": 5 * 12 - 1, "lift": 5 * 12 - 1}
 
 
 REAL_COMPARISON_PATH = PROJECT_ROOT / "data" / "models" / "feature_set_comparison.json"
@@ -322,23 +474,51 @@ def test_shipped_model_row_of_the_comparison_equals_the_training_report_fold_by_
     report = json.loads(REAL_REPORT_PATH.read_text())
     comparison = json.loads(REAL_COMPARISON_PATH.read_text())
     assert comparison["shipped model"]["feature_names"] == list(FEATURE_NAMES)
+    assert comparison["shipped model"]["feature_set"] == "feet"
     assert comparison["shipped model"]["fold_accuracies"] == [fold["accuracy"] for fold in report["folds"]]
 
 
+REAL_HIT_POINT_COMPARISON_PATH = PROJECT_ROOT / "data" / "models" / "hit_point_comparison.json"
+
+
 @pytest.mark.skipif(
-    not REAL_REPORT_PATH.exists() or not REAL_COMPARISON_PATH.exists() or not REAL_DATABASE_PATH.exists(),
-    reason="run shots.train, shots.compare_features and shots.predict first",
+    not REAL_REPORT_PATH.exists() or not REAL_HIT_POINT_COMPARISON_PATH.exists(), reason="run shots.train and shots.compare_hit_points first"
+)
+def test_feet_on_all_its_shots_in_the_hit_point_comparison_equals_the_training_report():
+    report = json.loads(REAL_REPORT_PATH.read_text())
+    comparison = json.loads(REAL_HIT_POINT_COMPARISON_PATH.read_text())
+    feet = comparison["all_shots"]["feet"]
+    assert feet["shots"] == report["training_shots"] and feet["matches"] == report["training_matches"]
+    assert [fold["accuracy"] for fold in feet["folds"]] == [fold["accuracy"] for fold in report["folds"]]
+    assert feet["confusion_matrix"] == report["confusion_matrix"]
+    assert {name: scores["accuracy_mean"] for name, scores in feet["variants"].items()} == {
+        name: scores["accuracy_mean"] for name, scores in report["variants"].items()
+    }
+    shared_counts = {feature_set: comparison["shared_shots"][feature_set]["shots"] for feature_set in FEATURE_SET_NAMES}
+    assert len(set(shared_counts.values())) == 1
+    assert shared_counts["feet"] <= min(comparison["all_shots"][feature_set]["shots"] for feature_set in FEATURE_SET_NAMES)
+    assert comparison["landing_offset_m"]["shots"] == shared_counts["feet"]
+
+
+def results_doc_sections(tables: str) -> list[tuple[str, str]]:
+    return [tuple(section.split("\n\n", 1)) for section in tables.split("### ")[1:]]
+
+
+@pytest.mark.skipif(
+    not REAL_REPORT_PATH.exists() or not REAL_COMPARISON_PATH.exists() or not REAL_DATABASE_PATH.exists() or not REAL_HIT_POINT_COMPARISON_PATH.exists(),
+    reason="run shots.train, shots.compare_features, shots.compare_hit_points and shots.predict first",
 )
 def test_every_generated_results_table_appears_verbatim_in_the_results_doc():
     from shots.predict import prediction_summary
-    from shots.results_tables import results_tables
+    from shots.results_tables import hit_point_results_tables, results_tables
 
     tables = results_tables(
         json.loads(REAL_REPORT_PATH.read_text()), json.loads(REAL_COMPARISON_PATH.read_text()), prediction_summary(REAL_DATABASE_PATH)
     )
+    hit_point_tables = hit_point_results_tables(json.loads(REAL_HIT_POINT_COMPARISON_PATH.read_text()))
     results_text = RESULTS_PATH.read_text()
-    sections = tables.split("### ")[1:]
-    assert len(sections) == 8
-    for section in sections:
-        title, table = section.split("\n\n", 1)
+    sections = results_doc_sections(tables)
+    hit_point_sections = results_doc_sections(hit_point_tables)
+    assert len(sections) == 8 and len(hit_point_sections) == 6
+    for title, table in sections + hit_point_sections:
         assert table.strip() in results_text, title

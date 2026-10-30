@@ -13,7 +13,8 @@ from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_f
 from sklearn.model_selection import GroupKFold
 
 from analytics.shot_types import SHOT_TYPE_GROUPS
-from shots.features import FEATURE_NAMES, has_hitter_and_landing_point, load_shot_feature_rows, shot_features
+from shots.features import FEATURE_NAMES, SHIPPED_FEATURE_SET, has_hitter_and_landing_point, load_shot_feature_rows, shot_features
+from shots.jitter import JITTER_OFFSETS_FRAMES, JITTER_SEED, jitter_hit_frames, jitter_label
 
 DATABASE_PATH = Path("data/scout.duckdb")
 MODEL_PATH = Path("data/models/shot_type_classifier.joblib")
@@ -27,16 +28,32 @@ def new_classifier(random_seed: int = RANDOM_SEED) -> HistGradientBoostingClassi
     return HistGradientBoostingClassifier(random_state=random_seed)
 
 
-def labelled_shuttleset_rows(connection: duckdb.DuckDBPyConnection) -> pd.DataFrame:
-    shot_rows = load_shot_feature_rows(connection)
+def labelled_rows_of(shot_rows: pd.DataFrame, feature_set: str = SHIPPED_FEATURE_SET) -> pd.DataFrame:
     is_labelled = (shot_rows["source"] == "shuttleset") & shot_rows["type_group"].isin(TRAINED_GROUPS)
-    is_predictable = has_hitter_and_landing_point(shot_features(shot_rows))
+    is_predictable = has_hitter_and_landing_point(shot_features(shot_rows, feature_set))
     return shot_rows[is_labelled & is_predictable].reset_index(drop=True)
 
 
-def labelled_shuttleset_shots(connection: duckdb.DuckDBPyConnection) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
-    labelled_rows = labelled_shuttleset_rows(connection)
-    return shot_features(labelled_rows), labelled_rows["type_group"], labelled_rows["match_id"]
+def labelled_shuttleset_rows(connection: duckdb.DuckDBPyConnection, feature_set: str = SHIPPED_FEATURE_SET) -> pd.DataFrame:
+    return labelled_rows_of(load_shot_feature_rows(connection), feature_set)
+
+
+def labelled_shuttleset_shots(
+    connection: duckdb.DuckDBPyConnection, feature_set: str = SHIPPED_FEATURE_SET
+) -> tuple[pd.DataFrame, pd.Series, pd.Series]:
+    labelled_rows = labelled_shuttleset_rows(connection, feature_set)
+    return shot_features(labelled_rows, feature_set), labelled_rows["type_group"], labelled_rows["match_id"]
+
+
+def jittered_feature_frames(
+    shot_rows: pd.DataFrame, labelled_rows: pd.DataFrame, feature_set: str, random_seed: int = JITTER_SEED
+) -> dict[str, pd.DataFrame]:
+    frames = {}
+    for max_offset in JITTER_OFFSETS_FRAMES:
+        jittered_rows = jitter_hit_frames(shot_rows, max_offset, random_seed).set_index("row_id").loc[labelled_rows["row_id"]]
+        jittered_rows.index = labelled_rows.index
+        frames[jitter_label(max_offset)] = shot_features(jittered_rows, feature_set)
+    return frames
 
 
 def majority_group(labels: pd.Series) -> str:
@@ -53,6 +70,15 @@ def per_group_scores(true_groups: pd.Series, predicted_groups: np.ndarray) -> di
     }
 
 
+def variant_scores(labels: pd.Series, out_of_fold_predictions: np.ndarray, fold_accuracies: list[float]) -> dict:
+    return {
+        "accuracy_mean": float(np.mean(fold_accuracies)),
+        "accuracy_std": float(np.std(fold_accuracies)),
+        "out_of_fold_accuracy": float(accuracy_score(labels, out_of_fold_predictions)),
+        "per_group": per_group_scores(labels, out_of_fold_predictions),
+    }
+
+
 def grouped_cross_validation(
     features: pd.DataFrame,
     labels: pd.Series,
@@ -61,8 +87,12 @@ def grouped_cross_validation(
     random_seed: int = RANDOM_SEED,
     permutation_repeats: int = PERMUTATION_REPEATS,
     breakdown_rows: pd.DataFrame | None = None,
+    scoring_variants: dict[str, pd.DataFrame] | None = None,
 ) -> dict:
+    scoring_variants = scoring_variants or {}
     out_of_fold_predictions = np.empty(len(labels), dtype=object)
+    variant_predictions = {name: np.empty(len(labels), dtype=object) for name in scoring_variants}
+    variant_fold_accuracies = {name: [] for name in scoring_variants}
     folds = []
     importance_per_fold = []
     for fold_index, (train_index, test_index) in enumerate(GroupKFold(n_splits=fold_count).split(features, labels, match_ids)):
@@ -84,16 +114,21 @@ def grouped_cross_validation(
                 "majority_accuracy": float((labels.iloc[test_index] == baseline_group).mean()),
             }
         )
-        importance = permutation_importance(
-            classifier,
-            features.iloc[test_index],
-            labels.iloc[test_index],
-            n_repeats=permutation_repeats,
-            random_state=random_seed,
-            scoring="accuracy",
-        )
-        importance_per_fold.append(importance.importances_mean)
-    mean_importance = np.mean(importance_per_fold, axis=0)
+        for name, variant_features in scoring_variants.items():
+            variant_fold_predictions = classifier.predict(variant_features.iloc[test_index])
+            variant_predictions[name][test_index] = variant_fold_predictions
+            variant_fold_accuracies[name].append(float(accuracy_score(labels.iloc[test_index], variant_fold_predictions)))
+        if permutation_repeats > 0:
+            importance = permutation_importance(
+                classifier,
+                features.iloc[test_index],
+                labels.iloc[test_index],
+                n_repeats=permutation_repeats,
+                random_state=random_seed,
+                scoring="accuracy",
+            )
+            importance_per_fold.append(importance.importances_mean)
+    mean_importance = np.mean(importance_per_fold, axis=0) if importance_per_fold else np.full(len(FEATURE_NAMES), np.nan)
     breakdowns = {} if breakdown_rows is None else out_of_fold_breakdowns(breakdown_rows, labels, out_of_fold_predictions)
     return {
         **breakdowns,
@@ -113,6 +148,9 @@ def grouped_cross_validation(
                 key=lambda name_and_value: -name_and_value[1],
             )
         ),
+        "variants": {
+            name: variant_scores(labels, variant_predictions[name], variant_fold_accuracies[name]) for name in scoring_variants
+        },
     }
 
 
@@ -144,11 +182,14 @@ def out_of_fold_breakdowns(breakdown_rows: pd.DataFrame, labels: pd.Series, out_
     }
 
 
-def save_model(classifier: HistGradientBoostingClassifier, model_path: Path, training_shots: int, training_matches: int) -> None:
+def save_model(
+    classifier: HistGradientBoostingClassifier, model_path: Path, training_shots: int, training_matches: int, feature_set: str = SHIPPED_FEATURE_SET
+) -> None:
     model_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(
         {
             "classifier": classifier,
+            "feature_set": feature_set,
             "feature_names": FEATURE_NAMES,
             "groups": tuple(classifier.classes_),
             "sklearn_version": sklearn.__version__,
@@ -169,20 +210,30 @@ def train_classifier(
     fold_count: int = FOLD_COUNT,
     random_seed: int = RANDOM_SEED,
     permutation_repeats: int = PERMUTATION_REPEATS,
+    feature_set: str = SHIPPED_FEATURE_SET,
 ) -> dict:
     connection = duckdb.connect(str(database_path), read_only=True)
     try:
-        labelled_rows = labelled_shuttleset_rows(connection)
+        shot_rows = load_shot_feature_rows(connection)
     finally:
         connection.close()
-    features, labels, match_ids = shot_features(labelled_rows), labelled_rows["type_group"], labelled_rows["match_id"]
+    labelled_rows = labelled_rows_of(shot_rows, feature_set)
+    features, labels, match_ids = shot_features(labelled_rows, feature_set), labelled_rows["type_group"], labelled_rows["match_id"]
     report = grouped_cross_validation(
-        features, labels, match_ids, fold_count, random_seed, permutation_repeats, breakdown_rows=labelled_rows
+        features,
+        labels,
+        match_ids,
+        fold_count,
+        random_seed,
+        permutation_repeats,
+        breakdown_rows=labelled_rows,
+        scoring_variants=jittered_feature_frames(shot_rows, labelled_rows, feature_set),
     )
     final_classifier = new_classifier(random_seed).fit(features, labels)
-    save_model(final_classifier, model_path, len(labels), match_ids.nunique())
+    save_model(final_classifier, model_path, len(labels), match_ids.nunique(), feature_set)
     report.update(
         {
+            "feature_set": feature_set,
             "training_shots": len(labels),
             "training_matches": int(match_ids.nunique()),
             "group_counts": {group: int(count) for group, count in labels.value_counts().reindex(TRAINED_GROUPS, fill_value=0).items()},
@@ -195,9 +246,10 @@ def train_classifier(
 
 def summary_lines(report: dict) -> list[str]:
     return [
-        f"trained on {report['training_shots']} shots from {report['training_matches']} matches",
+        f"trained on {report['training_shots']} shots from {report['training_matches']} matches ({report['feature_set']} features)",
         f"held-out accuracy {report['accuracy_mean']:.3f} +/- {report['accuracy_std']:.3f} over {len(report['folds'])} match folds",
         f"majority-class baseline {report['majority_accuracy_mean']:.3f}",
+        *(f"{name}: held-out accuracy {scores['accuracy_mean']:.3f}" for name, scores in report["variants"].items()),
         f"saved {report['model_path']}",
     ]
 

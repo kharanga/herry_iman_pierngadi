@@ -9,28 +9,28 @@ shots; there is no comparison with other players, no score, no ranking and no mi
 
 ## Runs on every match
 All 88 ShuttleSet players (44 matches x 2) and the 2 players of my tracked match run without error.
-Loading the shots and building the observations takes 0.3 s; counting all 90 players then takes 1.0 s.
+Loading the shots and building the observations takes 0.4 s; counting all 90 players then takes 1.9 s.
 
 | | Entries per player |
 |---|---|
-| ShuttleSet, whole match | 126 to 333 (median 245) |
-| `match_tracked`, `me` | 62 |
-| `match_tracked`, `opp` | 65 |
+| ShuttleSet, whole match | 128 to 333 (median 244.5) |
+| `match_tracked`, `me` | 69 |
+| `match_tracked`, `opp` | 64 |
 
-- One entry per (situation, choice), 21,790 in total over 9,201 situations.
-- In every situation the choices' `k` add up to its `n`: checked for all 9,201 situations (9,201 hold).
-- Nothing is filtered: 11,788 entries are a single shot ("1 of n").
-- Entries per family: zone_mix 2,924, response 17,225, serve_placement 539, winning_shot 351, error_shot 482, error_reason 269.
-- Label source: ShuttleSet 21,285 `labels`, 295 `mixed` and
-  83 `predictions` (21,663 in all). A situation is `mixed` when some of its shots were typed `unknown`
-  in ShuttleSet and got the classifier's group, and `predictions` when all of them were: the 83 `predictions`
-  entries (83 `response`) come from situations so small that every shot in them was `unknown`, e.g.
-  `response:serve|mid_forehand|mid_middle:drive cross, 1 of 1`; my tracked match 127 `predictions`
+- One entry per (situation, choice), 21,797 in total over 9,202 situations.
+- In every situation the choices' `k` add up to its `n`: checked for all 9,202 situations (9,202 hold).
+- Nothing is filtered: 11,792 entries are a single shot ("1 of n").
+- Entries per family: zone_mix 2,930, response 17,231, serve_placement 534, winning_shot 351, error_shot 482, error_reason 269.
+- Label source: ShuttleSet 21,282 `labels`, 298 `mixed` and
+  84 `predictions` (21,664 in all). A situation is `mixed` when some of its shots were typed `unknown`
+  in ShuttleSet and got the classifier's group, and `predictions` when all of them were: the 84 `predictions`
+  entries (84 `response`) come from situations so small that every shot in them was `unknown`, e.g.
+  `response:serve|mid_forehand|mid_middle:drive cross, 1 of 1`; my tracked match 133 `predictions`
   and 0 `mixed`, since nobody labels my shots.
 
 Replies count the other player's previous shot by its type, where it was hit from and where it landed, and the
-reply by its type and direction: 31,705 counted replies, 20,922 straight,
-10,780 cross and 3 with no direction (`is_cross` missing).
+reply by its type and direction: 31,709 counted replies, 20,921 straight,
+10,780 cross and 8 with no direction (`is_cross` missing).
 
 Example, Ginting (B) in Axelsen vs Ginting (Thailand Open 2021 SF), in his most frequent reply situation:
 
@@ -48,5 +48,5 @@ The choices add up: 7 + 6 + 4 + 4 + 3 + 1 = 25.
 - Player labels on one-shot `unknown` rallies are unreliable in ShuttleSet, so those rallies (and the 2 known A/B-swapped
   rallies) are left out of per-player counts.
 - On my footage every shot type is a classifier prediction (held-out accuracy on ShuttleSet in
-  `docs/results/classifier.md`); positions and timing come from tracking.
+  `docs/results/classifier_feet.md`); positions and timing come from tracking.
 - A set 1 -> set 2 check of how well habits carry over was removed with the comparison to pros; it can come back as its own task.

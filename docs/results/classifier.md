@@ -1,4 +1,11 @@
-# Shot-type classifier: results
+# Shot-type classifier: results (contact-point model, superseded)
+
+**Superseded.** The shipped model is now trained on the players' feet only, because the pipeline
+tracks the players and not the shuttle: see `docs/results/classifier_feet.md` for the current model,
+the side-by-side comparison with this one and the timing-jitter table. The tables below are the
+earlier model's, trained on ShuttleSet's labelled hit and landing points (the `contact` feature set
+of `shots/features.py`), and are kept as the reference it is compared against. Running the commands
+below today trains and prints the feet model, not these numbers.
 
 ## How to run
 ```

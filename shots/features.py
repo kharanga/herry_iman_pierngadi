@@ -2,8 +2,10 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from analytics.court import NET_Y_M
+from analytics.court import CENTRE_X_M, COURT_LENGTH_M, COURT_WIDTH_M, CROSS_COURT_MIN_LATERAL_M, NET_Y_M
 
+FEATURE_SET_NAMES = ("contact", "feet")
+SHIPPED_FEATURE_SET = "feet"
 FEATURE_NAMES = (
     "hit_x",
     "hit_y",
@@ -49,7 +51,11 @@ SELECT
     LAG(shots.hit_x) OVER rally_order AS previous_hit_x,
     LAG(shots.hit_y) OVER rally_order AS previous_hit_y,
     LAG(shots.landing_x) OVER rally_order AS previous_landing_x,
-    LAG(shots.landing_y) OVER rally_order AS previous_landing_y
+    LAG(shots.landing_y) OVER rally_order AS previous_landing_y,
+    LAG(shots.player_x) OVER rally_order AS previous_player_x,
+    LAG(shots.player_y) OVER rally_order AS previous_player_y,
+    LEAD(shots.player_x) OVER rally_order AS next_player_x,
+    LEAD(shots.player_y) OVER rally_order AS next_player_y
 FROM shots
 WINDOW rally_order AS (
     PARTITION BY shots.source, shots.match_id, shots.set_no, shots.rally
@@ -74,6 +80,20 @@ def hitter_point_columns(shot_rows: pd.DataFrame) -> tuple[np.ndarray, np.ndarra
     return np.where(use_hit, hit_x, player_x), np.where(use_hit, hit_y, player_y)
 
 
+def rotated_into_other_frame(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    return COURT_WIDTH_M - x, COURT_LENGTH_M - y
+
+
+def feet_landing_columns(shot_rows: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+    return rotated_into_other_frame(shot_rows["next_player_x"].to_numpy(float), shot_rows["next_player_y"].to_numpy(float))
+
+
+def is_cross_court_columns(hit_x: np.ndarray, landing_x: np.ndarray) -> np.ndarray:
+    on_opposite_sides_of_centre = (hit_x > CENTRE_X_M) != (landing_x > CENTRE_X_M)
+    is_cross = (on_opposite_sides_of_centre & (np.abs(landing_x - hit_x) >= CROSS_COURT_MIN_LATERAL_M)).astype(float)
+    return np.where(np.isnan(hit_x) | np.isnan(landing_x), np.nan, is_cross)
+
+
 def seconds_between(later_frames: pd.Series, earlier_frames: pd.Series, fps: pd.Series) -> np.ndarray:
     return ((later_frames.astype(float) - earlier_frames.astype(float)) / fps.astype(float)).to_numpy(float)
 
@@ -82,34 +102,70 @@ def has_hitter_and_landing_point(features: pd.DataFrame) -> pd.Series:
     return features[["hit_x", "hit_y", "landing_x", "landing_y"]].notna().all(axis=1)
 
 
-def shot_features(shot_rows: pd.DataFrame) -> pd.DataFrame:
+def contact_shot_points(shot_rows: pd.DataFrame) -> dict[str, np.ndarray]:
     hitter_x, hitter_y = hitter_point_columns(shot_rows)
     landing_x = shot_rows["landing_x"].to_numpy(float)
     landing_y = shot_rows["landing_y"].to_numpy(float)
-    shot_dx = landing_x - hitter_x
-    shot_dy = landing_y - hitter_y
     previous_dx = shot_rows["previous_landing_x"].to_numpy(float) - shot_rows["previous_hit_x"].to_numpy(float)
     previous_dy = shot_rows["previous_landing_y"].to_numpy(float) - shot_rows["previous_hit_y"].to_numpy(float)
+    return {
+        "hit_x": hitter_x,
+        "hit_y": hitter_y,
+        "landing_x": landing_x,
+        "landing_y": landing_y,
+        "is_cross": shot_rows["is_cross"].astype("Float64").to_numpy(float, na_value=np.nan),
+        "previous_shot_distance": np.hypot(previous_dx, previous_dy),
+        "previous_hit_y": shot_rows["previous_hit_y"].to_numpy(float),
+    }
+
+
+def feet_shot_points(shot_rows: pd.DataFrame) -> dict[str, np.ndarray]:
+    hitter_x = shot_rows["player_x"].to_numpy(float)
+    hitter_y = shot_rows["player_y"].to_numpy(float)
+    landing_x, landing_y = feet_landing_columns(shot_rows)
+    previous_landing_x, previous_landing_y = rotated_into_other_frame(hitter_x, hitter_y)
+    previous_dx = previous_landing_x - shot_rows["previous_player_x"].to_numpy(float)
+    previous_dy = previous_landing_y - shot_rows["previous_player_y"].to_numpy(float)
+    return {
+        "hit_x": hitter_x,
+        "hit_y": hitter_y,
+        "landing_x": landing_x,
+        "landing_y": landing_y,
+        "is_cross": is_cross_court_columns(hitter_x, landing_x),
+        "previous_shot_distance": np.hypot(previous_dx, previous_dy),
+        "previous_hit_y": shot_rows["previous_player_y"].to_numpy(float),
+    }
+
+
+SHOT_POINT_BUILDERS = {"contact": contact_shot_points, "feet": feet_shot_points}
+
+
+def shot_features(shot_rows: pd.DataFrame, feature_set: str = SHIPPED_FEATURE_SET) -> pd.DataFrame:
+    if feature_set not in SHOT_POINT_BUILDERS:
+        raise ValueError(f"unknown feature set {feature_set!r}; choose from {', '.join(FEATURE_SET_NAMES)}")
+    points = SHOT_POINT_BUILDERS[feature_set](shot_rows)
+    shot_dx = points["landing_x"] - points["hit_x"]
+    shot_dy = points["landing_y"] - points["hit_y"]
     features = pd.DataFrame(
         {
-            "hit_x": hitter_x,
-            "hit_y": hitter_y,
-            "landing_x": landing_x,
-            "landing_y": landing_y,
+            "hit_x": points["hit_x"],
+            "hit_y": points["hit_y"],
+            "landing_x": points["landing_x"],
+            "landing_y": points["landing_y"],
             "receiver_x": shot_rows["opponent_x"].to_numpy(float),
             "receiver_y": shot_rows["opponent_y"].to_numpy(float),
             "shot_dx": shot_dx,
             "shot_dy": shot_dy,
             "shot_distance": np.hypot(shot_dx, shot_dy),
             "shot_lateral_distance": np.abs(shot_dx),
-            "is_cross": shot_rows["is_cross"].astype("Float64").to_numpy(float, na_value=np.nan),
+            "is_cross": points["is_cross"],
             "ball_round": shot_rows["ball_round"].to_numpy(float),
             "flight_seconds": seconds_between(shot_rows["next_frame_num"], shot_rows["frame_num"], shot_rows["fps"]),
             "seconds_since_previous_hit": seconds_between(
                 shot_rows["frame_num"], shot_rows["previous_frame_num"], shot_rows["fps"]
             ),
-            "previous_shot_distance": np.hypot(previous_dx, previous_dy),
-            "previous_hit_y": shot_rows["previous_hit_y"].to_numpy(float),
+            "previous_shot_distance": points["previous_shot_distance"],
+            "previous_hit_y": points["previous_hit_y"],
         },
         index=shot_rows.index,
     )

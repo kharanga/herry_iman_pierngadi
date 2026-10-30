@@ -8,7 +8,7 @@ import pandas as pd
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GroupKFold
 
-from shots.features import FEATURE_NAMES, shot_features
+from shots.features import FEATURE_NAMES, SHIPPED_FEATURE_SET, shot_features
 from shots.train import DATABASE_PATH, FOLD_COUNT, RANDOM_SEED, TRAINED_GROUPS, labelled_shuttleset_rows, new_classifier
 
 COMPARISON_PATH = Path("data/models/feature_set_comparison.json")
@@ -67,11 +67,12 @@ def compare_feature_sets(
     comparison_path: Path = COMPARISON_PATH,
     fold_count: int = FOLD_COUNT,
     random_seed: int = RANDOM_SEED,
+    feature_set: str = SHIPPED_FEATURE_SET,
 ) -> dict:
     connection = duckdb.connect(str(database_path), read_only=True)
     try:
-        labelled_rows = labelled_shuttleset_rows(connection)
-        all_features = shot_features(labelled_rows)
+        labelled_rows = labelled_shuttleset_rows(connection, feature_set)
+        all_features = shot_features(labelled_rows, feature_set)
         all_features[PREVIOUS_TRUE_GROUP_FEATURE] = previous_true_group_codes(connection, labelled_rows["row_id"])
     finally:
         connection.close()
@@ -81,6 +82,7 @@ def compare_feature_sets(
             all_features[list(feature_names)], labelled_rows["type_group"], labelled_rows["match_id"], fold_count, random_seed
         )
         comparison[set_name] = {
+            "feature_set": feature_set,
             "feature_names": list(feature_names),
             "fold_accuracies": fold_accuracies,
             "accuracy_mean": float(np.mean(fold_accuracies)),
