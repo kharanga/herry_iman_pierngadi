@@ -5,7 +5,7 @@
 M=Viktor_Axelsen_Anthony_Sinisuka_Ginting_YONEX_Thailand_Open_2021_SemiFinals
 .venv/bin/python -m vision.features data/match.mp4 --match-id match_tracked \
   --range 14201 14947 1 --range 16551 17343 1 --range 81360 82116 2 \
-  --range 107560 108103 3 --range 114673 116641 3 --compare $M
+  --range 107560 108103 3 --range 114673 116641 3 [--hit-point feet] --compare $M
 .venv/bin/python -m shots.predict
 .venv/bin/python -m analytics.tendencies match_tracked me
 .venv/bin/python -m report.serve match_tracked --me me --no-serve
@@ -16,6 +16,28 @@ the database and prints the `not_over_net` breakdown and the sample tally quoted
 The five ranges are the ones tracked for hit detection (`docs/results/hits.md`); the
 command needs their player, shuttle and hit files under `data/`. `--compare` prints the
 comparison below; it is meaningful after `shots.predict` has filled `type_pred`.
+
+## Hit point: contact (current) and feet (first version)
+The rows now in the database use the **estimated racket contact** as the hit point
+(`--hit-point contact`, the default; `docs/results/contact.md`): `hit_x/hit_y` is the
+contact's floor point, `landing_x/y` the next hit's contact, `player_x/y` the feet. All
+126 hits got a contact estimate (0 fallbacks to the feet). Compared with ShuttleSet on
+the same 114 matched rows:
+
+| | Feet (first version) | Contact (current) |
+|---|---|---|
+| `type_pred` correct | 73 of 110 = 66.4% | 74 of 110 = 67.3% |
+| Hit point, median distance to the label | 1.14 m | 0.58 m |
+| Landing point, median distance to the label | 1.23 m | 0.72 m |
+| `hit_zone` / `landing_zone` / `is_cross` agreement | 59.6% / 52.6% / 88.2% | 67.5% / 57.9% / 97.3% |
+
+The sections below describe the first version (feet as the hit point) and its
+measurements, which are why the contact estimate was built; the `not_over_net` count
+and the sample tally are printed by `--spot-check` for whichever rows are in the
+database. The counts are unchanged by the switch (25 rows; 9 right / 7 wrong in the
+sample), but not all the same rows: with contact hit points 14532 (drop) is now right,
+116547 (net) is now wrong (predicted drive) and 17215 (drive) is predicted clear instead
+of lift. The list of wrong predictions below is the first version's.
 
 ## What was written
 126 rows with `source = 'own'`, `match_id = 'match_tracked'`, in `data/scout.duckdb`:
@@ -41,8 +63,9 @@ Columns that tracking can't produce are NULL on every own row:
 
 Downstream ran unchanged on the own match: `shots.predict` filled `type_pred` for
 121 rows (the 5 without a landing point stay NULL, as for ShuttleSet),
-`analytics.tendencies` returned 6 tendencies for `me` and 4 for `opp` (all from
-predictions, n of 6-11), and `report.serve` wrote `data/reports/match_tracked/index.html`.
+`analytics.tendencies` returned entries for `me` and `opp` from predictions, and
+`report.serve` wrote `data/reports/match_tracked/index.html` (with the contact rows: 62
+entries for `me`, 65 for `opp`).
 
 ## Classifier accuracy on tracked positions
 114 own rows match a labelled ShuttleSet shot within ±5 frames in the same set (one to
@@ -110,12 +133,13 @@ pairs of consecutive hits.
 20 own rows drawn at random (numpy seed 1; frames 14347, 14532, 14675, 16681, 16749,
 16757, 16853, 17215, 17248, 81472, 81862, 107722, 107782, 108071, 114857, 114901,
 114969, 115032, 116547, 116621). For each, the hit frame with the hit point (yellow,
-the hitter's feet mapped back to pixels) and the opponent's position (blue), and the
-next hit's frame with the landing point (red, the receiver's feet), with the row's
+mapped back to pixels: the feet in the first version, the contact floor point now) and
+the opponent's position (blue), and the next hit's frame with the landing point (red,
+the receiver's hit point), with the row's
 player, `type_pred`, confidence, zones and `is_cross` and the matched label's group and
 player.
 
-What they show: in all 20 the hit marker is on the hitter's feet and, where there is a
+What they showed in the first version: in all 20 the hit marker is on the hitter's feet and, where there is a
 next hit, the landing marker is on the receiver's feet at that frame (that is the
 definition). Hitter, zones and `is_cross` read correctly for the position in every
 tile. The 4 odd rows are the inherited ones above: two consecutive hits by the same

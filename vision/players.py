@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-from vision.alignment import SHUTTLESET_SET_DIR, load_set_shots, open_video
+from vision.alignment import SHUTTLESET_SET_DIR, load_set_shots, open_video, read_frame
 from vision.court import (
     COURT_LENGTH_M,
     COURT_WIDTH_M,
@@ -17,6 +17,7 @@ from vision.court import (
     calibration_path,
     court_line_segments,
     line_offsets_to_bright_pixels,
+    line_sample_counts,
     load_calibration,
     pixels_to_court,
 )
@@ -26,8 +27,10 @@ PERSON_CLASS_ID = 0
 COURT_MARGIN_M = 1.0
 BEHIND_FAR_BASELINE_MARGIN_M = 2.0
 DUPLICATE_BOX_MAX_IOU = 0.5
+MAX_DETECTION_WIDTH_PX = 1280
 LINE_SAMPLES_PER_LINE = 40
 MAIN_VIEW_MIN_LINE_SAMPLE_SHARE = 0.6
+MAIN_VIEW_SHARE_OF_CALIBRATION_FRAME = 0.6
 DEFAULT_MODEL_PATH = Path("data/models/yolo11s.pt")
 PLAYERS_DIR = Path("data/players")
 CHECKS_DIR = Path("data/checks/players")
@@ -81,11 +84,24 @@ def side_of_court(y_m: float) -> str:
 
 def court_line_sample_share(frame: np.ndarray, homography: np.ndarray) -> float:
     floor_lines = [segment for name, segment in court_line_segments().items() if name != "net"]
-    found_samples = sum(
-        len(line_offsets_to_bright_pixels(frame, homography, start, end, sample_count=LINE_SAMPLES_PER_LINE))
-        for start, end in floor_lines
-    )
-    return found_samples / (LINE_SAMPLES_PER_LINE * len(floor_lines))
+    counts = [line_sample_counts(frame, homography, start, end, sample_count=LINE_SAMPLES_PER_LINE) for start, end in floor_lines]
+    samples_in_frame = sum(inside for _, inside in counts)
+    return sum(found for found, _ in counts) / samples_in_frame if samples_in_frame else 0.0
+
+
+def main_view_min_share(calibration_frame_share: float, share_of_calibration_frame: float = MAIN_VIEW_SHARE_OF_CALIBRATION_FRAME) -> float:
+    return share_of_calibration_frame * calibration_frame_share
+
+
+def calibration_frame_share(video_path: Path, calibration: dict) -> float:
+    capture = open_video(Path(video_path))
+    try:
+        frame = read_frame(capture, int(calibration["frame_index"]))
+    finally:
+        capture.release()
+    if frame is None:
+        raise ValueError(f"could not read the calibration frame {calibration['frame_index']} of {video_path}")
+    return court_line_sample_share(frame, calibration["pixel_to_court_homography"])
 
 
 def is_main_view(line_sample_share: float, minimum_share: float = MAIN_VIEW_MIN_LINE_SAMPLE_SHARE) -> bool:
@@ -256,7 +272,7 @@ def track_people(tracker, frame: np.ndarray) -> FrameDetections:
         classes=[PERSON_CLASS_ID],
         iou=DUPLICATE_BOX_MAX_IOU,
         tracker="bytetrack.yaml",
-        imgsz=frame.shape[1],
+        imgsz=min(frame.shape[1], MAX_DETECTION_WIDTH_PX),
         verbose=False,
     )[0]
     if result.boxes is None or result.boxes.id is None:
@@ -290,13 +306,14 @@ def track_players(
     require_video_file(video_path)
     calibration = load_calibration(calibration_file or calibration_path(video_path))
     homography = calibration["pixel_to_court_homography"]
+    minimum_share = main_view_min_share(calibration_frame_share(video_path, calibration))
     tracker = load_person_tracker(model_path)
     capture = open_video(Path(video_path))
     state = PlayerTrackingState()
     rows, box_rows, main_view_frames, skipped_frames, overlay_paths = [], [], [], [], []
     try:
         for frame_index, frame in frames_in_range(capture, start_frame, end_frame):
-            if not is_main_view(court_line_sample_share(frame, homography)):
+            if not is_main_view(court_line_sample_share(frame, homography), minimum_share):
                 skipped_frames.append(frame_index)
                 continue
             main_view_frames.append(frame_index)
@@ -326,12 +343,14 @@ def split_frames_by_view(
 ) -> tuple[list[int], list[int]]:
     check_frame_range(start_frame, end_frame)
     require_video_file(video_path)
-    homography = load_calibration(calibration_file or calibration_path(video_path))["pixel_to_court_homography"]
+    calibration = load_calibration(calibration_file or calibration_path(video_path))
+    homography = calibration["pixel_to_court_homography"]
+    minimum_share = main_view_min_share(calibration_frame_share(video_path, calibration))
     capture = open_video(Path(video_path))
     main_view_frames, skipped_frames = [], []
     try:
         for frame_index, frame in frames_in_range(capture, start_frame, end_frame):
-            if is_main_view(court_line_sample_share(frame, homography)):
+            if is_main_view(court_line_sample_share(frame, homography), minimum_share):
                 main_view_frames.append(frame_index)
             else:
                 skipped_frames.append(frame_index)

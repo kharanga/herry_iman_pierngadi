@@ -612,9 +612,12 @@ def test_every_shuttleset_page_shows_every_entry_of_both_players_grouped_by_fami
 def test_tracked_match_page_shows_every_entry_and_matches_the_shipped_page(tracked_page):
     report, page = tracked_page
     assert_page_shows_every_entry(report, page, all_observations(DATABASE_PATH))
-    assert (len(report["opponent"]["bullets"]), len(report["me"]["bullets"])) == (63, 68)
+    documented = re.search(r"For `match_tracked`: (\d+) bullets for the opponent and (\d+) for me", RESULTS_PATH.read_text())
+    assert documented and (len(report["opponent"]["bullets"]), len(report["me"]["bullets"])) == (int(documented.group(1)), int(documented.group(2)))
+    tendencies_doc = (PROJECT_ROOT / "docs" / "results" / "tendencies.md").read_text()
+    assert f"| `match_tracked`, `me` | {len(report['me']['bullets'])} |" in tendencies_doc and f"| `match_tracked`, `opp` | {len(report['opponent']['bullets'])} |" in tendencies_doc
     assert {bullet["label_source"] for bullet in page_bullets(report)} == {"predictions"}
-    assert page.count("predicted shot types</span>") == 131 and "<title>Opponent: shot counts</title>" in page
+    assert page.count("predicted shot types</span>") == len(page_bullets(report)) and "<title>Opponent: shot counts</title>" in page
     assert all(bullet["text"].startswith("After a") and " from my " in bullet["text"] for bullet in report["opponent"]["bullets"] if bullet["family"] == "response")
     assert all(" from Opponent's " in bullet["text"] for bullet in report["me"]["bullets"] if bullet["family"] == "response")
     reference = PROJECT_ROOT / "data" / "reports" / TRACKED_MATCH_ID / "index.html"

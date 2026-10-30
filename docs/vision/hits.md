@@ -82,6 +82,7 @@ calibration or set CSV, or a bad range; `2` for invalid arguments.
 | `MIN_HIT_GAP_FRAMES` | `8` | minimum frames between two hits |
 | `RALLY_GAP_FRAMES` | `120` | hits further apart than this (4 s at 30 fps) are in different rallies |
 | `REST_RADIUS_PX`, `REST_FRAME_COUNT` | `8.0`, `20` | the rest definition |
+| `REFERENCE_FPS`, `REFERENCE_FRAME_WIDTH_PX` | `30.0`, `1280` | the frame rate and width all the frame and pixel constants above were tuned at |
 | `MATCH_TOLERANCE_FRAMES` | `5` | a detection within this many frames of a labelled hit counts as that hit |
 | `HITS_DIR` | `Path("data/hits")` | output folder |
 | `HIT_COLUMNS`, `RALLY_COLUMNS` | see above | output columns |
@@ -100,7 +101,7 @@ third (`docs/results/hits.md`); `HitDetectionSettings` overrides them per call.
 
 ## Classes
 
-### `HitDetectionSettings(velocity_window_frames=3, speed_floor_px_per_frame=2.0, hit_score_min=0.4, speed_after_min_px_per_frame=8.0, reach_max_body_heights=0.75, min_hit_gap_frames=8)`
+### `HitDetectionSettings(velocity_window_frames=3, speed_floor_px_per_frame=2.0, hit_score_min=0.4, speed_after_min_px_per_frame=8.0, reach_max_body_heights=0.75, min_hit_gap_frames=8, rally_gap_frames=120, rest_radius_px=8.0, rest_frame_count=20)`
 The thresholds of `detect_hits`, as a frozen dataclass with the constants as defaults.
 
 ### `FrameTracks(frames, shuttle_points, shuttle_valid, near_boxes, far_boxes, main_view=None, shuttle_inpainted=None)`
@@ -250,7 +251,31 @@ if there is none.
 
 ```
 
-### `rally_numbers(hit_frames, tracks, rally_gap_frames=120) -> list[int]`
+### `frames_for_fps(reference_frames, fps) -> int`, `settings_for_video(fps, frame_width, base=HitDetectionSettings()) -> HitDetectionSettings`, `video_fps_and_width(video_path) -> (float, float)`
+The settings were tuned in frames and pixels of a 30 fps, 1280-wide video.
+`settings_for_video` keeps them the same in seconds and in court terms for another
+video: frame counts (velocity window, minimum hit gap, rally gap, rest frames) times
+`fps / 30` (rounded, at least 1), speeds in px/frame times `(width / 1280) / (fps / 30)`,
+the rest radius times `width / 1280`; the score threshold and the reach (already
+relative to the player's box) don't change. At 30 fps and 1280 px it returns the
+defaults unchanged. `python -m vision.hits` applies it with the video's frame rate and
+width.
+
+```python
+>>> from vision.hits import HitDetectionSettings, frames_for_fps, settings_for_video
+>>> settings_for_video(30.0, 1280) == HitDetectionSettings()
+True
+>>> scaled = settings_for_video(60.0, 1920)
+>>> scaled.velocity_window_frames, scaled.min_hit_gap_frames, scaled.rally_gap_frames, scaled.rest_frame_count
+(6, 16, 240, 40)
+>>> round(scaled.speed_after_min_px_per_frame, 2), round(scaled.speed_floor_px_per_frame, 2), scaled.rest_radius_px
+(6.0, 1.5, 12.0)
+>>> frames_for_fps(3, 25.0), frames_for_fps(2, 120.0)
+(2, 8)
+
+```
+
+### `rally_numbers(hit_frames, tracks, rally_gap_frames=120, rest_radius=8.0, rest_frame_count=20) -> list[int]`
 A 1-based rally number per hit: a new rally starts after a gap longer than
 `rally_gap_frames` or when the shuttle rested between two hits.
 
@@ -261,12 +286,12 @@ A 1-based rally number per hit: a new rally starts after a gap longer than
 
 ```
 
-### `rally_end_frame(last_hit_frame, next_rally_start, tracks) -> int`
+### `rally_end_frame(last_hit_frame, next_rally_start, tracks, rest_radius=8.0, rest_frame_count=20) -> int`
 The rest frame after the last hit and before the next rally, else the last valid
 frame before it. A shuttle that leaves the top of the picture and comes back is not
 an end.
 
-### `segment_rallies(hits, tracks, rally_gap_frames=120) -> (hits with rally, rallies)`
+### `segment_rallies(hits, tracks, rally_gap_frames=120, rest_radius=8.0, rest_frame_count=20) -> (hits with rally, rallies)`
 Adds `rally` to the hits (`HIT_COLUMNS`) and returns the rally table (`RALLY_COLUMNS`).
 
 ```python

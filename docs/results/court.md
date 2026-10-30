@@ -111,5 +111,78 @@ meters, 5 px at the near baseline is about 0.1 m along the court.
   medians 5-6 px) and the overlay floats over players and boards. Player and
   shuttle tracking must skip frames that aren't the main view; the
   share of found line samples is a cheap test for that.
-- My own Pi footage has one fixed camera, so this doesn't apply there, but the
-  frame used for clicking must show all four corners.
+- My own Pi footage has one fixed camera, so this doesn't apply there. The frame used
+  for clicking needs 4 or more known court points, not necessarily the corners (see
+  "Calibration with a hidden corner" below).
+
+## Calibration with a hidden corner
+
+### Broadcast video without the near-left corner
+To check that a calibration from other known points is as good, `data/match.mp4` was
+calibrated again without the near-left corner: the other 3 corners plus 2 crossings on
+the left doubles sideline, read off an 8x zoom of frame 12300 at the sideline's outer
+edge (the corner convention) and the middle of the line across:
+
+```
+.venv/bin/python -m vision.court data/match.mp4 --frame 12300 --output-dir <temp> --points \
+  "near_right=987.2,657.4" "far_right=864.2,301.6" "far_left=412.6,303.0" \
+  "near_long_service_line x left_doubles_sideline=301,629.5" \
+  "near_short_service_line x left_doubles_sideline=347.5,495"
+```
+
+| | 4 corners | 3 corners + 2 crossings |
+|---|---|---|
+| Line check, frame 12300 (median / mean / p95, px) | 2.0 / 2.41 / 6.0 | 2.0 / 2.24 / 6.3 |
+| frame 95659 | 2.0 / 2.33 / 5.0 | 2.0 / 2.16 / 5.0 |
+| frame 126000 | 2.5 / 2.56 / 6.0 | 2.0 / 2.36 / 6.0 |
+| All three frames | median 2.0, mean 2.43 | median 2.0, mean 2.25 |
+| Reference point errors | 0 (exact with 4) | 0.95 to 1.49 px |
+| Hidden near-left corner, where the homography puts it | (289.4, 659.6) clicked | (289.6, 659.2), 0.50 px away |
+
+The median line error is the same, within the criterion's 2 px; the mean is slightly
+lower, because 5 points average out part of each click's error.
+
+### Stand-in club video
+`data/recordings/stand_in/set1.mp4` (1920 x 1080, phone wide lens, camera low behind
+the near baseline and outside the right sideline): the near baseline enters the frame
+only at the left; the near-right corner is below the frame and the far corners are
+behind the net and players. Calibrated from 7 points on frame 600, identified from a
+mask of the white lines (the centre line ends on the short service line and on the
+baseline; the short service line ends at the outer of the two right sidelines) and
+read off 5x zooms:
+
+| Point | Pixel | Error (px) |
+|---|---|---|
+| `near_left` | 217, 762 | 6.3 |
+| `near_long_service_line x left_doubles_sideline` | 383, 736 | 5.0 |
+| `near_long_service_line x centre_line` | 574, 889 | 6.3 |
+| `near_baseline x centre_line` | 356, 960 | 8.0 |
+| `near_short_service_line x centre_line` | 1140, 718 | 0.2 |
+| `near_short_service_line x right_singles_sideline` | 1584, 810 | 4.0 |
+| `near_short_service_line x right_doubles_sideline` | 1714, 837 | 4.9 |
+
+RMS 5.4 px. Leaving any one point out, the other 6 predict it within 1 to 26 px (the
+worst is `near_baseline x centre_line`, closest to the frame's edge), so every point is
+identified correctly; the residuals are larger than on the broadcast because the phone's
+wide lens bends straight lines near the frame's edges, which a homography can't follow.
+The left net post base, not used in the fit, comes out at (1000, 639), where the post
+stands. The corners that weren't clicked are projected (`corner_pixels_source`), the
+near-right one at (1202, 2325), far below the frame.
+
+Line check on frames 600, 6000 and 20000: 164 to 174 samples found of the 367 inside the
+frame, median 1.0 px, mean 1.5 to 1.7 px, 95th percentile 4.8 to 8.0 px. The overlay
+`data/calibration/set1/court_overlay.jpg` and the camera check
+`data/calibration/set1/camera_check.jpg` (looked at) show the reprojected lines on the
+painted ones in both halves, including the far half behind the net, and the net top
+line on the net tape.
+
+The camera (`python -m vision.camera ... --net-posts 1004,496 1748,500`, post tops read
+off 6x zooms) puts the lens at x 6.46, y −0.65, z 1.53 m: 0.65 m behind the near
+baseline, just outside the right sideline, at chest height, as filmed; focal length
+892 px (a 94° horizontal field of view, a phone's wide lens); reference errors 3.3 to
+8.5 px.
+
+Only about 45% of the in-frame line samples are found here (98-99% on the broadcast):
+the near lines are wider than the 8 px search window and the far ones are thin and
+partly behind the net. That matters for the view check (below 0.6 means "not the main
+view") and is taken up with the stand-in footage.

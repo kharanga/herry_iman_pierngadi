@@ -9,16 +9,21 @@ from `analytics.court.shot_geometry`, the same function ShuttleSet rows go throu
 
 How a hit becomes a row:
 - `player` is the detected hitter, `me` (near side) or `opp` (far side).
-- The **hit point** and `player_x/y` are the hitter's feet at the hit frame, from the
-  player tracks (`positions_*.csv`, court meters); `opponent_x/y` the other player's
-  feet at the same frame. If the exact frame has no position, the nearest within 3
-  frames is used, else the point is NULL.
-- The **landing point** is the next hit's hit point in the same rally: the receiver's
-  feet when they reached the shuttle, which is what ShuttleSet's `landing_x/y` means
-  (`docs/results/schema.md`) and what the classifier was trained on. On a rally's last
-  shot it is the shuttle's floor position: the shuttle track's pixel at the rally's
-  end frame, mapped through the court calibration, if the shuttle is at rest there
-  for 20 frames (`vision.hits.is_at_rest`), else NULL.
+- The **hit point** (`hit_x/y`) is the estimated racket contact's floor point
+  (`vision/contact.py`, the default `--hit-point contact`): ShuttleSet's hit point is the
+  floor point under the contact, not the feet. A hit whose contact can't be estimated
+  (no shuttle pixel within 2 frames, no matching pose) falls back to the feet, and the
+  counts per method are printed. With `--hit-point feet` every hit point is the feet.
+- `player_x/y` are the hitter's feet at the hit frame, from the player tracks
+  (`positions_*.csv`, court meters); `opponent_x/y` the other player's feet at the same
+  frame. If the exact frame has no position, the nearest within 3 frames is used, else
+  the point is NULL.
+- The **landing point** is the next hit's hit point in the same rally (its contact, or
+  feet on a fallback), which is exactly ShuttleSet's convention: each shot's landing
+  equals the next shot's hit point (`docs/results/schema.md`). On a rally's last shot it
+  is the shuttle's floor position: the shuttle track's pixel at the rally's end frame,
+  mapped through the court calibration, if the shuttle is at rest there for 20 frames
+  (`vision.hits.is_at_rest`), else NULL.
 - `set_no` is given per range (sets aren't detected from video), `rally` continues per
   set across ranges, `ball_round` is the hit's order in its rally, `frame_num` the hit
   frame, `fps` the video's.
@@ -27,9 +32,7 @@ How a hit becomes a row:
   `lose_reason`.
 
 Writing replaces the own rows of that `match_id` in one transaction and never touches
-other rows. The ShuttleSet hit point is **not** the hitter's feet but the floor point
-under the racket contact, about 0.9 m away on average (`docs/results/features.md`); the
-contract keeps the feet, and the gap is measured there.
+other rows. A rebuild leaves `type_pred` NULL until `shots.predict` runs again.
 
 The per-hit logic (`feet_at`, `floor_point_at_rest`, `shot_row`, `rally_shot_rows`,
 `own_shot_rows`, `schema_frame`, the comparison functions) is pure; only `video_fps`,
@@ -45,20 +48,22 @@ and `main` read files or the database.
 
 | Argument | Meaning |
 |---|---|
-| `video` | the video; its calibration (`data/calibration/<stem>/court.json`) and, for each range, the files of `python -m vision.players`, `python -m vision.shuttle` and `python -m vision.hits` must exist |
+| `video` | the video; its calibration (`data/calibration/<stem>/court.json`) and, for each range, the files of `python -m vision.players`, `python -m vision.shuttle` and `python -m vision.hits` must exist; with `--hit-point contact` also the camera (`python -m vision.camera`) and the pose weights (`docs/vision/contact.md`) |
 | `--match-id` | recording id for the rows (any text; `report.serve` shows it as the title) |
 | `--range START END SET` | a tracked range and its set number (1-3); repeat for several ranges, rallies are numbered on per set |
-| `--left-handed` | comma-separated players who are left-handed (`me`, `opp`); zones depend on it |
+| `--left-handed` | comma-separated players who are left-handed (`me`, `opp`); zones and the hitting shoulder depend on it |
+| `--hit-point` | `contact` (default: the estimated contact's floor point) or `feet` |
 | `--database` | DuckDB file (default `data/scout.duckdb`) |
 | `--compare` | after writing, compare the rows with this ShuttleSet match's labelled rows (below) |
-| `--spot-check` | write nothing; draw check images for the match's rows already in the database: `data/checks/features/<match-id>_spot_check_<k>.jpg` (20 random rows, 5 per sheet: the hit frame with the hit point in yellow and the opponent in blue, and the next hit's frame with the landing point in red, captioned with the row's values and, with `--compare`, the matched label) and, with `--compare`, `<match-id>_label_vs_feet.jpg` (6 matched rows: ShuttleSet's hit pixel in red, the tracked feet in yellow). Prints the `not_over_net` breakdown and the sample tally |
+| `--spot-check` | write nothing; draw check images for the match's rows already in the database: `data/checks/features/<match-id>_spot_check_<k>.jpg` (20 random rows, 5 per sheet: the hit frame with the hit point in yellow (the contact floor point, or the feet) and the opponent in blue, and the next hit's frame with the landing point in red, captioned with the row's values and, with `--compare`, the matched label) and, with `--compare`, `<match-id>_label_vs_feet.jpg` (6 matched rows: ShuttleSet's hit pixel in red, the tracked feet, `player_x/y`, in yellow). Prints the `not_over_net` breakdown and the sample tally |
 
 Then `python -m shots.predict` fills `type_pred`/`type_conf`, and
 `python -m analytics.tendencies <match-id> me` and `python -m report.serve <match-id> --me me`
 work as for any match.
 
 Printed: `wrote N own shots for match 'ID' (R rallies, L with a landing point) to <database>`
-(rallies counted as distinct set and rally pairs), and with `--compare` one line per key
+(rallies counted as distinct set and rally pairs), then with `--hit-point contact`
+`hit points: <method>: <count>, ...` (see `vision/contact.py`), and with `--compare` one line per key
 of `comparison_summary`; with `--spot-check` the counts of `not_over_net_breakdown` and
 `sample_tally` and the saved paths. Exit codes: `0`;
 `1` with `error: ...` for a missing video, calibration or track file (the message
@@ -74,6 +79,7 @@ arguments, including neither `--range` nor `--spot-check`.
 | `FEET_MAX_FRAME_GAP` | `3` | how far from the hit frame a player position may be taken |
 | `POINT_NAMES` | `("hit", "landing", "player", "opponent")` | the four point columns, in `shot_geometry`'s names |
 | `END_SWITCH_SCORE` | `11` | in set 3, ends change when a player reaches this (ShuttleSet side mapping) |
+| `HIT_POINT_SOURCES` | `("contact", "feet")` | allowed `--hit-point` values |
 | `CHECKS_DIR` | `Path("data/checks/features")` | where `--spot-check` writes |
 | `SPOT_CHECK_ROWS`, `SPOT_CHECK_SEED`, `LABEL_VS_FEET_ROWS` | `20`, `1`, `6` | the samples drawn (numpy seed, so the same rows every run) |
 
@@ -125,7 +131,7 @@ nearest frame within `max_gap`.
 
 ```
 
-### `floor_point_at_rest(shuttle, end_frame, homography, rest_frame_count=20) -> (x, y) | None`
+### `floor_point_at_rest(shuttle, end_frame, homography, rest_frame_count=20, rest_radius=8.0) -> (x, y) | None`
 The shuttle's floor position in court meters at `end_frame`, if the shuttle track is
 visible and at rest for the next `rest_frame_count` frames; else `None`.
 
@@ -138,8 +144,9 @@ True
 
 ```
 
-### `shot_row(match_id, set_no, rally, ball_round, frame, fps, hitter, hit, landing, opponent, left_handed) -> dict`
-One row with every schema column. `hit` doubles as the hitter's position (`player_x/y`).
+### `shot_row(match_id, set_no, rally, ball_round, frame, fps, hitter, hit, landing, opponent, left_handed, feet=None) -> dict`
+One row with every schema column. `feet` is the hitter's position (`player_x/y`); when
+it is `None`, `hit` doubles as it.
 `shot_geometry` normalises the points so the hitter is on the near half and fills
 the zones and `is_cross`.
 
@@ -150,6 +157,16 @@ the zones and `is_cross`.
 {'player': 'me', 'hit_x': 3.0, 'hit_y': 2.0, 'landing_x': 2.5, 'landing_y': 10.0, 'opponent_y': 11.0, 'hit_zone': 'rear_middle', 'landing_zone': 'mid_forehand', 'is_cross': False}
 >>> len(row), row["source"], row["type_group"], row["roundscore_me"]
 (28, 'own', None, None)
+
+```
+
+With a contact hit point and the feet given separately, the zone comes from the hit
+point:
+
+```python
+>>> with_feet = shot_row("club_1", 1, 1, 1, 100, 30.0, "me", (3.4, 3.0), (2.5, 10.0), (3.0, 11.0), frozenset(), (3.0, 2.0))
+>>> {key: with_feet[key] for key in ("hit_x", "hit_y", "player_x", "player_y", "hit_zone")}
+{'hit_x': 3.4, 'hit_y': 3.0, 'player_x': 3.0, 'player_y': 2.0, 'hit_zone': 'mid_middle'}
 
 ```
 
@@ -164,10 +181,28 @@ A far-side hitter is rotated by a half turn, `(x, y) -> (6.1 - x, 13.4 - y)`:
 
 ```
 
-### `rally_shot_rows(rally_hits, feet, last_landing, match_id, set_no, rally, fps, left_handed) -> list[dict]`, `own_shot_rows(hits, rallies, positions, shuttle, homography, match_id, set_no, fps, first_rally=1, left_handed=frozenset()) -> list[dict]`
-All rows of one rally (hits in frame order, `ball_round` from 1, each landing = the
-next hit's hit point, the last = `last_landing`), and of a whole range (the last
-landing of each rally from `floor_point_at_rest` at the rally's `end_frame`).
+### `contact_by_frame(contacts) -> dict`
+The usable contact floor points of a `vision.contact` table by hit frame (rows whose
+`method` starts with `contact`); `{}` for `None`.
+
+```python
+>>> from vision.features import contact_by_frame
+>>> contacts = pd.DataFrame({"frame": [100, 130], "hitter": ["me", "opp"], "hit_x": [3.4, 2.5], "hit_y": [3.0, 10.0], "contact_z": [1.9, None],
+...                          "feet_x": [3.0, 2.5], "feet_y": [2.0, 10.0], "method": ["contact: sphere", "feet: no pose"]})
+>>> contact_by_frame(contacts), contact_by_frame(None)
+({100: (3.4, 3.0)}, {})
+
+```
+
+### `rally_shot_rows(rally_hits, feet, last_landing, match_id, set_no, rally, fps, left_handed, contacts=None, feet_max_gap=3) -> list[dict]`, `own_shot_rows(hits, rallies, positions, shuttle, homography, match_id, set_no, fps, first_rally=1, left_handed=frozenset(), contacts=None, frame_width=None) -> list[dict]`
+With `frame_width` given, the rest window, rest radius and feet gap are scaled to the
+video's frame rate and width (`vision.hits.settings_for_video`); `build_own_match`
+passes it.
+All rows of one rally (hits in frame order, `ball_round` from 1; hit point = the
+contact for the frame if there is one, else the feet; each landing = the next hit's
+hit point, the last = `last_landing`), and of a whole range (`contacts` a
+`vision.contact` table; the last landing of each rally from `floor_point_at_rest` at
+the rally's `end_frame`).
 
 ```python
 >>> from vision.features import own_shot_rows
@@ -178,7 +213,18 @@ landing of each rally from `floor_point_at_rest` at the rally's `end_frame`).
 ```
 
 The second shot's landing is the resting shuttle's floor point, rotated to the
-receiver's (far) half because its hitter was on the far side.
+receiver's (far) half because its hitter was on the far side. With contacts, the first
+shot's hit point is its contact and the second falls back to the feet (its method is
+`feet: no pose`):
+
+```python
+>>> with_contacts = own_shot_rows(hits, rallies, positions, resting, homography, "club_1", 1, 30.0, contacts=contacts)
+>>> [(row["player"], row["hit_x"], row["hit_y"], row["player_x"], row["player_y"]) for row in with_contacts][:1]
+[('me', 3.4, 3.0, 3.0, 2.0)]
+>>> round(with_contacts[1]["hit_x"], 2), round(with_contacts[1]["player_x"], 2)
+(3.6, 3.6)
+
+```
 
 ### `pandas_dtype_for(duckdb_type) -> str`, `schema_frame(rows) -> DataFrame`
 The rows as a data frame with exactly the schema's columns, in its order, as nullable
@@ -201,10 +247,13 @@ In one transaction: create the table if needed (`analytics.build_shots.create_sh
 delete the own rows with that `match_id`, insert the frame; returns the number of own
 rows of that `match_id` afterwards. Raises (and rolls back) on any constraint violation.
 
-### `build_own_match(video_path, match_id, ranges, database_path=DATABASE_PATH, left_handed=frozenset()) -> DataFrame`
+### `build_own_match(video_path, match_id, ranges, database_path=DATABASE_PATH, left_handed=frozenset(), hit_point="contact") -> DataFrame`
 The whole thing for a list of `(start_frame, end_frame, set_no)`: loads each range's
 track files (`load_range_tracks`; `FileNotFoundError` naming the command for a missing
-one), builds the rows, writes them, returns the frame.
+one), with `hit_point="contact"` estimates the contacts (`vision.contact.contacts_for_range`,
+needs the camera), builds the rows, writes them, returns the frame (with the method
+counts in `frame.attrs["hit_point_methods"]`). Errors: `ValueError` for an unknown
+`hit_point`.
 
 ## Comparison with ShuttleSet
 

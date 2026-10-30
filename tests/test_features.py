@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import shutil
+
 import duckdb
 import numpy as np
 import pandas as pd
@@ -17,7 +19,9 @@ from vision.features import (
     FEET_MAX_FRAME_GAP,
     TILE_HEIGHT,
     TILE_WIDTH,
+    HIT_POINT_SOURCES,
     build_own_match,
+    contact_by_frame,
     not_over_net_breakdown,
     rally_count,
     sample_tally,
@@ -39,6 +43,9 @@ from vision.features import (
     with_labelled_sides,
     write_own_shots,
 )
+from vision.contact import contact_paths, is_newer
+from vision.hits import output_paths as hit_output_paths
+from shots.predict import predict_shot_types
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_DATABASE_PATH = PROJECT_ROOT / "data" / "scout.duckdb"
@@ -204,9 +211,20 @@ def test_range_parsing_and_command_errors(tmp_path):
     assert subprocess.run([sys.executable, "-m", "vision.features", str(tmp_path / "missing.mp4"), "--match-id", "x"], cwd=PROJECT_ROOT, capture_output=True).returncode == 2
 
 
+def pose_caches_are_fresh() -> bool:
+    return all(
+        is_newer(contact_paths(Path("data/match.mp4"), start, end)[0], hit_output_paths(Path("data/match.mp4"), start, end)[0])
+        for start, end, _ in TRACKED_RANGES
+    )
+
+
+def tracks_are_saved() -> bool:
+    return all((PROJECT_ROOT / "data" / "hits" / "match" / f"hits_{start}_{end}.csv").exists() for start, end, _ in TRACKED_RANGES)
+
+
 real_data_required = pytest.mark.skipif(
-    not (REAL_DATABASE_PATH.exists() and REAL_VIDEO_PATH.exists() and all((PROJECT_ROOT / "data" / "hits" / "match" / f"hits_{start}_{end}.csv").exists() for start, end, _ in TRACKED_RANGES)),
-    reason="needs data/scout.duckdb, data/match.mp4 and the saved tracks of the five hit-detection ranges")
+    not (REAL_DATABASE_PATH.exists() and REAL_VIDEO_PATH.exists() and tracks_are_saved() and (PROJECT_ROOT / "data" / "calibration" / "match" / "camera.json").exists() and pose_caches_are_fresh()),
+    reason="needs data/scout.duckdb, data/match.mp4, the camera, the saved tracks of the five hit-detection ranges and fresh pose caches (python -m vision.contact)")
 
 
 @pytest.fixture(scope="module")
@@ -229,6 +247,7 @@ def test_rebuilding_from_the_saved_tracks_reproduces_the_shipped_rows(shipped_ow
     assert main([str(REAL_VIDEO_PATH), "--match-id", "match_tracked", *[word for start, end, set_no in TRACKED_RANGES for word in ("--range", str(start), str(end), str(set_no))], "--database", str(database_path)]) == 0
     printed = capsys.readouterr().out
     assert "wrote 126 own shots for match 'match_tracked' (8 rallies, 121 with a landing point)" in printed
+    assert "hit points: contact: closest to sphere: 52, contact: sphere: 74" in printed
     rebuilt = build_own_match(REAL_VIDEO_PATH, "match_tracked", TRACKED_RANGES, database_path).sort_values(["set_no", "rally", "ball_round"]).reset_index(drop=True)
     shipped = shipped_own_rows.drop(columns=["type_pred", "type_conf"]).reset_index(drop=True)
     pd.testing.assert_frame_equal(rebuilt.drop(columns=["type_pred", "type_conf"]).astype(shipped.dtypes.to_dict()), shipped, check_dtype=False)
@@ -257,16 +276,96 @@ def test_shipped_rows_keep_the_contract(shipped_own_rows):
         assert (row.hit_zone, None if pd.isna(row.landing_zone) else row.landing_zone, None if pd.isna(row.is_cross) else bool(row.is_cross)) == (geometry["hit_zone"], geometry["landing_zone"], geometry["is_cross"])
 
 
-def test_comparison_with_shuttleset_reproduces_the_documented_numbers(shipped_own_rows):
-    summary, pairs = compare_with_shuttleset(REAL_DATABASE_PATH, "match_tracked", AXELSEN_GINTING)
+FEET_VERSION = {"accuracy": (73, 110), "hit": 1.14, "landing": 1.23, "zones": (0.596, 0.526, 0.882),
+                "groups": {"net": (29, 36), "lift": (12, 19), "drive": (5, 18), "drop": (8, 15), "smash": (12, 14), "clear": (7, 7), "serve": (0, 1)},
+                "by_set": {"sets 1-2": (48, 69), "set 3": (25, 41)}}
+CONTACT_VERSION = {"accuracy": (74, 110), "hit": 0.58, "landing": 0.72, "zones": (0.675, 0.579, 0.973),
+                   "groups": {"net": (28, 36), "lift": (15, 19), "drive": (4, 18), "drop": (8, 15), "smash": (12, 14), "clear": (7, 7), "serve": (0, 1)},
+                   "by_set": {"sets 1-2": (50, 69), "set 3": (24, 41)}}
+
+
+def judged_pairs(pairs: pd.DataFrame) -> pd.DataFrame:
+    return pairs[pairs["own_type_pred"].notna() & pairs["label_type_group"].notna() & (pairs["label_type_group"] != "unknown")]
+
+
+def correct_and_total(judged: pd.DataFrame) -> tuple[int, int]:
+    return int((judged["own_type_pred"] == judged["label_type_group"]).sum()), len(judged)
+
+
+def assert_comparison_matches(database_path: Path, expected: dict) -> None:
+    summary, pairs = compare_with_shuttleset(database_path, "match_tracked", AXELSEN_GINTING)
     assert (summary["own_shots"], summary["matched_pairs"], summary["type_pred_judged"]) == (126, 114, 110)
-    assert summary["hitter_agreement"] == pytest.approx(107 / 114) and summary["type_pred_accuracy"] == pytest.approx(73 / 110)
-    assert round(summary["hit_point_median_error_m"], 2) == 1.14 and round(summary["player_point_median_error_m"], 2) == 0.61 and round(summary["landing_point_median_error_m"], 2) == 1.23
-    assert (round(summary["hit_zone_agreement"], 3), round(summary["landing_zone_agreement"], 3), round(summary["is_cross_agreement"], 3)) == (0.596, 0.526, 0.882)
-    judged = pairs[pairs["own_type_pred"].notna() & (pairs["label_type_group"] != "unknown")]
-    correct = judged[judged["own_type_pred"] == judged["label_type_group"]]["label_type_group"].value_counts()
-    totals = judged["label_type_group"].value_counts()
-    assert {group: (int(correct.get(group, 0)), int(totals[group])) for group in totals.index} == {"net": (29, 36), "lift": (12, 19), "drive": (5, 18), "drop": (8, 15), "smash": (12, 14), "clear": (7, 7), "serve": (0, 1)}
+    assert summary["hitter_agreement"] == pytest.approx(107 / 114) and round(summary["player_point_median_error_m"], 2) == 0.61
+    assert summary["type_pred_accuracy"] == pytest.approx(expected["accuracy"][0] / expected["accuracy"][1])
+    assert round(summary["hit_point_median_error_m"], 2) == expected["hit"] and round(summary["landing_point_median_error_m"], 2) == expected["landing"]
+    assert (round(summary["hit_zone_agreement"], 3), round(summary["landing_zone_agreement"], 3), round(summary["is_cross_agreement"], 3)) == expected["zones"]
+    judged = judged_pairs(pairs)
+    assert {group: correct_and_total(part) for group, part in judged.groupby("label_type_group")} == expected["groups"]
+    assert {"sets 1-2": correct_and_total(judged[judged["own_set_no"] < 3]), "set 3": correct_and_total(judged[judged["own_set_no"] == 3])} == expected["by_set"]
+
+
+def test_comparison_with_shuttleset_reproduces_the_documented_contact_numbers(shipped_own_rows):
+    assert_comparison_matches(REAL_DATABASE_PATH, CONTACT_VERSION)
+
+
+@real_data_required
+def test_feet_hit_points_rebuild_the_first_version_and_its_numbers(tmp_path, capsys):
+    database_path = tmp_path / "scout.duckdb"
+    shutil.copy(REAL_DATABASE_PATH, database_path)
+    ranges = [word for start, end, set_no in TRACKED_RANGES for word in ("--range", str(start), str(end), str(set_no))]
+    assert main([str(REAL_VIDEO_PATH), "--match-id", "match_tracked", *ranges, "--hit-point", "feet", "--database", str(database_path)]) == 0
+    assert "hit points:" not in capsys.readouterr().out
+    predict_shot_types(database_path)
+    assert_comparison_matches(database_path, FEET_VERSION)
+    connection = duckdb.connect(str(database_path), read_only=True)
+    feet_rows = connection.execute("SELECT * FROM shots WHERE shots.source = 'own' ORDER BY shots.set_no, shots.rally, shots.ball_round").df()
+    connection.close()
+    assert ((feet_rows["hit_x"] == feet_rows["player_x"]) & (feet_rows["hit_y"] == feet_rows["player_y"])).all()
+
+
+def test_results_doc_feet_and_contact_table_matches_both_versions(shipped_own_rows):
+    doc = re.sub(r"\s+", " ", RESULTS_PATH.read_text())
+    for name, expected in (("feet", FEET_VERSION), ("contact", CONTACT_VERSION)):
+        right, total = expected["accuracy"]
+        assert f"{right} of {total} = {100 * right / total:.1f}%" in doc, name
+    assert "| `type_pred` correct | 73 of 110 = 66.4% | 74 of 110 = 67.3% |" in doc
+    assert "| Hit point, median distance to the label | 1.14 m | 0.58 m |" in doc and "| Landing point, median distance to the label | 1.23 m | 0.72 m |" in doc
+    assert "| `hit_zone` / `landing_zone` / `is_cross` agreement | 59.6% / 52.6% / 88.2% | 67.5% / 57.9% / 97.3% |" in doc
+    assert "All 126 hits got a contact estimate (0 fallbacks to the feet)" in doc
+    assert "62 entries for `me`, 65 for `opp`" in doc
+
+
+def test_contact_by_frame_keeps_only_contact_estimates():
+    contacts = pd.DataFrame({"frame": [100, 130, 160, 190], "hit_x": [1.0, 2.0, 3.0, np.nan], "hit_y": [2.0, 3.0, 4.0, 5.0],
+                             "method": ["contact: sphere", "feet: no pose", "contact: closest to sphere", "contact: sphere"]})
+    assert contact_by_frame(contacts) == {100: (1.0, 2.0), 160: (3.0, 4.0)}
+    assert contact_by_frame(None) == {}
+    assert HIT_POINT_SOURCES == ("contact", "feet")
+
+
+def test_contact_is_the_hit_point_the_next_contact_the_landing_and_the_feet_the_player_point():
+    homography = homography_from_corners(BROADCAST_CORNERS)
+    positions = positions_table([(100, "me", 3.0, 2.0), (100, "opp", 3.0, 11.0), (130, "opp", 2.5, 10.0), (130, "me", 2.0, 4.0), (160, "me", 1.0, 3.0), (160, "opp", 4.0, 9.0)])
+    hits = pd.DataFrame({"rally": [1, 1, 1], "frame": [100, 130, 160], "hitter": ["me", "opp", "me"], "score": 0.9, "reach": 0.0})
+    rallies = pd.DataFrame({"rally": [1], "start_frame": [100], "end_frame": [180], "hits": [3]})
+    contacts = pd.DataFrame({"frame": [100, 130, 160], "hit_x": [3.6, 2.2, np.nan], "hit_y": [2.8, 9.1, np.nan], "method": ["contact: sphere", "contact: closest to sphere", "feet: no pose"]})
+    rows = own_shot_rows(hits, rallies, positions, resting_shuttle(180, y=400), homography, "club", 1, 30.0, contacts=contacts)
+    assert (rows[0]["hit_x"], rows[0]["hit_y"]) == (3.6, 2.8) and (rows[0]["player_x"], rows[0]["player_y"]) == (3.0, 2.0)
+    assert (rows[0]["landing_x"], rows[0]["landing_y"]) == (2.2, 9.1)
+    assert (rows[1]["hit_x"], rows[1]["hit_y"]) == pytest.approx(rotated((2.2, 9.1))) and (rows[1]["player_x"], rows[1]["player_y"]) == pytest.approx(rotated((2.5, 10.0)))
+    assert (rows[1]["landing_x"], rows[1]["landing_y"]) == pytest.approx(rotated((1.0, 3.0)))
+    assert (rows[2]["hit_x"], rows[2]["hit_y"]) == (1.0, 3.0) == (rows[2]["player_x"], rows[2]["player_y"])
+    geometry = shot_geometry((3.6, 2.8), (2.2, 9.1), (3.0, 2.0), (3.0, 11.0))
+    assert (rows[0]["hit_zone"], rows[0]["landing_zone"], rows[0]["is_cross"]) == (geometry["hit_zone"], geometry["landing_zone"], geometry["is_cross"])
+    feet_only = own_shot_rows(hits, rallies, positions, resting_shuttle(180, y=400), homography, "club", 1, 30.0)
+    assert [(row["hit_x"], row["hit_y"]) for row in feet_only] == [(row["player_x"], row["player_y"]) for row in feet_only]
+
+
+def test_unknown_hit_point_source_is_rejected(tmp_path):
+    with pytest.raises(ValueError, match="hit point must be one of"):
+        build_own_match(tmp_path / "missing.mp4", "club", [(1, 2, 1)], tmp_path / "scout.duckdb", hit_point="shoulder")
+    result = subprocess.run([sys.executable, "-m", "vision.features", str(tmp_path / "missing.mp4"), "--match-id", "club", "--range", "1", "2", "1", "--hit-point", "shoulder"], cwd=PROJECT_ROOT, capture_output=True, text=True)
+    assert result.returncode == 2 and "--hit-point" in result.stderr
 
 
 def test_results_doc_row_counts_match_the_shipped_rows(shipped_own_rows):
@@ -364,6 +463,6 @@ def test_features_source_has_no_comments_or_docstrings_and_docs_have_no_task_ids
     source = (PROJECT_ROOT / "vision" / "features.py").read_text()
     assert all(block.lstrip().startswith("SELECT") for block in source.split('"""')[1::2]) and "'''" not in source
     assert not re.search(r"(?m)^\s*#", source)
-    for doc in ("docs/vision/features.md", "docs/results/features.md"):
+    for doc in ("docs/vision/features.md", "docs/results/features.md", "docs/vision/court.md"):
         assert not re.search(TASK_ID_PATTERN, (PROJECT_ROOT / doc).read_text())
     assert "Examples need:" not in (PROJECT_ROOT / "docs" / "vision" / "features.md").read_text()

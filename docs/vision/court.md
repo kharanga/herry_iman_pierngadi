@@ -13,13 +13,13 @@ the doubles court (outer edge of the baseline and doubles sideline).
 
 The math (`homography_from_corners`, `pixels_to_court`, `court_to_pixels`,
 `court_line_segments`, ...) is pure numpy: arrays in, arrays out, no GUI and no
-files. Only `click_corners` opens a window, and only `save_calibration`,
+files. Only `click_corners` and `click_net_post_tops` (through `click_named_points`) open a window, and only `save_calibration`,
 `load_calibration`, `shuttleset_corner_pixels` and `calibrate_video` touch files.
 
 ## Command
 
 ```
-.venv/bin/python -m vision.court <video> [--frame N] [--corners X,Y X,Y X,Y X,Y | --shuttleset-match MATCH] [--output-dir DIR]
+.venv/bin/python -m vision.court <video> [--frame N] [--corners X,Y X,Y X,Y X,Y | --shuttleset-match MATCH | --points NAME=X,Y ... | --pick-points | --list-points] [--output-dir DIR]
 ```
 
 | Argument | Meaning |
@@ -28,6 +28,9 @@ files. Only `click_corners` opens a window, and only `save_calibration`,
 | `--frame` | frame index to calibrate on (default 0); pick a frame from the normal camera view |
 | `--corners` | 4 corner pixels `x,y` in order near_left near_right far_right far_left; skips the click window |
 | `--shuttleset-match` | take the corners from ShuttleSet `homography.csv` for this match folder; skips the click window. ShuttleSet corner pixels refer to a 1280 x 720 frame, so they are scaled by `video width / 1280` (`label_scale` from `vision.alignment`) to the video's actual size; this assumes the video keeps the 16:9 aspect ratio |
+| `--points` | 4 or more known court points by name with their pixels, `NAME=X,Y` (quote names with spaces), for when a corner is hidden or blocked; skips the click window. No 4 of them may have 3 on one line (they must fix a homography) |
+| `--pick-points` | opens a click window where you choose which known court point you click (`click_court_points`) |
+| `--list-points` | prints the names and court positions of the known points and exits |
 | `--output-dir` | root folder for calibrations (default `data/calibration`) |
 
 Without `--corners` or `--shuttleset-match` an OpenCV window opens on the frame:
@@ -50,6 +53,35 @@ the wrong order; `1` with `cancelled: no calibration saved` when the click windo
 is closed with Esc; `2` for invalid arguments (a corner not written as `x,y`,
 or both `--corners` and `--shuttleset-match`).
 
+Calibrating with named points (a near corner below the frame):
+
+```
+.venv/bin/python -m vision.court data/recordings/stand_in/set1.mp4 --frame 600 --points \
+  "near_left=217,762" "near_long_service_line x left_doubles_sideline=383,736" \
+  "near_long_service_line x centre_line=574,889" "near_baseline x centre_line=356,960" \
+  "near_short_service_line x centre_line=1140,718" "near_short_service_line x right_singles_sideline=1584,810" \
+  "near_short_service_line x right_doubles_sideline=1714,837"
+```
+
+**Known court points.** The 30 crossings of the 6 lines across the court
+(`near_baseline`, `near_long_service_line` (doubles), `near_short_service_line`,
+`far_short_service_line`, `far_long_service_line`, `far_baseline`) with the 5 lines
+along it (`left_doubles_sideline`, `left_singles_sideline`, `centre_line`,
+`right_singles_sideline`, `right_doubles_sideline`), named `<across> x <along>`; the
+4 corners again under their short names (`near_left` = `near_baseline x
+left_doubles_sideline`, ...); and the 2 net-post bases (`left_net_post_base`,
+`right_net_post_base`, on the doubles sidelines at the net). The centre line runs only
+from each short service line to its baseline, but all its crossings with lines across
+the court exist. Click a corner at the outer edge of its lines, as the corner
+calibration does; for a crossing, at the outer edge of the sideline and the middle of
+the line across (the lines are about 4 cm wide, so the choice matters by 1-3 px).
+
+**Click window** (`--pick-points`): a small court diagram in the top-left corner shows
+every known point; the current one is yellow, placed ones green. A click places the
+current point and moves to the next; `n`/`p` step to the next or previous point without
+clicking (to skip hidden ones), `d` removes the current point's click, Enter saves once
+the placed points fix a homography, Esc or the close button cancels.
+
 ## Calibration file
 
 `court.json` holds: `video`, `frame_index`, `frame_width`, `frame_height`,
@@ -58,6 +90,16 @@ or both `--corners` and `--shuttleset-match`).
 `pixel_to_court_homography` (3 x 3, maps pixel `(x, y, 1)` to court meters) and
 `max_corner_reprojection_error_px`. `corner_pixels` are always in the video's own
 pixels (ShuttleSet corners are saved after scaling).
+
+A calibration from named points (`--points`, `--pick-points`) has the same keys, plus
+`corner_pixels_source` (`"clicked"` if all 4 corners were among the points, else
+`"projected from the reference points"`: the corners are where the homography puts
+them, possibly outside the frame), `reference_points` (one entry per clicked point:
+`name`, `pixel`, `court` meters, `error_px` = distance between the clicked pixel and
+the point reprojected through the homography), `max_reference_error_px` and
+`rms_reference_error_px`. With 4 points the errors are 0 (the homography is exact);
+with more they show how consistent the clicks are. The overlay marks each clicked
+point with its name and error.
 
 Limitation: the folder is keyed by the video file name without its extension only,
 so two different videos with the same name (for example `a/match.mp4` and
@@ -74,6 +116,8 @@ calibration overwrites the first. Give recordings unique file names.
 | `SINGLES_SIDELINE_INSET_M` | `0.46` | singles sideline distance from the doubles sideline |
 | `SHORT_SERVICE_LINE_FROM_NET_M` | `1.98` | short service line distance from the net |
 | `DOUBLES_LONG_SERVICE_LINE_FROM_BASELINE_M` | `0.76` | doubles long service line distance from the baseline |
+| `PAINTED_LINE_WIDTH_M` | `0.04` | width of a painted court line |
+| `SEARCH_RADIUS_LINE_WIDTHS` | `1.5` | the view check's search window, in painted-line widths at that point (at least 8 px) |
 | `CORNER_NAMES` | `("near_left", "near_right", "far_right", "far_left")` | order of every corner array |
 | `CALIBRATION_DIR` | `Path("data/calibration")` | default output root |
 | `SHUTTLESET_HOMOGRAPHY_CSV` | `Path("data/CoachAI-Projects/ShuttleSet/set/homography.csv")` | ShuttleSet per-video corners |
@@ -413,7 +457,7 @@ Parses one `--corners` value `"x,y"`. Errors: `argparse.ArgumentTypeError` other
 
 ### `window_was_closed(window_name) -> bool`
 `True` if the OpenCV window `window_name` is no longer visible (closed with its
-close button, or never opened), else `False`. Used by `click_corners`. No errors.
+close button, or never opened), else `False`. Used by `click_named_points`. No errors.
 
 ```python
 >>> from vision.court import window_was_closed
@@ -422,12 +466,170 @@ True
 
 ```
 
+### `court_lines_across() -> dict`, `court_lines_along() -> dict`, `court_point_catalog() -> dict`
+The `y` of each line across the court, the `x` of each line along it, and every known
+point by name (36 names: 30 crossings, 4 corner aliases, 2 net-post bases).
+
+```python
+>>> from vision.court import court_lines_across, court_lines_along, court_point_catalog
+>>> {name: round(y_m, 2) for name, y_m in court_lines_across().items()}
+{'near_baseline': 0.0, 'near_long_service_line': 0.76, 'near_short_service_line': 4.72, 'far_short_service_line': 8.68, 'far_long_service_line': 12.64, 'far_baseline': 13.4}
+>>> court_lines_along()
+{'left_doubles_sideline': 0.0, 'left_singles_sideline': 0.46, 'centre_line': 3.05, 'right_singles_sideline': 5.64, 'right_doubles_sideline': 6.1}
+>>> catalog = court_point_catalog()
+>>> len(catalog), catalog["far_long_service_line x right_singles_sideline"], catalog["left_net_post_base"]
+(36, (5.64, 12.64), (0.0, 6.7))
+
+```
+
+### `court_point_meters(point_names) -> ndarray`, `cross_2d(first, second) -> float`, `check_points_fix_a_homography(court_points)`
+Court meters of named points (`ValueError` for an unknown name); the 2-D cross product;
+and the check that a set of court points determines a homography: at least 4, no point
+twice, and at least one 4 of them with no 3 on one line. Errors: `ValueError` naming
+which condition failed.
+
+```python
+>>> from vision.court import check_points_fix_a_homography, court_point_meters
+>>> court_point_meters(["near_left", "far_baseline x centre_line"]).tolist()
+[[0.0, 0.0], [3.05, 13.4]]
+>>> check_points_fix_a_homography(court_point_meters(["near_left", "near_right", "far_right"]))
+Traceback (most recent call last):
+ValueError: need at least 4 court points, got 3
+>>> check_points_fix_a_homography(court_point_meters(["near_left", "near_baseline x centre_line", "near_right", "far_baseline x centre_line"]))
+Traceback (most recent call last):
+ValueError: the court points don't fix a homography: no 4 of them are free of 3 on one line
+>>> check_points_fix_a_homography(court_point_meters(["near_left", "near_baseline x left_doubles_sideline", "far_right", "far_left"]))
+Traceback (most recent call last):
+ValueError: the same court point is given twice (a corner and its line-crossing name are the same point)
+>>> court_point_meters(["mid court"])
+Traceback (most recent call last):
+ValueError: unknown court point(s) ['mid court']; see python -m vision.court --list-points
+
+```
+
+### `homography_from_court_points(pixel_points, point_names) -> ndarray`
+Pixel -> court homography from 4 or more named points: exact for 4 (as for the corners),
+least squares (`cv2.findHomography`, no outlier rejection) for more. Errors:
+`ValueError` from the checks above, for a pixel/name count mismatch, or non-finite pixels.
+
+Without the near-left corner, from the other 3 corners and 2 crossings on the left
+sideline (pixels from the broadcast calibration), the hidden corner comes back where it
+was:
+
+```python
+>>> from vision.court import court_to_pixels, homography_from_court_points
+>>> names = ["near_right", "far_right", "far_left", "near_long_service_line x left_doubles_sideline", "near_short_service_line x left_doubles_sideline"]
+>>> pixels = [[987.2, 657.4], [864.2, 301.6], [412.6, 303.0], [299.9, 629.3], [345.7, 496.8]]
+>>> court_to_pixels(homography_from_court_points(pixels, names), [[0.0, 0.0]]).round(1).tolist()
+[[289.5, 659.6]]
+
+```
+
+### `parse_point_argument(text) -> (str, (float, float))`
+
+```python
+>>> from vision.court import parse_point_argument
+>>> parse_point_argument("near_short_service_line x centre_line=640,496")
+('near_short_service_line x centre_line', (640.0, 496.0))
+
+```
+
+### `point_calibration(video_path, frame_index, frame_size, point_pixels) -> dict`, `save_point_calibration(output_path, ...) -> dict`, `write_calibration(output_path, calibration) -> dict`, `reference_points(calibration) -> (names, pixels, court meters)`
+Build (and save) a calibration from `{name: (x, y)}`; `reference_points` returns the
+clicked points of a point calibration, or the 4 corners of a corner calibration.
+
+```python
+>>> from vision.court import point_calibration, reference_points
+>>> calibration = point_calibration("club.mp4", 600, (1280, 720), dict(zip(names, pixels)))
+>>> calibration["corner_pixels_source"], [round(value, 1) for value in calibration["corner_pixels"][0]]
+('projected from the reference points', [289.5, 659.6])
+>>> reference_points(calibration)[0][:2], reference_points({"corner_pixels": [[1, 2]] * 4})[0]
+(['near_right', 'far_right'], ['near_left', 'near_right', 'far_right', 'far_left'])
+
+```
+
+### `painted_line_width_px(homography, point_meters, normal_meters, width_m=PAINTED_LINE_WIDTH_M) -> float`
+How many pixels a painted line's width covers at a court point, across the line
+(`normal_meters` is the unit direction across it). Near a camera the lines are many
+pixels wide; on the broadcast they are 1-2 px.
+
+```python
+>>> from vision.court import homography_from_corners, painted_line_width_px
+>>> homography = homography_from_corners([[289.4, 659.6], [987.2, 657.4], [864.2, 301.6], [412.6, 303.0]])
+>>> round(painted_line_width_px(homography, (3.05, 0.0), (0.0, 1.0)), 2), round(painted_line_width_px(homography, (3.05, 13.4), (0.0, 1.0)), 2)
+(1.64, 0.69)
+
+```
+
+### `line_sample_counts(frame, homography, start_meters, end_meters, sample_count=40, min_search_radius=8, width_factor=SEARCH_RADIUS_LINE_WIDTHS) -> (int, int)`
+The view check's count for one floor line: `(found, inside)`. Each of `sample_count`
+points between 5% and 95% of the line gets a search window of
+`max(min_search_radius, ceil(width_factor x painted_line_width_px))` pixels; samples
+whose window leaves the frame don't count, the rest count as found when a bright
+painted line peak is in the window (`brightness_profile_peak_offset`). The window
+grows only where lines are wider than about 5 px (a camera close to the court), so on
+the broadcast every window stays 8 px.
+
+```python
+>>> import cv2
+>>> from vision.court import court_line_segments, court_to_pixels, line_sample_counts
+>>> drawn_court = np.full((720, 1280, 3), 90, dtype=np.uint8)
+>>> for start, end in court_line_segments().values():
+...     start_pixel, end_pixel = np.round(court_to_pixels(homography, [start, end])).astype(int)
+...     _ = cv2.line(drawn_court, tuple(map(int, start_pixel)), tuple(map(int, end_pixel)), (255, 255, 255), 3)
+>>> line_sample_counts(drawn_court, homography, (0.0, 0.0), (6.1, 0.0))
+(40, 40)
+>>> line_sample_counts(np.full((720, 1280, 3), 90, dtype=np.uint8), homography, (0.0, 0.0), (6.1, 0.0))
+(0, 40)
+>>> line_sample_counts(drawn_court, homography, (0.0, -3.0), (6.1, -3.0))
+(0, 0)
+
+```
+
+### `line_samples_inside_frame(frame_size, homography, start_meters, end_meters, sample_count=40, search_radius=8) -> int`
+How many of a line's check samples (as in `line_offsets_to_bright_pixels`) have their
+whole search window inside the frame. The view check in `vision/players.py` divides by
+this, so lines out of frame don't count as missing.
+
+```python
+>>> from vision.court import homography_from_corners, line_samples_inside_frame
+>>> homography = homography_from_corners([[289.4, 659.6], [987.2, 657.4], [864.2, 301.6], [412.6, 303.0]])
+>>> line_samples_inside_frame((1280, 720), homography, (0.0, 0.0), (6.1, 0.0)), line_samples_inside_frame((1280, 720), homography, (0.0, -3.0), (6.1, -3.0))
+(40, 0)
+
+```
+
+### `draw_point_markers(frame, calibration, color=CORNER_COLOR_BGR) -> ndarray`, `court_diagram(point_names, current_name, placed_names, height_px=300) -> ndarray`, `points_are_enough(point_pixels) -> bool`, `click_court_points(frame, window_name="court points") -> dict | None`
+The overlay markers of a point calibration; the click window's court diagram; whether the
+placed points fix a homography; the click window itself (returns `{name: (x, y)}` or
+`None` when cancelled; needs a display, so no doctest).
+
+```python
+>>> from vision.court import court_diagram, points_are_enough
+>>> points_are_enough(dict(zip(names, pixels))), points_are_enough({"near_left": (1.0, 2.0)})
+(True, False)
+>>> court_diagram(list(catalog), "near_left", {"near_right"}).shape
+(300, 147, 3)
+
+```
+
+### `click_named_points(frame, point_names, window_name, color=CORNER_COLOR_BGR) -> np.ndarray | None`
+Opens an OpenCV window on `frame` and collects one click per name (`len(point_names)`
+x 2 float array, in that order; the prompt reads `click <name> (u = undo, esc = cancel)`),
+or returns `None` on Esc. Keys: `u` undo, Enter save once all are placed; the window's
+close button acts like Esc; extra clicks are ignored.
+
 ### `click_corners(frame, window_name="court calibration") -> np.ndarray | None`
-Opens an OpenCV window on `frame` and collects 4 clicks (4 x 2 float array, in
-`CORNER_NAMES` order), or returns `None` on Esc. Keys: `u` undo, Enter save; the window's close button acts like Esc.
+`click_named_points` for the 4 corners (`<corner name> corner`, in `CORNER_NAMES` order).
 Needs a display, so it has no doctest; use `--corners` or `calibrate_video(..., corner_pixels=...)` headless.
 
-### `calibrate_video(video_path, frame_index=0, corner_pixels=None, calibration_dir=CALIBRATION_DIR, corners_in_shuttleset_label_frame=False) -> Path | None`
+### `click_net_post_tops(frame, window_name="net post tops") -> np.ndarray | None`
+`click_named_points` for the 2 net-post tops (`left net post top`, `right net post top`),
+used by `python -m vision.camera` (`docs/vision/camera.md`) without `--net-posts`.
+
+### `calibrate_video(video_path, frame_index=0, corner_pixels=None, calibration_dir=CALIBRATION_DIR, corners_in_shuttleset_label_frame=False, point_pixels=None, pick_points=False) -> Path | None`
+With `point_pixels` (`{name: (x, y)}`) or `pick_points=True` it saves a point
+calibration instead of a corner one (below otherwise unchanged).
 Reads frame `frame_index`, gets the corners (`corner_pixels` if given, otherwise
 `click_corners`; with `corners_in_shuttleset_label_frame=True` the given corners
 are taken as 1280 x 720 ShuttleSet pixels and multiplied by `label_scale(video width)`), saves the calibration to `calibration_path(video_path, calibration_dir)`

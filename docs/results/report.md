@@ -19,28 +19,28 @@ their habits; **Me** with every one of mine; a footer saying what "k of n" means
 comparison or ranking, and whether shot types are labels or predictions. Inside each player, bullets sit under one
 sub-heading per family ("Shots by court zone", "Replies to the other player's shot", "Serves", "Winning shots",
 "Shots that ended in an error", "How errors happened"). Each bullet is the counted sentence in bold
-("From the front court, forehand side: lifts 6 of 7 times."), the evidence line (`6 of 7 for Opponent`) and, for
+("From the front court, forehand side: lifts 4 of 5 times."), the evidence line (`4 of 5 for Opponent`) and, for
 zone and serve bullets, a 54 px court diagram with the zone shaded (me at the bottom). Reply bullets name the other
-player ("After a clear from my mid backhand to the rear backhand: smashes straight 1 of 2 times.") and their diagram
+player ("After a serve from my mid forehand to the mid backhand: lifts cross 1 of 1 times.") and their diagram
 shows that player's shot: the hit-from zone in yellow, the landing zone in red and an arrow between them, still with
 me at the bottom. Bullets whose shot types
 came from the classifier carry a "predicted shot types" tag.
 
-For `match_tracked`: 63 bullets for the opponent and 68 for me, under
+For `match_tracked`: 65 bullets for the opponent and 62 for me, under
 Shots by court zone, Replies to the other player's shot, Serves (opponent) and Shots by court zone, Replies to the other player's shot, Serves (me);
-174.1 KB of HTML; 131 bullets from predictions only, 0 mixed.
+168.3 KB of HTML; 127 bullets from predictions only, 0 mixed.
 
 ## Checks
 
 | Check | Result |
 |---|---|
 | Builds for my tracked match | `report.serve match_tracked --me me --no-serve` writes the page |
-| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 17.2 s in one process |
+| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 17.3 s in one process |
 | Every habit shown, no cap | each page lists every entry of both players: 259 to 658 bullets a page (median 492) |
-| Every bullet has a count | all 43,457 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
+| Every bullet has a count | all 43,453 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
 | No comparison with pros | 0 of 89 pages mention pros (0 found) |
-| Diagrams | 6,845 bullets (zone and serve placement) get a shaded zone; 34,373 reply bullets get hit-from and landing zones with an arrow |
-| Reply bullets name the other player | 34,373 of 34,373 reply bullets name the player; 0 say "the other player" |
+| Diagrams | 6,846 bullets (zone and serve placement) get a shaded zone; 34,368 reply bullets get hit-from and landing zones with an arrow |
+| Reply bullets name the other player | 34,368 of 34,368 reply bullets name the player; 0 say "the other player" |
 | Page size | ShuttleSet 320 to 851 KB (median 627 KB), nothing external (inline CSS and SVG, no scripts) |
 | Only the report is served | the server serves a temporary folder holding a copy of the page and nothing else |
 

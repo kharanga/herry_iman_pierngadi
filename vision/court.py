@@ -15,6 +15,8 @@ NET_Y_M = COURT_LENGTH_M / 2
 SINGLES_SIDELINE_INSET_M = 0.46
 SHORT_SERVICE_LINE_FROM_NET_M = 1.98
 DOUBLES_LONG_SERVICE_LINE_FROM_BASELINE_M = 0.76
+PAINTED_LINE_WIDTH_M = 0.04
+SEARCH_RADIUS_LINE_WIDTHS = 1.5
 CORNER_NAMES = ("near_left", "near_right", "far_right", "far_left")
 CALIBRATION_DIR = Path("data/calibration")
 SHUTTLESET_HOMOGRAPHY_CSV = Path("data/CoachAI-Projects/ShuttleSet/set/homography.csv")
@@ -80,6 +82,90 @@ def homography_from_corners(corner_pixels) -> np.ndarray:
     return homography_between(corners, court_corner_meters())
 
 
+def court_lines_across() -> dict[str, float]:
+    return {
+        "near_baseline": 0.0,
+        "near_long_service_line": DOUBLES_LONG_SERVICE_LINE_FROM_BASELINE_M,
+        "near_short_service_line": NET_Y_M - SHORT_SERVICE_LINE_FROM_NET_M,
+        "far_short_service_line": NET_Y_M + SHORT_SERVICE_LINE_FROM_NET_M,
+        "far_long_service_line": COURT_LENGTH_M - DOUBLES_LONG_SERVICE_LINE_FROM_BASELINE_M,
+        "far_baseline": COURT_LENGTH_M,
+    }
+
+
+def court_lines_along() -> dict[str, float]:
+    return {
+        "left_doubles_sideline": 0.0,
+        "left_singles_sideline": SINGLES_SIDELINE_INSET_M,
+        "centre_line": COURT_WIDTH_M / 2,
+        "right_singles_sideline": COURT_WIDTH_M - SINGLES_SIDELINE_INSET_M,
+        "right_doubles_sideline": COURT_WIDTH_M,
+    }
+
+
+def court_point_catalog() -> dict[str, tuple[float, float]]:
+    crossings = {
+        f"{across} x {along}": (x_m, y_m) for across, y_m in court_lines_across().items() for along, x_m in court_lines_along().items()
+    }
+    corners = dict(zip(CORNER_NAMES, map(tuple, court_corner_meters())))
+    net_post_bases = {"left_net_post_base": (0.0, NET_Y_M), "right_net_post_base": (COURT_WIDTH_M, NET_Y_M)}
+    return {**corners, **crossings, **net_post_bases}
+
+
+def court_point_meters(point_names) -> np.ndarray:
+    catalog = court_point_catalog()
+    unknown = [name for name in point_names if name not in catalog]
+    if unknown:
+        raise ValueError(f"unknown court point(s) {unknown}; see python -m vision.court --list-points")
+    return np.array([catalog[name] for name in point_names], dtype=float)
+
+
+def cross_2d(first, second) -> float:
+    return float(first[0] * second[1] - first[1] * second[0])
+
+
+def check_points_fix_a_homography(court_points: np.ndarray) -> None:
+    unique_points = np.unique(np.round(court_points, 6), axis=0)
+    if len(unique_points) < len(court_points):
+        raise ValueError("the same court point is given twice (a corner and its line-crossing name are the same point)")
+    if len(court_points) < 4:
+        raise ValueError(f"need at least 4 court points, got {len(court_points)}")
+    for first in range(len(court_points)):
+        for second in range(first + 1, len(court_points)):
+            for third in range(second + 1, len(court_points)):
+                for fourth in range(third + 1, len(court_points)):
+                    quad = court_points[[first, second, third, fourth]]
+                    if all(
+                        abs(cross_2d(quad[b] - quad[a], quad[c] - quad[a])) > 1e-6
+                        for a, b, c in ((0, 1, 2), (0, 1, 3), (0, 2, 3), (1, 2, 3))
+                    ):
+                        return
+    raise ValueError("the court points don't fix a homography: no 4 of them are free of 3 on one line")
+
+
+def homography_from_court_points(pixel_points, point_names) -> np.ndarray:
+    pixels = np.asarray(pixel_points, dtype=float).reshape(-1, 2)
+    court_points = court_point_meters(point_names)
+    if len(pixels) != len(court_points):
+        raise ValueError(f"got {len(pixels)} pixels for {len(court_points)} court points")
+    if not np.all(np.isfinite(pixels)):
+        raise ValueError("point pixels must be finite numbers")
+    check_points_fix_a_homography(court_points)
+    if len(pixels) == 4:
+        return homography_between(pixels, court_points)
+    homography, _ = cv2.findHomography(pixels, court_points, 0)
+    if homography is None:
+        raise ValueError("could not fit a homography to these points")
+    return homography / homography[2, 2]
+
+
+def parse_point_argument(text: str) -> tuple[str, tuple[float, float]]:
+    name, separator, pixel_text = text.rpartition("=")
+    if not separator or not name:
+        raise argparse.ArgumentTypeError(f"expected NAME=X,Y, got {text!r}")
+    return name.strip(), parse_corner_argument(pixel_text)
+
+
 def apply_homography(homography: np.ndarray, points) -> np.ndarray:
     point_array = np.asarray(points, dtype=float).reshape(-1, 2)
     homogeneous = np.column_stack([point_array, np.ones(len(point_array))]) @ np.asarray(homography).T
@@ -142,6 +228,15 @@ def draw_court_lines(
     return drawn_frame
 
 
+def draw_point_markers(frame: np.ndarray, calibration: dict, color: tuple[int, int, int] = CORNER_COLOR_BGR) -> np.ndarray:
+    marked_frame = frame.copy()
+    for point in calibration.get("reference_points", []):
+        center = (int(round(point["pixel"][0])), int(round(point["pixel"][1])))
+        cv2.circle(marked_frame, center, 6, color, 2)
+        cv2.putText(marked_frame, f"{point['name']} ({point['error_px']:.1f} px)", (center[0] + 8, center[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
+    return marked_frame
+
+
 def draw_corner_markers(frame: np.ndarray, corner_pixels, color: tuple[int, int, int] = CORNER_COLOR_BGR) -> np.ndarray:
     marked_frame = frame.copy()
     for corner_name, (x, y) in zip(CORNER_NAMES, as_corner_array(corner_pixels)):
@@ -165,6 +260,52 @@ def brightness_profile_peak_offset(gray_frame: np.ndarray, point: np.ndarray, no
         return None
     brightest = np.flatnonzero(brightness == brightness.max())
     return float(offsets[brightest].mean())
+
+
+def line_samples_inside_frame(
+    frame_size: tuple[int, int], homography: np.ndarray, start_meters, end_meters, sample_count: int = 40, search_radius: int = 8
+) -> int:
+    width, height = frame_size
+    start_pixel, end_pixel = court_to_pixels(homography, [start_meters, end_meters])
+    samples = start_pixel + np.linspace(0.05, 0.95, sample_count)[:, None] * (end_pixel - start_pixel)
+    inside = (
+        (samples[:, 0] >= search_radius) & (samples[:, 0] < width - search_radius)
+        & (samples[:, 1] >= search_radius) & (samples[:, 1] < height - search_radius)
+    )
+    return int(inside.sum())
+
+
+def painted_line_width_px(homography: np.ndarray, point_meters, normal_meters, width_m: float = PAINTED_LINE_WIDTH_M) -> float:
+    pixels = court_to_pixels(homography, [point_meters, np.asarray(point_meters, dtype=float) + width_m * np.asarray(normal_meters, dtype=float)])
+    return float(np.linalg.norm(pixels[1] - pixels[0]))
+
+
+def line_sample_counts(
+    frame: np.ndarray,
+    homography: np.ndarray,
+    start_meters,
+    end_meters,
+    sample_count: int = 40,
+    min_search_radius: int = 8,
+    width_factor: float = SEARCH_RADIUS_LINE_WIDTHS,
+) -> tuple[int, int]:
+    gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+    height, width = gray_frame.shape
+    start_meters, end_meters = np.asarray(start_meters, dtype=float), np.asarray(end_meters, dtype=float)
+    along_meters = end_meters - start_meters
+    normal_meters = np.array([-along_meters[1], along_meters[0]]) / np.linalg.norm(along_meters)
+    start_pixel, end_pixel = court_to_pixels(homography, [start_meters, end_meters])
+    direction = end_pixel - start_pixel
+    normal = np.array([-direction[1], direction[0]]) / np.linalg.norm(direction)
+    found = inside = 0
+    for fraction in np.linspace(0.05, 0.95, sample_count):
+        radius = max(min_search_radius, int(np.ceil(width_factor * painted_line_width_px(homography, start_meters + fraction * along_meters, normal_meters))))
+        point = start_pixel + fraction * direction
+        if not (radius <= point[0] < width - radius and radius <= point[1] < height - radius):
+            continue
+        inside += 1
+        found += brightness_profile_peak_offset(gray_frame, point, normal, radius) is not None
+    return found, inside
 
 
 def line_offsets_to_bright_pixels(
@@ -194,6 +335,43 @@ def calibration_path(video_path: Path, calibration_dir: Path = CALIBRATION_DIR) 
     return calibration_dir / Path(video_path).stem / "court.json"
 
 
+def point_calibration(video_path: Path, frame_index: int, frame_size: tuple[int, int], point_pixels: dict) -> dict:
+    point_names = list(point_pixels)
+    pixels = np.array([point_pixels[name] for name in point_names], dtype=float).reshape(-1, 2)
+    court_points = court_point_meters(point_names)
+    homography = homography_from_court_points(pixels, point_names)
+    point_errors = reprojection_errors(homography, pixels, court_points)
+    corners_given = all(name in point_pixels for name in CORNER_NAMES)
+    corner_pixels = (
+        np.array([point_pixels[name] for name in CORNER_NAMES], dtype=float) if corners_given else court_to_pixels(homography, court_corner_meters())
+    )
+    return {
+        "video": str(video_path),
+        "frame_index": int(frame_index),
+        "frame_width": int(frame_size[0]),
+        "frame_height": int(frame_size[1]),
+        "corner_order": list(CORNER_NAMES),
+        "corner_pixels": corner_pixels.tolist(),
+        "corner_pixels_source": "clicked" if corners_given else "projected from the reference points",
+        "court_corner_meters": court_corner_meters().tolist(),
+        "pixel_to_court_homography": homography.tolist(),
+        "max_corner_reprojection_error_px": float(reprojection_errors(homography, corner_pixels, court_corner_meters()).max()),
+        "reference_points": [
+            {"name": name, "pixel": pixel.tolist(), "court": court.tolist(), "error_px": float(error)}
+            for name, pixel, court, error in zip(point_names, pixels, court_points, point_errors)
+        ],
+        "max_reference_error_px": float(point_errors.max()),
+        "rms_reference_error_px": float(np.sqrt(np.mean(point_errors**2))),
+    }
+
+
+def write_calibration(output_path: Path, calibration: dict) -> dict:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(calibration, indent=2))
+    return calibration
+
+
 def save_calibration(
     output_path: Path,
     video_path: Path,
@@ -214,10 +392,18 @@ def save_calibration(
         "pixel_to_court_homography": homography.tolist(),
         "max_corner_reprojection_error_px": float(reprojection_errors(homography, corners, court_corner_meters()).max()),
     }
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(calibration, indent=2))
-    return calibration
+    return write_calibration(output_path, calibration)
+
+
+def save_point_calibration(output_path: Path, video_path: Path, frame_index: int, frame_size: tuple[int, int], point_pixels: dict) -> dict:
+    return write_calibration(output_path, point_calibration(video_path, frame_index, frame_size, point_pixels))
+
+
+def reference_points(calibration: dict) -> tuple[list[str], np.ndarray, np.ndarray]:
+    if "reference_points" in calibration:
+        points = calibration["reference_points"]
+        return [point["name"] for point in points], np.array([point["pixel"] for point in points], dtype=float), np.array([point["court"] for point in points], dtype=float)
+    return list(CORNER_NAMES), np.asarray(calibration["corner_pixels"], dtype=float), court_corner_meters()
 
 
 def load_calibration(calibration_file: Path) -> dict:
@@ -264,11 +450,14 @@ def window_was_closed(window_name: str) -> bool:
         return True
 
 
-def click_corners(frame: np.ndarray, window_name: str = "court calibration") -> np.ndarray | None:
+def click_named_points(
+    frame: np.ndarray, point_names, window_name: str, color: tuple[int, int, int] = CORNER_COLOR_BGR
+) -> np.ndarray | None:
+    point_count = len(point_names)
     clicked_points: list[tuple[int, int]] = []
 
     def remember_click(event, x, y, flags, parameters):
-        if event == cv2.EVENT_LBUTTONDOWN and len(clicked_points) < 4:
+        if event == cv2.EVENT_LBUTTONDOWN and len(clicked_points) < point_count:
             clicked_points.append((x, y))
 
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
@@ -277,28 +466,102 @@ def click_corners(frame: np.ndarray, window_name: str = "court calibration") -> 
         while True:
             shown_frame = frame.copy()
             for point in clicked_points:
-                cv2.circle(shown_frame, point, 6, CORNER_COLOR_BGR, 2)
+                cv2.circle(shown_frame, point, 6, color, 2)
             prompt = (
-                f"click {CORNER_NAMES[len(clicked_points)]} corner (u = undo, esc = cancel)"
-                if len(clicked_points) < 4
+                f"click {point_names[len(clicked_points)]} (u = undo, esc = cancel)"
+                if len(clicked_points) < point_count
                 else "enter = save, u = undo, esc = cancel"
             )
-            cv2.putText(shown_frame, prompt, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, CORNER_COLOR_BGR, 2)
+            cv2.putText(shown_frame, prompt, (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
             cv2.imshow(window_name, shown_frame)
             key = cv2.waitKey(30) & 0xFF
             if key == 27 or window_was_closed(window_name):
                 return None
             if key == ord("u") and clicked_points:
                 clicked_points.pop()
-            if key in (10, 13) and len(clicked_points) == 4:
+            if key in (10, 13) and len(clicked_points) == point_count:
                 return np.array(clicked_points, dtype=float)
     finally:
         if not window_was_closed(window_name):
             cv2.destroyWindow(window_name)
 
 
+def click_corners(frame: np.ndarray, window_name: str = "court calibration") -> np.ndarray | None:
+    return click_named_points(frame, [f"{name} corner" for name in CORNER_NAMES], window_name)
+
+
+def click_net_post_tops(frame: np.ndarray, window_name: str = "net post tops") -> np.ndarray | None:
+    return click_named_points(frame, ["left net post top", "right net post top"], window_name)
+
+
 def overlay_path_for(calibration_file: Path) -> Path:
     return Path(calibration_file).with_name("court_overlay.jpg")
+
+
+def court_diagram(point_names, current_name: str, placed_names, height_px: int = 300) -> np.ndarray:
+    scale = height_px / (COURT_LENGTH_M + 1.0)
+    width_px = int((COURT_WIDTH_M + 1.0) * scale)
+    diagram = np.full((height_px, width_px, 3), 40, dtype=np.uint8)
+
+    def to_pixel(point):
+        return int(round((point[0] + 0.5) * scale)), int(round((COURT_LENGTH_M + 0.5 - point[1]) * scale))
+
+    for start, end in court_line_segments().values():
+        cv2.line(diagram, to_pixel(start), to_pixel(end), (200, 200, 200), 1)
+    catalog = court_point_catalog()
+    for name in point_names:
+        color = (0, 255, 255) if name == current_name else (0, 200, 0) if name in placed_names else (120, 120, 120)
+        cv2.circle(diagram, to_pixel(catalog[name]), 5 if name == current_name else 3, color, -1)
+    return diagram
+
+
+def points_are_enough(point_pixels: dict) -> bool:
+    try:
+        check_points_fix_a_homography(court_point_meters(list(point_pixels)))
+    except ValueError:
+        return False
+    return True
+
+
+def click_court_points(frame: np.ndarray, window_name: str = "court points") -> dict | None:
+    point_names = [name for name in court_point_catalog() if name not in CORNER_NAMES]
+    point_names = list(CORNER_NAMES) + point_names
+    placed: dict[str, tuple[int, int]] = {}
+    current = [0]
+
+    def remember_click(event, x, y, flags, parameters):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            placed[point_names[current[0]]] = (x, y)
+            current[0] = (current[0] + 1) % len(point_names)
+
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback(window_name, remember_click)
+    try:
+        while True:
+            shown_frame = frame.copy()
+            for name, point in placed.items():
+                cv2.circle(shown_frame, point, 6, CORNER_COLOR_BGR, 2)
+                cv2.putText(shown_frame, name, (point[0] + 8, point[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, CORNER_COLOR_BGR, 1)
+            diagram = court_diagram(point_names, point_names[current[0]], placed)
+            shown_frame[10 : 10 + diagram.shape[0], 10 : 10 + diagram.shape[1]] = diagram
+            ready = "enter = save" if points_are_enough(placed) else f"need 4+ points not on 2 lines ({len(placed)} placed)"
+            prompt = f"click {point_names[current[0]]}   n/p = next/previous point, d = delete it, {ready}, esc = cancel"
+            cv2.putText(shown_frame, prompt, (20, shown_frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, CORNER_COLOR_BGR, 2)
+            cv2.imshow(window_name, shown_frame)
+            key = cv2.waitKey(30) & 0xFF
+            if key == 27 or window_was_closed(window_name):
+                return None
+            if key == ord("n"):
+                current[0] = (current[0] + 1) % len(point_names)
+            if key == ord("p"):
+                current[0] = (current[0] - 1) % len(point_names)
+            if key == ord("d"):
+                placed.pop(point_names[current[0]], None)
+            if key in (10, 13) and points_are_enough(placed):
+                return {name: (float(x), float(y)) for name, (x, y) in placed.items()}
+    finally:
+        if not window_was_closed(window_name):
+            cv2.destroyWindow(window_name)
 
 
 def calibrate_video(
@@ -307,6 +570,8 @@ def calibrate_video(
     corner_pixels=None,
     calibration_dir: Path = CALIBRATION_DIR,
     corners_in_shuttleset_label_frame: bool = False,
+    point_pixels: dict | None = None,
+    pick_points: bool = False,
 ) -> Path | None:
     capture = open_video(Path(video_path))
     try:
@@ -317,15 +582,22 @@ def calibrate_video(
         raise ValueError(f"could not read frame {frame_index} of {video_path}")
     if corner_pixels is not None and corners_in_shuttleset_label_frame:
         corner_pixels = as_corner_array(corner_pixels) * label_scale(frame.shape[1])
-    if corner_pixels is None:
-        corner_pixels = click_corners(frame)
-        if corner_pixels is None:
-            return None
     output_path = calibration_path(Path(video_path), calibration_dir)
-    calibration = save_calibration(output_path, Path(video_path), frame_index, (frame.shape[1], frame.shape[0]), corner_pixels)
-    overlay = draw_corner_markers(
-        draw_court_lines(frame, np.array(calibration["pixel_to_court_homography"])), corner_pixels
-    )
+    frame_size = (frame.shape[1], frame.shape[0])
+    if point_pixels is None and pick_points:
+        point_pixels = click_court_points(frame)
+        if point_pixels is None:
+            return None
+    if point_pixels is not None:
+        calibration = save_point_calibration(output_path, Path(video_path), frame_index, frame_size, point_pixels)
+        overlay = draw_point_markers(draw_court_lines(frame, np.array(calibration["pixel_to_court_homography"])), calibration)
+    else:
+        if corner_pixels is None:
+            corner_pixels = click_corners(frame)
+            if corner_pixels is None:
+                return None
+        calibration = save_calibration(output_path, Path(video_path), frame_index, frame_size, corner_pixels)
+        overlay = draw_corner_markers(draw_court_lines(frame, np.array(calibration["pixel_to_court_homography"])), corner_pixels)
     cv2.imwrite(str(overlay_path_for(output_path)), overlay)
     return output_path
 
@@ -349,12 +621,25 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
         "--shuttleset-match",
         help="take the corners from ShuttleSet homography.csv for this match folder (skips the click window)",
     )
+    corner_source.add_argument(
+        "--points",
+        type=parse_point_argument,
+        nargs="+",
+        metavar="NAME=X,Y",
+        help="4 or more known court points by name (see --list-points), for when a corner is hidden",
+    )
+    corner_source.add_argument("--pick-points", action="store_true", help="open a click window where you choose which court point you click")
+    corner_source.add_argument("--list-points", action="store_true", help="print the names of the known court points and exit")
     parser.add_argument("--output-dir", type=Path, default=CALIBRATION_DIR, help="root folder for calibrations")
     return parser.parse_args(arguments)
 
 
 def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
+    if parsed.list_points:
+        for name, (x_m, y_m) in court_point_catalog().items():
+            print(f"{name}: ({x_m:.2f}, {y_m:.2f}) m")
+        return 0
     try:
         corner_pixels = parsed.corners
         if parsed.shuttleset_match:
@@ -365,6 +650,8 @@ def main(arguments: list[str]) -> int:
             corner_pixels,
             parsed.output_dir,
             corners_in_shuttleset_label_frame=bool(parsed.shuttleset_match),
+            point_pixels=dict(parsed.points) if parsed.points else None,
+            pick_points=parsed.pick_points,
         )
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)

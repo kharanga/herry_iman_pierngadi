@@ -1,8 +1,9 @@
 import argparse
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pandas as pd
 
@@ -22,6 +23,8 @@ RALLY_GAP_FRAMES = 120
 REST_RADIUS_PX = 8.0
 REST_FRAME_COUNT = 20
 MATCH_TOLERANCE_FRAMES = 5
+REFERENCE_FPS = 30.0
+REFERENCE_FRAME_WIDTH_PX = 1280
 HITS_DIR = Path("data/hits")
 HIT_COLUMNS = ["rally", "frame", "hitter", "score", "reach"]
 RALLY_COLUMNS = ["rally", "start_frame", "end_frame", "hits"]
@@ -35,6 +38,36 @@ class HitDetectionSettings:
     speed_after_min_px_per_frame: float = SPEED_AFTER_MIN_PX_PER_FRAME
     reach_max_body_heights: float = REACH_MAX_BODY_HEIGHTS
     min_hit_gap_frames: int = MIN_HIT_GAP_FRAMES
+    rally_gap_frames: int = RALLY_GAP_FRAMES
+    rest_radius_px: float = REST_RADIUS_PX
+    rest_frame_count: int = REST_FRAME_COUNT
+
+
+def frames_for_fps(reference_frames: int, fps: float) -> int:
+    return max(1, int(round(reference_frames * fps / REFERENCE_FPS)))
+
+
+def settings_for_video(fps: float, frame_width: float, base: HitDetectionSettings = HitDetectionSettings()) -> HitDetectionSettings:
+    pixel_scale = frame_width / REFERENCE_FRAME_WIDTH_PX
+    speed_scale = pixel_scale * REFERENCE_FPS / fps
+    return replace(
+        base,
+        velocity_window_frames=frames_for_fps(base.velocity_window_frames, fps),
+        speed_floor_px_per_frame=base.speed_floor_px_per_frame * speed_scale,
+        speed_after_min_px_per_frame=base.speed_after_min_px_per_frame * speed_scale,
+        min_hit_gap_frames=frames_for_fps(base.min_hit_gap_frames, fps),
+        rally_gap_frames=frames_for_fps(base.rally_gap_frames, fps),
+        rest_radius_px=base.rest_radius_px * pixel_scale,
+        rest_frame_count=frames_for_fps(base.rest_frame_count, fps),
+    )
+
+
+def video_fps_and_width(video_path: Path) -> tuple[float, float]:
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        return float(capture.get(cv2.CAP_PROP_FPS)), float(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    finally:
+        capture.release()
 
 
 @dataclass(frozen=True)
@@ -154,12 +187,18 @@ def last_valid_frame_before(tracks: FrameTracks, from_frame: int, to_frame: int)
     return int(tracks.frames[valid_indices[-1]]) if len(valid_indices) else int(from_frame)
 
 
-def rally_numbers(hit_frames, tracks: FrameTracks, rally_gap_frames: int = RALLY_GAP_FRAMES) -> list[int]:
+def rally_numbers(
+    hit_frames,
+    tracks: FrameTracks,
+    rally_gap_frames: int = RALLY_GAP_FRAMES,
+    rest_radius: float = REST_RADIUS_PX,
+    rest_frame_count: int = REST_FRAME_COUNT,
+) -> list[int]:
     numbers, rally = [], 0
     previous_frame = None
     for frame in hit_frames:
         long_gap = previous_frame is None or frame - previous_frame > rally_gap_frames
-        rested = previous_frame is not None and shuttle_rest_frame(tracks, previous_frame, frame) is not None
+        rested = previous_frame is not None and shuttle_rest_frame(tracks, previous_frame, frame, rest_radius, rest_frame_count) is not None
         if long_gap or rested:
             rally += 1
         numbers.append(rally)
@@ -167,20 +206,32 @@ def rally_numbers(hit_frames, tracks: FrameTracks, rally_gap_frames: int = RALLY
     return numbers
 
 
-def rally_end_frame(last_hit_frame: int, next_rally_start: int, tracks: FrameTracks) -> int:
-    rest_frame = shuttle_rest_frame(tracks, last_hit_frame, next_rally_start - 1)
+def rally_end_frame(
+    last_hit_frame: int,
+    next_rally_start: int,
+    tracks: FrameTracks,
+    rest_radius: float = REST_RADIUS_PX,
+    rest_frame_count: int = REST_FRAME_COUNT,
+) -> int:
+    rest_frame = shuttle_rest_frame(tracks, last_hit_frame, next_rally_start - 1, rest_radius, rest_frame_count)
     return rest_frame if rest_frame is not None else last_valid_frame_before(tracks, last_hit_frame, next_rally_start - 1)
 
 
-def segment_rallies(hits: pd.DataFrame, tracks: FrameTracks, rally_gap_frames: int = RALLY_GAP_FRAMES) -> tuple[pd.DataFrame, pd.DataFrame]:
-    numbered = hits.assign(rally=rally_numbers(hits["frame"].tolist(), tracks, rally_gap_frames))[HIT_COLUMNS]
+def segment_rallies(
+    hits: pd.DataFrame,
+    tracks: FrameTracks,
+    rally_gap_frames: int = RALLY_GAP_FRAMES,
+    rest_radius: float = REST_RADIUS_PX,
+    rest_frame_count: int = REST_FRAME_COUNT,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    numbered = hits.assign(rally=rally_numbers(hits["frame"].tolist(), tracks, rally_gap_frames, rest_radius, rest_frame_count))[HIT_COLUMNS]
     first_frames = numbered.groupby("rally")["frame"].min()
     next_starts = first_frames.shift(-1).fillna(int(tracks.frames[-1]) + 1 if len(tracks.frames) else 0).astype(int)
     rallies = [
         {
             "rally": rally,
             "start_frame": int(rally_hits["frame"].min()),
-            "end_frame": rally_end_frame(int(rally_hits["frame"].max()), int(next_starts[rally]), tracks),
+            "end_frame": rally_end_frame(int(rally_hits["frame"].max()), int(next_starts[rally]), tracks, rest_radius, rest_frame_count),
             "hits": len(rally_hits),
         }
         for rally, rally_hits in numbered.groupby("rally")
@@ -387,7 +438,10 @@ def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
     try:
         tracks = load_frame_tracks(parsed.video, parsed.start, parsed.end)
-        hits, rallies = segment_rallies(detect_hits(tracks), tracks)
+        settings = settings_for_video(*video_fps_and_width(parsed.video))
+        hits, rallies = segment_rallies(
+            detect_hits(tracks, settings), tracks, settings.rally_gap_frames, settings.rest_radius_px, settings.rest_frame_count
+        )
         labels = None
         if parsed.evaluate:
             match_folder, set_no = parsed.evaluate

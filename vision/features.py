@@ -10,8 +10,10 @@ import pandas as pd
 from analytics.build_shots import create_shots_table, schema_columns
 from analytics.court import COURT_LENGTH_M, COURT_WIDTH_M, shot_geometry
 from vision.alignment import SHUTTLESET_SET_DIR, label_scale, load_set_shots, open_video
+from vision.camera import camera_path, load_camera
+from vision.contact import contacts_for_range, method_counts
 from vision.court import calibration_path, court_to_pixels, load_calibration, pixels_to_court
-from vision.hits import REST_FRAME_COUNT, is_at_rest, output_paths
+from vision.hits import REST_FRAME_COUNT, REST_RADIUS_PX, frames_for_fps, is_at_rest, output_paths, settings_for_video, video_fps_and_width
 from vision.players import PLAYERS, require_video_file
 from vision.players import positions_path as player_positions_path
 from vision.shuttle import positions_path as shuttle_positions_path
@@ -19,6 +21,7 @@ from vision.shuttle import positions_path as shuttle_positions_path
 DATABASE_PATH = Path("data/scout.duckdb")
 CHECKS_DIR = Path("data/checks/features")
 SOURCE_OWN = "own"
+HIT_POINT_SOURCES = ("contact", "feet")
 SPOT_CHECK_ROWS = 20
 SPOT_CHECK_SEED = 1
 LABEL_VS_FEET_ROWS = 6
@@ -104,9 +107,15 @@ def other_player(player: str) -> str:
     return PLAYERS[1] if player == PLAYERS[0] else PLAYERS[0]
 
 
-def floor_point_at_rest(shuttle: pd.DataFrame, end_frame: int, homography: np.ndarray, rest_frame_count: int = REST_FRAME_COUNT) -> tuple[float, float] | None:
+def floor_point_at_rest(
+    shuttle: pd.DataFrame,
+    end_frame: int,
+    homography: np.ndarray,
+    rest_frame_count: int = REST_FRAME_COUNT,
+    rest_radius: float = REST_RADIUS_PX,
+) -> tuple[float, float] | None:
     window = shuttle[(shuttle["frame"] >= end_frame) & (shuttle["frame"] < end_frame + rest_frame_count)].sort_values("frame")
-    if len(window) < rest_frame_count or not is_at_rest(window[["x", "y"]].to_numpy(float), window["visibility"].to_numpy() == 1):
+    if len(window) < rest_frame_count or not is_at_rest(window[["x", "y"]].to_numpy(float), window["visibility"].to_numpy() == 1, rest_radius):
         return None
     x_m, y_m = pixels_to_court(homography, [window[["x", "y"]].to_numpy(float)[0]])[0]
     return float(x_m), float(y_m)
@@ -128,9 +137,15 @@ def shot_row(
     landing: tuple[float, float] | None,
     opponent: tuple[float, float] | None,
     left_handed: frozenset[str],
+    feet: tuple[float, float] | None = None,
 ) -> dict:
     geometry = shot_geometry(
-        hit, landing, hit, opponent, hitter_left_handed=hitter in left_handed, receiver_left_handed=other_player(hitter) in left_handed
+        hit,
+        landing,
+        hit if feet is None else feet,
+        opponent,
+        hitter_left_handed=hitter in left_handed,
+        receiver_left_handed=other_player(hitter) in left_handed,
     )
     return {
         "source": SOURCE_OWN,
@@ -157,6 +172,13 @@ def shot_row(
     }
 
 
+def contact_by_frame(contacts: pd.DataFrame | None) -> dict[int, tuple[float, float]]:
+    if contacts is None:
+        return {}
+    usable = contacts[contacts["method"].str.startswith("contact") & contacts["hit_x"].notna() & contacts["hit_y"].notna()]
+    return {int(row.frame): (float(row.hit_x), float(row.hit_y)) for row in usable.itertuples()}
+
+
 def rally_shot_rows(
     rally_hits: pd.DataFrame,
     feet: dict,
@@ -166,14 +188,20 @@ def rally_shot_rows(
     rally: int,
     fps: float,
     left_handed: frozenset[str],
+    contacts: dict[int, tuple[float, float]] | None = None,
+    feet_max_gap: int = FEET_MAX_FRAME_GAP,
 ) -> list[dict]:
     ordered = rally_hits.sort_values("frame")
-    hit_points = [feet_at(feet, hit.hitter, int(hit.frame)) for hit in ordered.itertuples()]
+    contacts = {} if contacts is None else contacts
+    feet_points = [feet_at(feet, hit.hitter, int(hit.frame), feet_max_gap) for hit in ordered.itertuples()]
+    hit_points = [contacts.get(int(hit.frame), feet_point) for hit, feet_point in zip(ordered.itertuples(), feet_points)]
     rows = []
-    for ball_round, (hit, hit_point) in enumerate(zip(ordered.itertuples(), hit_points), start=1):
+    for ball_round, (hit, hit_point, feet_point) in enumerate(zip(ordered.itertuples(), hit_points, feet_points), start=1):
         landing = hit_points[ball_round] if ball_round < len(hit_points) else last_landing
-        opponent = feet_at(feet, other_player(hit.hitter), int(hit.frame))
-        rows.append(shot_row(match_id, set_no, rally, ball_round, int(hit.frame), fps, hit.hitter, hit_point, landing, opponent, left_handed))
+        opponent = feet_at(feet, other_player(hit.hitter), int(hit.frame), feet_max_gap)
+        rows.append(
+            shot_row(match_id, set_no, rally, ball_round, int(hit.frame), fps, hit.hitter, hit_point, landing, opponent, left_handed, feet_point)
+        )
     return rows
 
 
@@ -188,13 +216,24 @@ def own_shot_rows(
     fps: float,
     first_rally: int = 1,
     left_handed: frozenset[str] = frozenset(),
+    contacts: pd.DataFrame | None = None,
+    frame_width: float | None = None,
 ) -> list[dict]:
     feet = feet_by_frame(positions)
+    contact_points = contact_by_frame(contacts)
     end_frame_by_rally = dict(zip(rallies["rally"], rallies["end_frame"]))
+    scaled = settings_for_video(fps, frame_width) if frame_width else None
+    rest_frame_count = REST_FRAME_COUNT if scaled is None else scaled.rest_frame_count
+    rest_radius = REST_RADIUS_PX if scaled is None else scaled.rest_radius_px
+    feet_max_gap = FEET_MAX_FRAME_GAP if scaled is None else frames_for_fps(FEET_MAX_FRAME_GAP, fps)
     rows = []
     for rally_offset, (rally_in_range, rally_hits) in enumerate(hits.groupby("rally")):
-        last_landing = floor_point_at_rest(shuttle, int(end_frame_by_rally[rally_in_range]), homography)
-        rows.extend(rally_shot_rows(rally_hits, feet, last_landing, match_id, set_no, first_rally + rally_offset, fps, left_handed))
+        last_landing = floor_point_at_rest(shuttle, int(end_frame_by_rally[rally_in_range]), homography, rest_frame_count, rest_radius)
+        rows.extend(
+            rally_shot_rows(
+                rally_hits, feet, last_landing, match_id, set_no, first_rally + rally_offset, fps, left_handed, contact_points, feet_max_gap
+            )
+        )
     return rows
 
 
@@ -338,18 +377,31 @@ def build_own_match(
     ranges: list[tuple[int, int, int]],
     database_path: Path = DATABASE_PATH,
     left_handed: frozenset[str] = frozenset(),
+    hit_point: str = "contact",
 ) -> pd.DataFrame:
+    if hit_point not in HIT_POINT_SOURCES:
+        raise ValueError(f"hit point must be one of {HIT_POINT_SOURCES}, got {hit_point!r}")
     require_video_file(video_path)
     homography = load_calibration(calibration_path(video_path))["pixel_to_court_homography"]
-    fps = video_fps(video_path)
+    camera = load_camera(camera_path(video_path)) if hit_point == "contact" else None
+    fps, frame_width = video_fps_and_width(video_path)
     next_rally_by_set: dict[int, int] = {}
     rows = []
+    fallback_counts: dict[str, int] = {}
     for start_frame, end_frame, set_no in ranges:
         hits, rallies, positions, shuttle = load_range_tracks(video_path, start_frame, end_frame)
+        contacts = None
+        if camera is not None:
+            contacts = contacts_for_range(video_path, start_frame, end_frame, camera, left_handed)
+            for method, count in method_counts(contacts).items():
+                fallback_counts[method] = fallback_counts.get(method, 0) + count
         first_rally = next_rally_by_set.get(set_no, 1)
-        rows.extend(own_shot_rows(hits, rallies, positions, shuttle, homography, match_id, set_no, fps, first_rally, left_handed))
+        rows.extend(
+            own_shot_rows(hits, rallies, positions, shuttle, homography, match_id, set_no, fps, first_rally, left_handed, contacts, frame_width)
+        )
         next_rally_by_set[set_no] = first_rally + hits["rally"].nunique()
     shots_frame = schema_frame(rows)
+    shots_frame.attrs["hit_point_methods"] = fallback_counts
     write_own_shots(database_path, match_id, shots_frame)
     return shots_frame
 
@@ -492,7 +544,7 @@ def write_label_vs_feet_sheet(video_path: Path, homography: np.ndarray, own: pd.
                 continue
             label = nearby.iloc[0]
             frame = read_frame(capture, int(row.frame_num))
-            feet_pixel = court_to_pixels(homography, [unnormalised_point(row.hit_x, row.hit_y, row.player)])[0]
+            feet_pixel = court_to_pixels(homography, [unnormalised_point(row.player_x, row.player_y, row.player)])[0]
             label_pixel = draw_point(frame, (label.hit_x * scale, label.hit_y * scale), LABEL_COLOR_BGR, "label")
             feet = draw_point(frame, feet_pixel, HIT_COLOR_BGR, "feet")
             centre = ((label_pixel[0] + feet[0]) // 2, (label_pixel[1] + feet[1]) // 2)
@@ -541,6 +593,9 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--match-id", required=True, help="recording id for the own rows, e.g. club_2026-11-02")
     parser.add_argument("--range", nargs=3, action="append", metavar=("START", "END", "SET"), default=[], help="a tracked frame range and its set number; repeatable (required unless --spot-check)")
     parser.add_argument("--left-handed", default="", help="comma-separated players who are left-handed: me, opp")
+    parser.add_argument(
+        "--hit-point", choices=HIT_POINT_SOURCES, default="contact", help="contact: estimated racket contact (needs the camera and pose weights); feet: the hitter's feet"
+    )
     parser.add_argument("--database", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
     parser.add_argument("--compare", metavar="SHUTTLESET_MATCH", help="after writing, compare with this ShuttleSet match's labelled rows")
     parser.add_argument("--spot-check", action="store_true", help="don't write rows; draw the spot-check sheets for the match's rows already in the database (with --compare, also label vs feet)")
@@ -569,7 +624,7 @@ def main(arguments: list[str]) -> int:
             return run_spot_check(parsed)
         ranges = [parse_range(text) for text in parsed.range]
         left_handed = frozenset(player for player in parsed.left_handed.split(",") if player)
-        shots_frame = build_own_match(parsed.video, parsed.match_id, ranges, parsed.database, left_handed)
+        shots_frame = build_own_match(parsed.video, parsed.match_id, ranges, parsed.database, left_handed, parsed.hit_point)
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
@@ -577,6 +632,9 @@ def main(arguments: list[str]) -> int:
         f"wrote {len(shots_frame)} own shots for match {parsed.match_id!r} "
         f"({rally_count(shots_frame)} rallies, {shots_frame['landing_x'].notna().sum()} with a landing point) to {parsed.database}"
     )
+    methods = shots_frame.attrs.get("hit_point_methods", {})
+    if methods:
+        print("hit points: " + ", ".join(f"{method}: {count}" for method, count in sorted(methods.items())))
     if parsed.compare:
         summary, _ = compare_with_shuttleset(parsed.database, parsed.match_id, parsed.compare)
         for key, value in summary.items():

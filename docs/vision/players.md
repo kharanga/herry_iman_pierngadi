@@ -16,9 +16,14 @@ How a frame is processed:
 1. **View check.** Broadcast video cuts to close-ups and replays where the court
    calibration means nothing. For every floor line, 40 points are checked for a
    bright painted line nearby (`line_offsets_to_bright_pixels` from `vision/court.py`).
-   If fewer than 60% are found, the frame isn't the main camera view: it is
-   skipped, not passed to the tracker, and counted. On the main view about 97-99% of
-   samples are found; on close-ups and replays 1-26%.
+   If fewer are found than 60% of the share found on the calibration frame (the frame
+   the court was calibrated on, in `court.json`), the frame isn't the main camera view:
+   it is skipped, not passed to the tracker, and counted. On the broadcast the
+   calibration frame scores 0.99, so the threshold is 0.594; the main view scores about
+   0.97-0.99 and close-ups and replays 0.01-0.26. A camera close to the court finds
+   fewer samples on every frame (lines wider than the search window, lines behind the
+   net), which is why the threshold is relative: the phone camera of the stand-in club
+   video scores 0.515 on its calibration frame, so its threshold is 0.309.
 2. **Detection and tracking.** YOLO with ByteTrack, persons only, at the video's
    full width. Overlapping boxes with IoU above 0.5 are merged (non-maximum
    suppression; YOLO's default is 0.7), because a second, wider box around a
@@ -115,8 +120,10 @@ nothing is written in those cases. `2` for invalid arguments.
 | `COURT_MARGIN_M` | `1.0` | how far outside the sidelines and near baseline a foot point may be and still count as on court |
 | `BEHIND_FAR_BASELINE_MARGIN_M` | `2.0` | the same, behind the far baseline (jumping far player) |
 | `DUPLICATE_BOX_MAX_IOU` | `0.5` | overlap above which YOLO keeps only the more confident of two boxes |
+| `MAX_DETECTION_WIDTH_PX` | `1280` | YOLO runs at the frame width, but at most this (a 1920-wide video is detected at 1280, about twice as fast) |
 | `LINE_SAMPLES_PER_LINE` | `40` | samples per floor line in the view check |
-| `MAIN_VIEW_MIN_LINE_SAMPLE_SHARE` | `0.6` | minimum share of line samples found for a main-view frame |
+| `MAIN_VIEW_MIN_LINE_SAMPLE_SHARE` | `0.6` | `is_main_view`'s default threshold (the commands use the relative one below) |
+| `MAIN_VIEW_SHARE_OF_CALIBRATION_FRAME` | `0.6` | a main-view frame needs at least this fraction of the calibration frame's share |
 | `DEFAULT_MODEL_PATH` | `Path("data/models/yolo11s.pt")` | default weights |
 | `PLAYERS_DIR` | `Path("data/players")` | root of the position files |
 | `CHECKS_DIR` | `Path("data/checks/players")` | overlay images |
@@ -217,8 +224,11 @@ array([ True, False, False, False])
 ```
 
 ### `court_line_sample_share(frame, homography) -> float`
-Share (0 to 1) of the 480 floor-line samples (12 lines x 40) where a bright painted
-line is found within 8 px of where the calibration puts it. Input: `frame`, BGR or
+Share (0 to 1) of the floor-line samples (12 lines x 40) where a bright painted line is
+found within 8 px of where the calibration puts it, counting only samples whose search
+window is inside the frame (`vision.court.line_samples_inside_frame`): a camera that
+doesn't see the whole court (a near corner below the frame) isn't mistaken for a
+cutaway. On a broadcast frame all 480 are inside. Input: `frame`, BGR or
 grayscale `uint8` image. Even a perfect drawing of the court scores below 1: where two
 lines cross, the brightness profile has no single peak and the sample doesn't count.
 
@@ -234,6 +244,31 @@ lines cross, the brightness profile has no single peak and the sample doesn't co
 0.94
 >>> court_line_sample_share(np.full((720, 1280, 3), 90, dtype=np.uint8), homography)
 0.0
+
+```
+
+### `main_view_min_share(calibration_frame_share, share_of_calibration_frame=0.6) -> float`, `calibration_frame_share(video_path, calibration) -> float`
+The threshold `track_players` and `split_frames_by_view` use, from the share on the
+calibration frame; and that share, read from the video at the calibration's
+`frame_index` with its homography. Errors: `ValueError` if the frame can't be read
+(plus those of `open_video`).
+
+```python
+>>> import tempfile
+>>> from pathlib import Path
+>>> from vision.players import calibration_frame_share, main_view_min_share
+>>> main_view_min_share(0.99), round(main_view_min_share(0.515), 3)
+(0.594, 0.309)
+>>> video_folder = Path(tempfile.mkdtemp())
+>>> writer = cv2.VideoWriter(str(video_folder / "court.avi"), cv2.VideoWriter_fourcc(*"MJPG"), 30, (1280, 720))
+>>> _ = writer.write(court_frame)
+>>> _ = writer.write(np.full((720, 1280, 3), 90, dtype=np.uint8))
+>>> writer.release()
+>>> round(calibration_frame_share(video_folder / "court.avi", {"frame_index": 0, "pixel_to_court_homography": homography}), 2)
+0.94
+>>> calibration_frame_share(video_folder / "court.avi", {"frame_index": 5, "pixel_to_court_homography": homography})  # doctest: +ELLIPSIS
+Traceback (most recent call last):
+ValueError: could not read the calibration frame 5 of .../court.avi
 
 ```
 
