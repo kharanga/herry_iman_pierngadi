@@ -142,7 +142,7 @@ own shots count. These rows have no `is_cross`, so the reply choices are the sho
 >>> connection = duckdb.connect(str(database_path))
 >>> _ = connection.execute(SCHEMA_PATH.read_text())
 >>> def rally_rows(source, match_id, rally, hitter, receiver, hitter_shot, winner):
-...     serve = (source, match_id, 1, rally, 1, rally * 100, receiver, "short service", "serve", "front_middle", "front_middle", None, None)
+...     serve = (source, match_id, 1, rally, 1, rally * 100, receiver, "short service", "serve", "front_backhand", "front_forehand", None, None)
 ...     reply = (source, match_id, 1, rally, 2, rally * 100 + 30, hitter, hitter_shot, hitter_shot, "rear_backhand", "front_forehand",
 ...              winner, "out" if winner == receiver else "opponent winner")
 ...     return [serve, reply]
@@ -158,13 +158,13 @@ own shots count. These rows have no `is_cross`, so the reply choices are the sho
 >>> connection.close()
 >>> tendencies = tendencies_for("club_2026_10_20", "opp", database_path)
 >>> [(tendency["id"], tendency["k"], tendency["n"]) for tendency in tendencies]
-[('zone_mix:rear_backhand:drop', 8, 10), ('zone_mix:rear_backhand:clear', 2, 10), ('response:serve|front_middle|front_middle:drop', 8, 10), ('response:serve|front_middle|front_middle:clear', 2, 10), ('winning_shot:winner:drop', 8, 10), ('winning_shot:winner:clear', 2, 10)]
+[('zone_mix:rear_backhand:drop', 8, 10), ('zone_mix:rear_backhand:clear', 2, 10), ('response:serve|front_backhand|front_forehand:drop', 8, 10), ('response:serve|front_backhand|front_forehand:clear', 2, 10), ('winning_shot:winner:drop', 8, 10), ('winning_shot:winner:clear', 2, 10)]
 >>> tendencies[2]["text"]
-"After a serve from the other player's front middle to the front middle: drops 8 of 10 times."
+"After a serve from the other player's front backhand to the front forehand: drops 8 of 10 times."
 >>> tendencies[1]["text"], tendencies[1]["label_source"], tendencies[1]["sets"], sorted(tendencies[0])
 ('From the back court, backhand side: clears 2 of 10 times.', 'labels', [1], ['condition', 'family', 'id', 'k', 'label_source', 'match_id', 'n', 'outcome', 'player', 'rate', 'sets', 'text'])
 >>> [tendency["text"] for tendency in tendencies_for("club_2026_10_20", "me", database_path)]
-['Serves short down the middle 10 of 10 times.']
+["Serves short to the receiver's forehand 10 of 10 times."]
 >>> try:
 ...     tendencies_for("club_2026_10_20", "nobody", database_path)
 ... except UnknownMatchPlayerError as error:

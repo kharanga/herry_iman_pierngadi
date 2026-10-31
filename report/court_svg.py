@@ -1,15 +1,6 @@
 import math
 
-from analytics.court import (
-    COURT_LENGTH_M,
-    COURT_WIDTH_M,
-    DEPTH_BAND_M,
-    DEPTH_NAMES,
-    MIDDLE_COLUMN_LEFT_EDGE_X_M,
-    MIDDLE_COLUMN_RIGHT_EDGE_X_M,
-    NET_Y_M,
-    NOT_OVER_NET_ZONE,
-)
+from analytics.court import CENTRE_X_M, COURT_LENGTH_M, COURT_WIDTH_M, NET_Y_M, NOT_OVER_NET_ZONE, depth_band_from_net_m
 from analytics.spot_check import court_lines_m
 from analytics.tendencies import split_response_condition
 
@@ -23,15 +14,12 @@ DIAGRAM_FAMILIES = ("zone_mix", "serve_placement")
 
 def zone_rect_in_near_half(zone: str, left_handed: bool = False) -> Rect:
     depth, side = zone.split("_")
-    band_index = DEPTH_NAMES.index(depth)
-    y_top = NET_Y_M - band_index * DEPTH_BAND_M
-    y_bottom = 0.0 if depth == "rear" else y_top - DEPTH_BAND_M
-    if side == "middle":
-        return (MIDDLE_COLUMN_LEFT_EDGE_X_M, y_bottom, MIDDLE_COLUMN_RIGHT_EDGE_X_M, y_top)
+    near_edge_m, far_edge_m = depth_band_from_net_m(depth)
+    y_bottom, y_top = NET_Y_M - far_edge_m, NET_Y_M - near_edge_m
     is_right_side = (side == "forehand") != left_handed
     if is_right_side:
-        return (MIDDLE_COLUMN_RIGHT_EDGE_X_M, y_bottom, COURT_WIDTH_M, y_top)
-    return (0.0, y_bottom, MIDDLE_COLUMN_LEFT_EDGE_X_M, y_top)
+        return (CENTRE_X_M, y_bottom, COURT_WIDTH_M, y_top)
+    return (0.0, y_bottom, CENTRE_X_M, y_top)
 
 
 def rotate_rect_half_turn(rect: Rect) -> Rect:

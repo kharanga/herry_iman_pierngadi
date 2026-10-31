@@ -107,33 +107,33 @@ def test_order_is_family_then_situation_then_most_times_first_not_a_ranking():
     for family, condition, counts in (
         ("error_reason", "error", {"out": 2, "net": 2, "foul": 5}),
         ("winning_shot", "winner", {"smash": 1, "drop": 4}),
-        ("serve_placement", "serve", {"front_middle": 3, "rear_backhand": 9}),
-        ("response", "drive|front_forehand|mid_middle", {"drive cross": 30}),
-        ("response", "serve|mid_middle|rear_backhand", {"net straight": 1, "lift cross": 1}),
-        ("response", "serve|mid_middle|front_forehand", {"clear straight": 1}),
+        ("serve_placement", "serve", {"front_forehand": 3, "rear_backhand": 9}),
+        ("response", "drive|front_forehand|mid_backhand", {"drive cross": 30}),
+        ("response", "serve|mid_backhand|rear_backhand", {"net straight": 1, "lift cross": 1}),
+        ("response", "serve|mid_backhand|front_forehand", {"clear straight": 1}),
         ("response", "clear|rear_backhand|front_forehand", {"drop cross": 2, "clear straight": 6}),
         ("response", "clear|mid_forehand|front_forehand", {"smash straight": 1}),
         ("zone_mix", "rear_backhand", {"clear": 50}),
         ("zone_mix", "front_forehand", {"net": 1}),
-        ("zone_mix", "mid_middle", {"drive": 2, "smash": 2}),
+        ("zone_mix", "mid_backhand", {"drive": 2, "smash": 2}),
         ("error_shot", "error", {"net": 3}),
     ):
         rows += observation_rows("m", "A", 1, condition, counts, family=family)
     tendencies = tendencies_from_observations(pd.DataFrame(rows), "m", "A")
     assert [tendency["id"] for tendency in tendencies] == [
         "zone_mix:front_forehand:net",
-        "zone_mix:mid_middle:drive",
-        "zone_mix:mid_middle:smash",
+        "zone_mix:mid_backhand:drive",
+        "zone_mix:mid_backhand:smash",
         "zone_mix:rear_backhand:clear",
-        "response:serve|mid_middle|front_forehand:clear straight",
-        "response:serve|mid_middle|rear_backhand:lift cross",
-        "response:serve|mid_middle|rear_backhand:net straight",
+        "response:serve|mid_backhand|front_forehand:clear straight",
+        "response:serve|mid_backhand|rear_backhand:lift cross",
+        "response:serve|mid_backhand|rear_backhand:net straight",
         "response:clear|mid_forehand|front_forehand:smash straight",
         "response:clear|rear_backhand|front_forehand:clear straight",
         "response:clear|rear_backhand|front_forehand:drop cross",
-        "response:drive|front_forehand|mid_middle:drive cross",
+        "response:drive|front_forehand|mid_backhand:drive cross",
         "serve_placement:serve:rear_backhand",
-        "serve_placement:serve:front_middle",
+        "serve_placement:serve:front_forehand",
         "winning_shot:winner:drop",
         "winning_shot:winner:smash",
         "error_shot:error:net",
@@ -189,11 +189,11 @@ def test_only_the_players_own_observations_count():
 
 def test_sets_selection_counts_only_those_sets():
     set_one = observation_rows("my_match", "me", 1, "front_forehand", {"drop": 14, "clear": 4})
-    both = set_one + observation_rows("my_match", "me", 2, "front_forehand", {"clear": 40}) + observation_rows("my_match", "me", 2, "rear_middle", {"smash": 3})
+    both = set_one + observation_rows("my_match", "me", 2, "front_forehand", {"clear": 40}) + observation_rows("my_match", "me", 2, "rear_forehand", {"smash": 3})
     assert tendencies_from_observations(pd.DataFrame(set_one), "my_match", "me", sets=(1,)) == tendencies_from_observations(pd.DataFrame(both), "my_match", "me", sets=(1,))
     whole = tendencies_from_observations(pd.DataFrame(both), "my_match", "me")
     assert [(tendency["id"], tendency["k"], tendency["n"]) for tendency in whole] == [
-        ("zone_mix:front_forehand:clear", 44, 58), ("zone_mix:front_forehand:drop", 14, 58), ("zone_mix:rear_middle:smash", 3, 3)]
+        ("zone_mix:front_forehand:clear", 44, 58), ("zone_mix:front_forehand:drop", 14, 58), ("zone_mix:rear_forehand:smash", 3, 3)]
     assert {tuple(tendency["sets"]) for tendency in whole} == {(1, 2)}
     assert tendencies_from_observations(pd.DataFrame(both), "my_match", "me", sets=(3,)) == []
 
@@ -203,13 +203,13 @@ def test_label_source_is_per_situation_over_its_n_shots():
         observation_rows("my_match", "me", 1, "front_forehand", {"drop": 14, "clear": 4}, source="own", group_source="prediction")
         + observation_rows("my_match", "me", 1, "rear_backhand", {"drop": 10}, source="own", group_source="prediction")
         + observation_rows("my_match", "me", 1, "rear_backhand", {"clear": 1}, source="own", group_source="label")
-        + observation_rows("my_match", "me", 1, "mid_middle", {"drive": 2}, source="own", group_source="label")
+        + observation_rows("my_match", "me", 1, "mid_backhand", {"drive": 2}, source="own", group_source="label")
     )
     sources = {tendency["id"]: tendency["label_source"] for tendency in tendencies_from_observations(observations, "my_match", "me")}
     assert sources == {
         "zone_mix:front_forehand:drop": "predictions",
         "zone_mix:front_forehand:clear": "predictions",
-        "zone_mix:mid_middle:drive": "labels",
+        "zone_mix:mid_backhand:drive": "labels",
         "zone_mix:rear_backhand:drop": "mixed",
         "zone_mix:rear_backhand:clear": "mixed",
     }
@@ -233,12 +233,12 @@ def write_shots_database(database_path: Path, rows: list[dict]) -> Path:
 def test_one_shot_unknown_rallies_and_known_swapped_rallies_are_left_out(tmp_path):
     swapped_match, swapped_set, swapped_rally = sorted(KNOWN_SWAPPED_RALLIES)[0]
     rows = [
-        shot_row("shuttleset", "m", 1, 1, 1, "A", type_en="unknown", type_group="unknown", type_pred="serve", hit_zone="mid_middle"),
-        shot_row("shuttleset", "m", 1, 2, 1, "A", type_en="short service", type_group="serve", hit_zone="mid_middle"),
+        shot_row("shuttleset", "m", 1, 1, 1, "A", type_en="unknown", type_group="unknown", type_pred="serve", hit_zone="mid_backhand"),
+        shot_row("shuttleset", "m", 1, 2, 1, "A", type_en="short service", type_group="serve", hit_zone="mid_backhand"),
         shot_row("shuttleset", swapped_match, swapped_set, swapped_rally, 1, "A", type_en="short service", type_group="serve"),
-        shot_row("shuttleset", swapped_match, swapped_set, swapped_rally, 2, "B", type_en="net shot", type_group="net", hit_zone="front_middle"),
+        shot_row("shuttleset", swapped_match, swapped_set, swapped_rally, 2, "B", type_en="net shot", type_group="net", hit_zone="front_backhand"),
         shot_row("shuttleset", "m", 1, 3, 1, "A", type_en="unknown", type_group="unknown", type_pred="serve"),
-        shot_row("shuttleset", "m", 1, 3, 2, "B", type_en="lob", type_group="lift", hit_zone="front_middle"),
+        shot_row("shuttleset", "m", 1, 3, 2, "B", type_en="lob", type_group="lift", hit_zone="front_backhand"),
     ]
     connection = duckdb.connect(str(write_shots_database(tmp_path / "scout.duckdb", rows)), read_only=True)
     kept = reliable_shots(load_tendency_shots(connection))
@@ -250,22 +250,22 @@ def test_one_shot_unknown_rallies_and_known_swapped_rallies_are_left_out(tmp_pat
 def test_own_rows_with_me_and_opp_end_to_end_with_no_shuttleset_rows(tmp_path):
     rows = []
     for rally in range(1, 11):
-        rows.append(shot_row("own", "my_game", 1, rally, 1, "opp", type_pred="serve", hit_zone="mid_middle", landing_zone="front_middle" if rally <= 9 else "rear_backhand"))
+        rows.append(shot_row("own", "my_game", 1, rally, 1, "opp", type_pred="serve", hit_zone="mid_backhand", landing_zone="front_backhand" if rally <= 9 else "rear_backhand"))
         rows.append(shot_row("own", "my_game", 1, rally, 2, "me", type_pred="lift" if rally <= 7 else "net", hit_zone="front_forehand", is_cross=rally % 2 == 0 if rally <= 8 else None,
                              getpoint_player="opp", lose_reason="out"))
     database_path = write_shots_database(tmp_path / "scout.duckdb", rows)
     mine = tendencies_for("my_game", "me", database_path)
     assert [(tendency["id"], tendency["k"], tendency["n"]) for tendency in mine] == [
         ("zone_mix:front_forehand:lift", 7, 10), ("zone_mix:front_forehand:net", 3, 10),
-        ("response:serve|mid_middle|front_middle:lift straight", 4, 9), ("response:serve|mid_middle|front_middle:lift cross", 3, 9),
-        ("response:serve|mid_middle|front_middle:net", 1, 9), ("response:serve|mid_middle|front_middle:net cross", 1, 9),
-        ("response:serve|mid_middle|rear_backhand:net", 1, 1),
+        ("response:serve|mid_backhand|front_backhand:lift straight", 4, 9), ("response:serve|mid_backhand|front_backhand:lift cross", 3, 9),
+        ("response:serve|mid_backhand|front_backhand:net", 1, 9), ("response:serve|mid_backhand|front_backhand:net cross", 1, 9),
+        ("response:serve|mid_backhand|rear_backhand:net", 1, 1),
         ("error_shot:error:lift", 7, 10), ("error_shot:error:net", 3, 10),
         ("error_reason:error:out", 10, 10),
     ]
     assert {tendency["label_source"] for tendency in mine if tendency["family"] != "error_reason"} == {"predictions"}
     theirs = tendencies_for("my_game", "opp", database_path)
-    assert [tendency["text"] for tendency in theirs] == ["Serves short down the middle 9 of 10 times.", "Serves long to the receiver's backhand 1 of 10 times."]
+    assert [tendency["text"] for tendency in theirs] == ["Serves short to the receiver's backhand 9 of 10 times.", "Serves long to the receiver's backhand 1 of 10 times."]
     with pytest.raises(UnknownMatchPlayerError):
         tendencies_for("my_game", "nobody", database_path)
 
@@ -306,11 +306,11 @@ def test_replies_count_only_previous_shots_by_the_other_player_with_a_type_and_b
 
 
 def test_cli_prints_every_entry_and_exits_one_or_two_on_bad_input(tmp_path):
-    rows = [shot_row("own", "my_game", 1, rally, 1, "me", type_pred="serve", landing_zone="front_middle" if rally < 3 else "not_over_net") for rally in range(1, 4)]
+    rows = [shot_row("own", "my_game", 1, rally, 1, "me", type_pred="serve", landing_zone="front_forehand" if rally < 3 else "not_over_net") for rally in range(1, 4)]
     database_path = write_shots_database(tmp_path / "scout.duckdb", rows)
     printed = subprocess.run([sys.executable, "-m", "analytics.tendencies", "my_game", "me", "", str(database_path)], cwd=PROJECT_ROOT, capture_output=True, text=True)
     assert printed.returncode == 0 and json.loads(printed.stdout) == tendencies_for("my_game", "me", database_path)
-    assert [entry["text"] for entry in json.loads(printed.stdout)] == ["Serves short down the middle 2 of 3 times.", "Serves into the net 1 of 3 times."]
+    assert [entry["text"] for entry in json.loads(printed.stdout)] == ["Serves short to the receiver's forehand 2 of 3 times.", "Serves into the net 1 of 3 times."]
     unknown = subprocess.run([sys.executable, "-m", "analytics.tendencies", "my_game", "nobody", "", str(database_path)], cwd=PROJECT_ROOT, capture_output=True, text=True)
     assert unknown.returncode == 1 and "no shots for player 'nobody'" in unknown.stderr
     missing = subprocess.run([sys.executable, "-m", "analytics.tendencies"], cwd=PROJECT_ROOT, capture_output=True, text=True)
@@ -328,7 +328,8 @@ def real_entries():
 
 def test_every_real_player_keeps_every_choice_in_plain_order(real_entries):
     observations, entries = real_entries
-    assert Counter(source for source, _, _ in entries) == {"shuttleset": 88, "own": 2}
+    assert Counter(source for source, _, _ in entries) == {"shuttleset": 88, "own": 4}
+    assert {match_id for source, match_id, _ in entries if source == "own"} == {"match_tracked", "stand_in_set1"}
     for (source, match_id, player), tendencies in entries.items():
         assert tendencies, (match_id, player)
         assert_choices_add_up_to_n(tendencies)
@@ -354,8 +355,9 @@ def test_results_doc_numbers_equal_the_entries(real_entries):
     shuttleset_sizes = sorted(len(tendencies) for (source, _, _), tendencies in entries.items() if source == "shuttleset")
     median = (shuttleset_sizes[43] + shuttleset_sizes[44]) / 2
     assert f"| ShuttleSet, whole match | {shuttleset_sizes[0]} to {shuttleset_sizes[-1]} (median {median:g}) |" in doc
-    assert f"| `match_tracked`, `me` | {len(entries[('own', 'match_tracked', 'me')])} |" in doc
-    assert f"| `match_tracked`, `opp` | {len(entries[('own', 'match_tracked', 'opp')])} |" in doc
+    for match_id in ("match_tracked", "stand_in_set1"):
+        for player in ("me", "opp"):
+            assert f"| `{match_id}`, `{player}` | {len(entries[('own', match_id, player)])} |" in doc, (match_id, player)
     assert f"{len(flat):,} in total over {len(situations):,} situations" in doc
     assert f"checked for all {len(situations):,} situations ({len(situations):,} hold)" in doc
     assert f"{sum(tendency['k'] == 1 for tendency in flat):,} entries are a single shot" in doc
@@ -364,10 +366,11 @@ def test_results_doc_numbers_equal_the_entries(real_entries):
     shuttleset_sources = Counter(tendency["label_source"] for (source, _, _), tendencies in entries.items() if source == "shuttleset" for tendency in tendencies)
     own_sources = Counter(tendency["label_source"] for (source, _, _), tendencies in entries.items() if source == "own" for tendency in tendencies)
     assert set(own_sources) == {"predictions"}
+    own_by_match = {match_id: sum(len(tendencies) for (source, entry_match, _), tendencies in entries.items() if source == "own" and entry_match == match_id) for match_id in ("match_tracked", "stand_in_set1")}
     label_source_line = re.sub(r"\s+", " ", doc.split("- Label source: ", 1)[1].split("\n\n", 1)[0])
     for source_name, count in shuttleset_sources.items():
-        assert f"{count:,} `{source_name}`" in label_source_line.split("my tracked match")[0], (source_name, count, label_source_line)
-    assert f"my tracked match {own_sources['predictions']} `predictions` and 0 `mixed`" in label_source_line
+        assert f"{count:,} `{source_name}`" in label_source_line.split("my own matches")[0], (source_name, count, label_source_line)
+    assert f"my own matches {own_sources['predictions']} `predictions` and 0 `mixed` ({own_by_match['match_tracked']} for `match_tracked`, {own_by_match['stand_in_set1']} for `stand_in_set1`)" in label_source_line
     ginting_replies = [tendency for tendency in entries[("shuttleset", AXELSEN_GINTING, "B")] if tendency["family"] == "response"]
     most_frequent = max(ginting_replies, key=lambda tendency: tendency["n"])["condition"]
     in_situation = [tendency for tendency in ginting_replies if tendency["condition"] == most_frequent]

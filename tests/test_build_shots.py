@@ -9,16 +9,19 @@ import duckdb
 import numpy as np
 import pytest
 
-from analytics.build_shots import ShotsSchemaMismatchError, build_shots, pixel_to_court_homography_by_match, schema_columns
+from analytics.build_shots import ShotsSchemaMismatchError, build_shots, create_shots_table, pixel_to_court_homography_by_match, schema_columns
 from analytics.court import (
     CENTRE_X_M,
-    CROSS_COURT_MIN_LATERAL_M,
-    MIDDLE_COLUMN_LEFT_EDGE_X_M,
-    MIDDLE_COLUMN_RIGHT_EDGE_X_M,
-    MIDDLE_COLUMN_WIDTH_M,
+    DEPTH_EDGES_M,
+    NET_Y_M,
+    SHORT_SERVICE_LINE_FROM_NET_M,
+    SIDE_NAMES,
     ZONE_NAMES,
-    DEPTH_BAND_M,
     NOT_OVER_NET_ZONE,
+    depth_band_from_net_m,
+    depth_name,
+    is_right_of_centre,
+    side_name,
     apply_homography,
     diagram_to_court_homography,
     hit_zone,
@@ -85,7 +88,7 @@ CONTRACT_TYPE_GROUPS = {
 
 COURT_CORNER_METERS = np.array([[0.0, 13.4], [6.1, 13.4], [0.0, 0.0], [6.1, 0.0]])
 
-CONTRACT_ZONES = [f"{depth}_{side}" for depth in ("front", "mid", "rear") for side in ("forehand", "middle", "backhand")]
+CONTRACT_ZONES = [f"{depth}_{side}" for depth in ("front", "mid", "rear") for side in ("forehand", "backhand")]
 
 requires_shuttleset = pytest.mark.skipif(not REAL_SET_DIR.exists(), reason="run ingest/fetch_shuttleset.sh first")
 
@@ -105,8 +108,10 @@ def test_schema_sql_matches_contract_columns_and_types_in_order():
         ("hit_zone", "front"),
         ("hit_zone", "not_over_net"),
         ("hit_zone", "middle_front"),
+        ("hit_zone", "mid_middle"),
         ("landing_zone", "out"),
         ("landing_zone", "front_centre"),
+        ("landing_zone", "front_middle"),
     ],
 )
 def test_schema_check_constraints_reject_values_outside_the_contract(column_name, bad_value):
@@ -168,20 +173,21 @@ def test_hitter_is_on_far_half_uses_hitter_points_before_receiver_points():
 @pytest.mark.parametrize(
     "point, left_handed, expected_zone",
     [
-        ((4.0, 6.7 - DEPTH_BAND_M + 0.01), False, "front_forehand"),
-        ((4.0, 6.7 - DEPTH_BAND_M - 0.01), False, "mid_forehand"),
-        ((2.0, 6.7 - 2 * DEPTH_BAND_M - 0.01), False, "rear_backhand"),
+        ((4.0, NET_Y_M - 1.97), False, "front_forehand"),
+        ((4.0, NET_Y_M - 1.99), False, "mid_forehand"),
+        ((2.0, NET_Y_M - 3.49), False, "mid_backhand"),
+        ((2.0, NET_Y_M - 3.51), False, "rear_backhand"),
+        ((4.0, 4.72), False, "mid_forehand"),
+        ((2.0, 3.2), False, "rear_backhand"),
         ((2.0, -0.8), False, "rear_backhand"),
-        ((2.0, 3.0), True, "mid_forehand"),
-        ((4.0, 3.0), True, "mid_backhand"),
-        ((3.05, 3.0), False, "mid_middle"),
-        ((3.05, 3.0), True, "mid_middle"),
-        ((2.55, 1.0), False, "rear_middle"),
-        ((3.55, 1.0), True, "rear_middle"),
-        ((2.5499, 5.0), False, "front_backhand"),
-        ((2.5499, 5.0), True, "front_forehand"),
-        ((3.5501, 5.0), False, "front_forehand"),
-        ((3.5501, 5.0), True, "front_backhand"),
+        ((2.0, 4.0), True, "mid_forehand"),
+        ((4.0, 4.0), True, "mid_backhand"),
+        ((3.04, 5.0), False, "front_backhand"),
+        ((3.06, 5.0), False, "front_forehand"),
+        ((3.05, 5.0), False, "front_backhand"),
+        ((3.04, 5.0), True, "front_forehand"),
+        ((3.06, 5.0), True, "front_backhand"),
+        ((3.05, 5.0), True, "front_forehand"),
     ],
 )
 def test_zone_in_near_half_depth_bands_and_handedness(point, left_handed, expected_zone):
@@ -198,12 +204,18 @@ def test_landing_zone_is_seen_from_the_receiver_and_short_landings_are_not_over_
     assert hit_zone(None) is None
 
 
-def test_is_cross_court_needs_opposite_sides_and_minimum_lateral_distance():
+def test_is_cross_court_is_decided_by_the_centre_line_alone_and_null_when_not_over_the_net():
     assert is_cross_court((1.0, 2.0), (1.2, 12.0)) is False
-    assert is_cross_court((2.9, 2.0), (3.2, 12.0)) is False
-    assert is_cross_court((2.5, 2.0), (2.5 + CROSS_COURT_MIN_LATERAL_M, 12.0)) is True
+    assert is_cross_court((2.9, 2.0), (3.2, 12.0)) is True
+    assert is_cross_court((3.04, 2.0), (3.06, 12.0)) is True
+    assert is_cross_court((3.05, 2.0), (3.06, 12.0)) is True
+    assert is_cross_court((3.05, 2.0), (3.05, 12.0)) is False
     assert is_cross_court((1.0, 2.0), (5.0, 12.0)) is True
-    assert is_cross_court(None, (5.0, 12.0)) is None
+    assert is_cross_court(None, (5.0, 12.0)) is None and is_cross_court((1.0, 2.0), None) is None
+    assert is_cross_court((1.0, 2.0), (5.0, 6.0)) is None and is_cross_court((1.0, 2.0), (5.0, NET_Y_M)) is None
+    assert is_right_of_centre(3.06) and not is_right_of_centre(3.05) and not is_right_of_centre(3.04)
+    assert [depth_name(distance) for distance in (0.0, 1.97, 1.98, 1.99, 3.49, 3.50, 3.51, 6.7)] == ["front", "front", "mid", "mid", "mid", "rear", "rear", "rear"]
+    assert (side_name(3.04), side_name(3.06), side_name(3.04, True), side_name(3.06, True)) == ("backhand", "forehand", "forehand", "backhand")
 
 
 def test_shot_geometry_normalizes_a_far_hitter_and_keeps_points_consistent():
@@ -211,7 +223,8 @@ def test_shot_geometry_normalizes_a_far_hitter_and_keeps_points_consistent():
     assert geometry["player"][1] <= 6.7 and geometry["hit"][1] <= 6.7
     assert geometry["landing"][1] > 6.7 and geometry["opponent"][1] > 6.7
     np.testing.assert_allclose(geometry["hit"], (5.1, 2.4))
-    assert geometry["hit_zone"] == "mid_forehand"
+    assert geometry["hit_zone"] == "rear_forehand"
+    assert geometry["landing_zone"] == "rear_forehand"
     assert geometry["is_cross"] is True
     near_geometry = shot_geometry((5.1, 2.4), (1.1, 11.4), (5.1, 2.2), (0.9, 10.9))
     for derived_name in ("hit_zone", "landing_zone", "is_cross"):
@@ -246,7 +259,7 @@ def fetch_all(database_path: Path, sql: str, parameters: list | None = None) -> 
 def test_shots_table_has_contract_columns_and_one_row_per_distinct_raw_shot(built_database):
     database_path, summary = built_database
     assert [(name, column_type) for name, column_type, *_ in fetch_all(database_path, "DESCRIBE shots")] == CONTRACT_COLUMNS
-    assert summary == {"raw_shots": 36484, "shuttleset_shots": 36483, "duplicates_dropped": 1}
+    assert summary == {"raw_shots": 36484, "shuttleset_shots": 36483, "duplicates_dropped": 1, "own_shots": 0}
     assert fetch_all(database_path, "SELECT COUNT(*) FROM shots WHERE shots.match_id = ? AND shots.set_no = 3 AND shots.rally = 10 AND shots.ball_round = 29", [DUPLICATED_SHOT_MATCH]) == [(1,)]
     assert fetch_all(database_path, "SELECT COUNT(*) FROM (SELECT DISTINCT * FROM raw_shots)") == [(36483,)]
 
@@ -389,9 +402,11 @@ def test_zones_and_is_cross_set_on_every_shot_with_the_points_they_need(built_da
         database_path,
         "SELECT COUNT(*) FILTER (WHERE (shots.hit_x IS NOT NULL OR shots.player_x IS NOT NULL) AND shots.hit_zone IS NULL), "
         "COUNT(*) FILTER (WHERE shots.landing_x IS NOT NULL AND shots.landing_zone IS NULL), "
-        "COUNT(*) FILTER (WHERE shots.landing_x IS NOT NULL AND (shots.hit_x IS NOT NULL OR shots.player_x IS NOT NULL) AND shots.is_cross IS NULL), "
-        "COUNT(*) FILTER (WHERE shots.hit_x IS NULL AND shots.player_x IS NULL AND shots.hit_zone IS NOT NULL) FROM shots",
-    ) == [(0, 0, 0, 0)]
+        "COUNT(*) FILTER (WHERE shots.landing_x IS NOT NULL AND (shots.hit_x IS NOT NULL OR shots.player_x IS NOT NULL) AND shots.landing_zone <> 'not_over_net' AND shots.is_cross IS NULL), "
+        "COUNT(*) FILTER (WHERE shots.hit_x IS NULL AND shots.player_x IS NULL AND shots.hit_zone IS NOT NULL), "
+        "COUNT(*) FILTER (WHERE shots.landing_zone = 'not_over_net' AND shots.is_cross IS NOT NULL), "
+        "COUNT(*) FILTER (WHERE shots.landing_zone = 'not_over_net') FROM shots",
+    ) == [(0, 0, 0, 0, 0, 1131)]
 
 
 @requires_shuttleset
@@ -452,12 +467,14 @@ def test_unmapped_type_fails_build_and_keeps_previous_shots(built_database, tmp_
     assert fetch_all(broken_path, "SELECT COUNT(*) FROM shots") == [(36483,)]
 
 
-def test_old_shots_table_with_other_columns_raises_schema_mismatch(tmp_path):
+def test_old_shots_table_with_other_columns_is_left_alone_when_the_rebuild_fails(tmp_path):
     database_path = tmp_path / "old.duckdb"
     connection = duckdb.connect(str(database_path))
     connection.execute("CREATE TABLE shots (source VARCHAR, match_id VARCHAR, type_raw VARCHAR)")
-    connection.close()
     with pytest.raises(ShotsSchemaMismatchError):
+        create_shots_table(connection)
+    connection.close()
+    with pytest.raises((ShotsSchemaMismatchError, duckdb.CatalogException)):
         build_shots(database_path)
     assert fetch_all(database_path, "SELECT column_name FROM information_schema.columns WHERE table_name = 'shots' ORDER BY ordinal_position") == [
         ("source",),
@@ -495,8 +512,11 @@ def test_documented_pair_sql_reproduces_its_documented_result(built_database):
     assert (pairs, equal_pairs) == (31692, 31679)
 
 
-def test_zone_names_are_the_nine_contract_zones():
-    assert sorted(ZONE_NAMES) == sorted(CONTRACT_ZONES)
+def test_zone_names_are_the_six_contract_zones():
+    assert sorted(ZONE_NAMES) == sorted(CONTRACT_ZONES) and len(ZONE_NAMES) == 6
+    assert SIDE_NAMES == ("forehand", "backhand") and not any("middle" in zone for zone in ZONE_NAMES)
+    schema_sql = (PROJECT_ROOT / "analytics" / "schema.sql").read_text()
+    assert "middle" not in schema_sql and schema_sql.count("'rear_backhand'") == 2
 
 
 @pytest.mark.parametrize("zone", CONTRACT_ZONES)
@@ -514,39 +534,41 @@ def test_schema_accepts_every_contract_zone(zone):
     connection.close()
 
 
-def test_middle_column_edges_derive_from_the_one_width_constant():
-    assert MIDDLE_COLUMN_WIDTH_M == 1.0
-    assert MIDDLE_COLUMN_LEFT_EDGE_X_M == CENTRE_X_M - MIDDLE_COLUMN_WIDTH_M / 2 == 2.55
-    assert MIDDLE_COLUMN_RIGHT_EDGE_X_M == CENTRE_X_M + MIDDLE_COLUMN_WIDTH_M / 2 == 3.55
+def test_band_edges_are_the_painted_lines_and_no_middle_column_remains():
+    assert DEPTH_EDGES_M == (1.98, 3.50) and SHORT_SERVICE_LINE_FROM_NET_M == 1.98 == DEPTH_EDGES_M[0]
+    assert depth_band_from_net_m("front") == (0.0, 1.98) and depth_band_from_net_m("mid") == (1.98, 3.50) and depth_band_from_net_m("rear") == (3.50, NET_Y_M)
+    with pytest.raises(ValueError):
+        depth_band_from_net_m("middle")
     for source_path in (PROJECT_ROOT / "analytics").glob("*.py"):
-        assert re.search(r"\b(2\.55|3\.55)\b", source_path.read_text()) is None, source_path.name
-    spot_check_source = (PROJECT_ROOT / "analytics" / "spot_check.py").read_text()
-    assert "MIDDLE_COLUMN_LEFT_EDGE_X_M" in spot_check_source and "MIDDLE_COLUMN_RIGHT_EDGE_X_M" in spot_check_source
+        source = source_path.read_text()
+        assert re.search(r"\b(2\.55|3\.55|2\.233)\b", source) is None and "middle" not in source.lower(), source_path.name
+    assert "DEPTH_EDGES_M" in (PROJECT_ROOT / "analytics" / "spot_check.py").read_text()
 
 
-@pytest.mark.parametrize("width_m", [0.6, 2.0])
-def test_shot_geometry_follows_the_middle_column_width_constant(monkeypatch, width_m):
+@pytest.mark.parametrize("edges_m", [(1.0, 2.0), (2.5, 4.0)])
+def test_shot_geometry_follows_the_depth_edges_constant(monkeypatch, edges_m):
     import analytics.court
 
-    monkeypatch.setattr(analytics.court, "MIDDLE_COLUMN_LEFT_EDGE_X_M", CENTRE_X_M - width_m / 2)
-    monkeypatch.setattr(analytics.court, "MIDDLE_COLUMN_RIGHT_EDGE_X_M", CENTRE_X_M + width_m / 2)
-    inside_x = CENTRE_X_M + width_m / 2 - 0.01
-    outside_x = CENTRE_X_M + width_m / 2 + 0.01
-    assert analytics.court.shot_geometry((inside_x, 3.0), (6.1 - inside_x, 10.0), None, None)["hit_zone"] == "mid_middle"
-    assert analytics.court.shot_geometry((outside_x, 3.0), (6.1 - outside_x, 10.0), None, None)["hit_zone"] == "mid_forehand"
-    assert analytics.court.shot_geometry((3.0, 3.0), (6.1 - inside_x, 10.0), None, None)["landing_zone"] == "mid_middle"
-    assert analytics.court.shot_geometry((3.0, 3.0), (6.1 - outside_x, 10.0), None, None)["landing_zone"] == "mid_forehand"
+    monkeypatch.setattr(analytics.court, "DEPTH_EDGES_M", edges_m)
+    first_edge, second_edge = edges_m
+    assert analytics.court.shot_geometry((4.0, NET_Y_M - first_edge + 0.01), (2.0, 10.0), None, None)["hit_zone"] == "front_forehand"
+    assert analytics.court.shot_geometry((4.0, NET_Y_M - first_edge - 0.01), (2.0, 10.0), None, None)["hit_zone"] == "mid_forehand"
+    assert analytics.court.shot_geometry((4.0, NET_Y_M - second_edge - 0.01), (2.0, 10.0), None, None)["hit_zone"] == "rear_forehand"
+    assert analytics.court.shot_geometry((3.0, 3.0), (2.0, NET_Y_M + second_edge - 0.01), None, None)["landing_zone"] == "mid_forehand"
+    assert analytics.court.shot_geometry((3.0, 3.0), (2.0, NET_Y_M + second_edge + 0.01), None, None)["landing_zone"] == "rear_forehand"
+    assert [analytics.court.depth_name(distance) for distance in (first_edge - 0.001, first_edge, second_edge - 0.001, second_edge)] == ["front", "mid", "mid", "rear"]
 
 
 @pytest.mark.parametrize(
     "landing_x, left_handed, expected_side",
     [
         (2.54, False, "forehand"),
-        (2.55, False, "middle"),
-        (3.05, True, "middle"),
-        (3.55, False, "middle"),
+        (3.04, False, "forehand"),
+        (3.05, False, "backhand"),
+        (3.06, False, "backhand"),
         (3.56, False, "backhand"),
         (3.56, True, "forehand"),
+        (3.05, True, "forehand"),
         (2.54, True, "backhand"),
     ],
 )
@@ -554,27 +576,77 @@ def test_landing_zone_edges_hold_on_the_receivers_half(landing_x, left_handed, e
     assert landing_zone((landing_x, 10.0), receiver_left_handed=left_handed) == f"mid_{expected_side}"
 
 
-def test_far_hitter_on_a_middle_edge_is_middle_after_normalization():
-    assert shot_geometry((3.55, 10.0), (3.0, 3.0), (3.55, 10.0), None)["hit_zone"] == "mid_middle"
-    assert shot_geometry((3.5501, 10.0), (3.0, 3.0), (3.5501, 10.0), None)["hit_zone"] == "mid_backhand"
+def test_far_hitter_on_the_centre_line_is_backhand_after_normalization():
+    assert shot_geometry((3.05, 10.0), (3.0, 3.0), (3.05, 10.0), None)["hit_zone"] == "mid_backhand"
+    assert shot_geometry((3.0499, 10.0), (3.0, 3.0), (3.0499, 10.0), None)["hit_zone"] == "mid_forehand"
+    assert shot_geometry((3.0501, 10.0), (3.0, 3.0), (3.0501, 10.0), None)["hit_zone"] == "mid_backhand"
 
 
-def test_is_cross_ignores_the_middle_column():
-    assert is_cross_court((2.6, 2.0), (3.5, 12.0)) is False
-    assert is_cross_court((2.5, 2.0), (3.5, 12.0)) is True
-    assert is_cross_court((3.0, 2.0), (3.04, 12.0)) is False
+def test_shot_geometry_is_cross_is_null_for_a_not_over_net_landing_and_true_across_the_centre_line():
+    geometry = shot_geometry((3.0, 3.0), (3.0, 5.0), None, None)
+    assert geometry["landing_zone"] == NOT_OVER_NET_ZONE and geometry["is_cross"] is None
+    assert shot_geometry((3.0, 3.0), (3.1, 10.0), None, None)["is_cross"] is True
+    assert shot_geometry((3.0, 3.0), (3.0, 10.0), None, None)["is_cross"] is False
 
 
-def test_old_six_zone_shots_table_raises_schema_mismatch_naming_constraints(tmp_path):
-    database_path = tmp_path / "old_zones.duckdb"
-    old_schema = (PROJECT_ROOT / "analytics" / "schema.sql").read_text()
-    for six_zone_side in ("'front_middle', ", "'mid_middle', ", "'rear_middle', "):
-        old_schema = old_schema.replace(six_zone_side, "")
+def nine_zone_schema_sql() -> str:
+    return (
+        (PROJECT_ROOT / "analytics" / "schema.sql")
+        .read_text()
+        .replace("'front_backhand', ", "'front_middle', 'front_backhand', ")
+        .replace("'mid_backhand', ", "'mid_middle', 'mid_backhand', ")
+        .replace("'rear_backhand'", "'rear_middle', 'rear_backhand'")
+    )
+
+
+def test_nine_zone_shots_table_is_stale_for_the_other_writers_and_an_incomplete_database_is_left_alone(tmp_path):
+    database_path = tmp_path / "nine_zones.duckdb"
     connection = duckdb.connect(str(database_path))
-    connection.execute(old_schema)
-    connection.close()
+    connection.execute(nine_zone_schema_sql())
+    connection.execute(
+        "INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, hit_x, hit_y, landing_x, landing_y, hit_zone, landing_zone, is_cross) "
+        "VALUES ('own', 'my_game', 1, 1, 1, 'me', 3.0, 3.0, 3.1, 10.0, 'mid_middle', 'mid_middle', false), "
+        "('own', 'my_game', 1, 1, 2, 'opp', 3.0, 3.0, 3.0, 5.0, 'mid_middle', 'not_over_net', false)"
+    )
     with pytest.raises(ShotsSchemaMismatchError) as raised:
-        build_shots(database_path)
+        create_shots_table(connection)
+    connection.close()
     assert raised.value.existing_columns == raised.value.expected_columns
     assert raised.value.existing_constraints != raised.value.expected_constraints
     assert "drop the shots table" in str(raised.value)
+    with pytest.raises(duckdb.CatalogException):
+        build_shots(database_path)
+    assert fetch_all(database_path, "SELECT shots.hit_zone FROM shots ORDER BY shots.ball_round") == [("mid_middle",), ("mid_middle",)]
+
+
+@requires_shuttleset
+def test_rebuild_of_a_nine_zone_table_keeps_own_rows_with_zones_rederived(built_database, tmp_path):
+    database_path, _ = built_database
+    rebuilt_path = tmp_path / "nine_zones.duckdb"
+    shutil.copy(database_path, rebuilt_path)
+    connection = duckdb.connect(str(rebuilt_path))
+    connection.execute("CREATE TABLE kept AS SELECT * FROM shots")
+    connection.execute("DROP TABLE shots")
+    connection.execute(nine_zone_schema_sql())
+    connection.execute("INSERT INTO shots SELECT * FROM kept")
+    connection.execute("DROP TABLE kept")
+    connection.execute(
+        "INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, hit_x, hit_y, landing_x, landing_y, player_x, player_y, hit_zone, landing_zone, is_cross) "
+        "VALUES ('own', 'my_game', 1, 1, 1, 'me', 3.0, 3.0, 3.1, 10.0, 3.0, 3.0, 'mid_middle', 'mid_middle', false), "
+        "('own', 'my_game', 1, 1, 2, 'opp', 3.0, 3.0, 3.0, 5.0, 3.0, 3.0, 'mid_middle', 'not_over_net', false), "
+        "('own', 'my_game', 1, 1, 3, 'me', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)"
+    )
+    connection.close()
+    summary = build_shots(rebuilt_path)
+    assert summary["own_shots"] == 3 and summary["shuttleset_shots"] == 36483
+    assert fetch_all(rebuilt_path, "SELECT shots.ball_round, shots.hit_zone, shots.landing_zone, shots.is_cross FROM shots WHERE shots.source = 'own' ORDER BY shots.ball_round") == [
+        (1, "rear_backhand", "mid_backhand", True),
+        (2, "rear_backhand", "not_over_net", None),
+        (3, None, None, None),
+    ]
+    assert fetch_all(rebuilt_path, "SELECT COUNT(*) FROM shots WHERE shots.hit_zone LIKE '%middle%' OR shots.landing_zone LIKE '%middle%'") == [(0,)]
+    assert fetch_all(rebuilt_path, "SELECT COUNT(*) FROM shots WHERE shots.source = 'shuttleset'") == [(36483,)]
+    connection = duckdb.connect(str(rebuilt_path))
+    with pytest.raises(duckdb.ConstraintException):
+        connection.execute("INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, hit_zone) VALUES ('own', 'x', 1, 1, 1, 'me', 'mid_middle')")
+    connection.close()

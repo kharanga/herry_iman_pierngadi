@@ -8,40 +8,43 @@ How habits are counted: `docs/analytics/tendencies.md`. Each player's habits are
 shots; there is no comparison with other players, no score, no ranking and no minimum sample size.
 
 ## Runs on every match
-All 88 ShuttleSet players (44 matches x 2) and the 2 players of my tracked match run without error.
-Loading the shots and building the observations takes 0.4 s; counting all 90 players then takes 1.9 s.
+All 88 ShuttleSet players (44 matches x 2) and the 4 players of my two own matches (the tracked broadcast rallies,
+`match_tracked`, and the stand-in club set, `stand_in_set1`) run without error.
+Loading the shots and building the observations takes 0.5 s; counting all 92 players then takes 1.7 s.
 
 | | Entries per player |
 |---|---|
-| ShuttleSet, whole match | 128 to 333 (median 244.5) |
-| `match_tracked`, `me` | 69 |
-| `match_tracked`, `opp` | 64 |
+| ShuttleSet, whole match | 127 to 324 (median 228.5) |
+| `match_tracked`, `me` | 66 |
+| `match_tracked`, `opp` | 68 |
+| `stand_in_set1`, `me` | 106 |
+| `stand_in_set1`, `opp` | 114 |
 
-- One entry per (situation, choice), 21,797 in total over 9,202 situations.
-- In every situation the choices' `k` add up to its `n`: checked for all 9,202 situations (9,202 hold).
-- Nothing is filtered: 11,792 entries are a single shot ("1 of n").
-- Entries per family: zone_mix 2,930, response 17,231, serve_placement 534, winning_shot 351, error_shot 482, error_reason 269.
-- Label source: ShuttleSet 21,282 `labels`, 298 `mixed` and
-  84 `predictions` (21,664 in all). A situation is `mixed` when some of its shots were typed `unknown`
+- One entry per (situation, choice), 20,695 in total over 7,410 situations.
+- In every situation the choices' `k` add up to its `n`: checked for all 7,410 situations (7,410 hold).
+- Nothing is filtered: 10,686 entries are a single shot ("1 of n").
+- Entries per family: zone_mix 2,222, response 16,930, serve_placement 441, winning_shot 351, error_shot 482, error_reason 269.
+- Label source: ShuttleSet 19,978 `labels`, 279 `mixed` and
+  84 `predictions` (20,341 in all). A situation is `mixed` when some of its shots were typed `unknown`
   in ShuttleSet and got the classifier's group, and `predictions` when all of them were: the 84 `predictions`
   entries (84 `response`) come from situations so small that every shot in them was `unknown`, e.g.
-  `response:serve|mid_forehand|mid_middle:drive cross, 1 of 1`; my tracked match 133 `predictions`
-  and 0 `mixed`, since nobody labels my shots.
+  `response:serve|rear_forehand|mid_backhand:drive cross, 1 of 1`; my own matches 354 `predictions`
+  and 0 `mixed` (134 for `match_tracked`, 220 for `stand_in_set1`), since nobody labels my shots.
 
 Replies count the other player's previous shot by its type, where it was hit from and where it landed, and the
-reply by its type and direction: 31,709 counted replies, 20,921 straight,
-10,780 cross and 8 with no direction (`is_cross` missing).
+reply by its type and direction: 31,945 counted replies, 19,872 straight,
+11,032 cross and 1041 with no direction (the reply landed on the replier's own half, `not_over_net`, so it has no direction; `is_cross` is NULL there).
 
 Example, Ginting (B) in Axelsen vs Ginting (Thailand Open 2021 SF), in his most frequent reply situation:
 
-- After a lift from the other player's front backhand to the rear backhand: smashes straight 7 of 25 times.
-- After a lift from the other player's front backhand to the rear backhand: smashes cross 6 of 25 times.
-- After a lift from the other player's front backhand to the rear backhand: clears straight 4 of 25 times.
-- After a lift from the other player's front backhand to the rear backhand: drops straight 4 of 25 times.
-- After a lift from the other player's front backhand to the rear backhand: drops cross 3 of 25 times.
-- After a lift from the other player's front backhand to the rear backhand: clears cross 1 of 25 times.
+- After a lift from the other player's front backhand to the rear backhand: smashes cross 6 of 23 times.
+- After a lift from the other player's front backhand to the rear backhand: smashes straight 6 of 23 times.
+- After a lift from the other player's front backhand to the rear backhand: drops straight 4 of 23 times.
+- After a lift from the other player's front backhand to the rear backhand: clears straight 3 of 23 times.
+- After a lift from the other player's front backhand to the rear backhand: drops cross 3 of 23 times.
+- After a lift from the other player's front backhand to the rear backhand: clears cross 1 of 23 times.
 
-The choices add up: 7 + 6 + 4 + 4 + 3 + 1 = 25.
+The choices add up: 6 + 6 + 4 + 3 + 3 + 1 = 23.
 
 ## Limits
 - Counts describe what happened in this match; small `n` means little, and the page shows `n` so the reader can judge.

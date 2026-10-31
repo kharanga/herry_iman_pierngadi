@@ -19,29 +19,31 @@ their habits; **Me** with every one of mine; a footer saying what "k of n" means
 comparison or ranking, and whether shot types are labels or predictions. Inside each player, bullets sit under one
 sub-heading per family ("Shots by court zone", "Replies to the other player's shot", "Serves", "Winning shots",
 "Shots that ended in an error", "How errors happened"). Each bullet is the counted sentence in bold
-("From the front court, forehand side: lifts 4 of 4 times."), the evidence line (`4 of 4 for Opponent`) and, for
-zone and serve bullets, a 54 px court diagram with the zone shaded (me at the bottom). Reply bullets name the other
+("From the front court, forehand side: lifts 5 of 6 times."), the evidence line (`5 of 6 for Opponent`) and, for
+zone and serve bullets, a 54 px court diagram with the zone shaded on the six-zone grid (bands at the short service
+line and 3.50 m from the net, sides split at the centre line; me at the bottom). Reply bullets name the other
 player ("After a serve from my mid forehand to the mid backhand: lifts cross 1 of 1 times.") and their diagram
 shows that player's shot: the hit-from zone in yellow, the landing zone in red and an arrow between them, still with
 me at the bottom. Bullets whose shot types
 came from the classifier carry a "predicted shot types" tag.
 
-For `match_tracked`: 64 bullets for the opponent and 69 for me, under
-Shots by court zone, Replies to the other player's shot, Serves (opponent) and Shots by court zone, Replies to the other player's shot, Serves (me);
-175.4 KB of HTML; 133 bullets from predictions only, 0 mixed.
+For `match_tracked`: 68 bullets for the opponent and 66 for me, under
+Shots by court zone, Replies to the other player's shot, Serves (opponent) and Shots by court zone, Replies to the other player's shot (me);
+179.9 KB of HTML; 134 bullets from predictions only, 0 mixed. (My serve rows on the broadcast have no
+position, so no serve bullets for me; see `docs/results/no_shuttle.md`.)
 
 ## Checks
 
 | Check | Result |
 |---|---|
 | Builds for my tracked match | `report.serve match_tracked --me me --no-serve` writes the page |
-| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 46.2 s in one process |
-| Every habit shown, no cap | each page lists every entry of both players: 263 to 658 bullets a page (median 492) |
-| Every bullet has a count | all 43,461 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
+| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 16.6 s in one process |
+| Every habit shown, no cap | each page lists every entry of both players: 254 to 647 bullets a page (median 464.5) |
+| Every bullet has a count | all 40,816 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
 | No comparison with pros | 0 of 89 pages mention pros (0 found) |
-| Diagrams | 6,844 bullets (zone and serve placement) get a shaded zone; 34,378 reply bullets get hit-from and landing zones with an arrow |
-| Reply bullets name the other player | 34,378 of 34,378 reply bullets name the player; 0 say "the other player" |
-| Page size | ShuttleSet 327 to 851 KB (median 627 KB), nothing external (inline CSS and SVG, no scripts) |
+| Diagrams | 5,152 bullets (zone and serve placement) get a shaded zone; 33,426 reply bullets get hit-from and landing zones with an arrow |
+| Reply bullets name the other player | 33,426 of 33,426 reply bullets name the player; 0 say "the other player" |
+| Page size | ShuttleSet 316 to 839 KB (median 594 KB), nothing external (inline CSS and SVG, no scripts) |
 | Only the report is served | the server serves a temporary folder holding a copy of the page and nothing else |
 
 ## Readable at 390 px
@@ -62,7 +64,7 @@ long: it is meant to be scrolled, one family at a time.
   right-handed players.
 
 ## Limits
-- ShuttleSet pages are long (658 bullets at most): every rare choice is listed. Ranking or filtering can
+- ShuttleSet pages are long (647 bullets at most): every rare choice is listed. Ranking or filtering can
   come back as its own task.
 - The server is Python's `http.server`: fine for one phone on the home network, not for the internet.
 - The page is static: re-run the command after new shots are loaded.

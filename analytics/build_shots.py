@@ -109,6 +109,10 @@ ORDER BY constraint_type, constraint_column_names, expression
 """
 
 DELETE_SHUTTLESET_SHOTS_SQL = "DELETE FROM shots WHERE shots.source = 'shuttleset'"
+SHOTS_TABLE_EXISTS_SQL = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'shots'"
+OWN_SHOTS_SQL = "SELECT * FROM shots WHERE shots.source = 'own' ORDER BY shots.rowid"
+DROP_SHOTS_SQL = "DROP TABLE IF EXISTS shots"
+INSERT_OWN_SHOTS_SQL = "INSERT INTO shots SELECT * FROM own_shot_rows"
 
 INSERT_SHUTTLESET_SHOTS_SQL = """
 INSERT INTO shots
@@ -259,16 +263,50 @@ def shuttleset_shots_frame(
     return shots_frame
 
 
+def existing_own_rows(connection: duckdb.DuckDBPyConnection) -> pd.DataFrame | None:
+    if connection.execute(SHOTS_TABLE_EXISTS_SQL).fetchone()[0] == 0:
+        return None
+    return connection.execute(OWN_SHOTS_SQL).df()
+
+
+def own_rows_with_rederived_zones(own_rows: pd.DataFrame) -> pd.DataFrame:
+    rederived = own_rows.copy()
+    geometries = [
+        shot_geometry(
+            point_or_none(row.hit_x, row.hit_y),
+            point_or_none(row.landing_x, row.landing_y),
+            point_or_none(row.player_x, row.player_y),
+            point_or_none(row.opponent_x, row.opponent_y),
+        )
+        for row in own_rows.itertuples(index=False)
+    ]
+    rederived["hit_zone"] = pd.Series([geometry["hit_zone"] for geometry in geometries], index=own_rows.index, dtype="object")
+    rederived["landing_zone"] = pd.Series([geometry["landing_zone"] for geometry in geometries], index=own_rows.index, dtype="object")
+    rederived["is_cross"] = pd.Series([geometry["is_cross"] for geometry in geometries], index=own_rows.index, dtype="boolean")
+    return rederived
+
+
+def recreate_shots_table(connection: duckdb.DuckDBPyConnection) -> None:
+    connection.execute(DROP_SHOTS_SQL)
+    create_shots_table(connection)
+
+
 def build_shots(database_path: Path, left_handed_player_names: frozenset[str] = LEFT_HANDED_PLAYER_NAMES) -> dict:
     connection = duckdb.connect(str(database_path))
     try:
         connection.execute("BEGIN TRANSACTION")
-        create_shots_table(connection)
+        own_rows = existing_own_rows(connection)
         shuttleset_shot_rows = shuttleset_shots_frame(connection, frozenset(left_handed_player_names))
-        connection.execute(DELETE_SHUTTLESET_SHOTS_SQL)
+        recreate_shots_table(connection)
         connection.register("shuttleset_shot_rows", shuttleset_shot_rows)
         connection.execute(INSERT_SHUTTLESET_SHOTS_SQL)
         connection.unregister("shuttleset_shot_rows")
+        own_shot_count = 0
+        if own_rows is not None and len(own_rows) > 0:
+            connection.register("own_shot_rows", own_rows_with_rederived_zones(own_rows))
+            connection.execute(INSERT_OWN_SHOTS_SQL)
+            connection.unregister("own_shot_rows")
+            own_shot_count = len(own_rows)
         raw_shot_count = connection.execute(RAW_SHOT_COUNT_SQL).fetchone()[0]
         connection.execute("COMMIT")
     except Exception:
@@ -280,6 +318,7 @@ def build_shots(database_path: Path, left_handed_player_names: frozenset[str] = 
         "raw_shots": raw_shot_count,
         "shuttleset_shots": len(shuttleset_shot_rows),
         "duplicates_dropped": raw_shot_count - len(shuttleset_shot_rows),
+        "own_shots": own_shot_count,
     }
 
 
@@ -288,5 +327,6 @@ if __name__ == "__main__":
     summary = build_shots(database_path)
     print(
         f"shots: {summary['shuttleset_shots']} shuttleset rows "
-        f"from {summary['raw_shots']} raw shots ({summary['duplicates_dropped']} exact duplicates dropped)"
+        f"from {summary['raw_shots']} raw shots ({summary['duplicates_dropped']} exact duplicates dropped); "
+        f"{summary['own_shots']} own rows kept with zones re-derived"
     )

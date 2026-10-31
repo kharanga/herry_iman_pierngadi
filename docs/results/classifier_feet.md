@@ -5,7 +5,10 @@ what player tracking gives: the hitter's feet at the hit, the opponent's feet at
 the hit frames. The landing point is where the opponent hits the reply (their feet at the next
 hit). This page has the same evaluation as `docs/results/classifier.md` (the earlier model, trained on
 ShuttleSet's labelled hit and landing points), the two side by side, and what imprecise hit
-timing costs.
+timing costs. The numbers are for the six-zone court (`docs/results/schema.md`): `is_cross`, one
+of the 16 features, is now "hit and landing on opposite sides of the centre line" instead of the
+earlier 1 m-sideways rule. Retraining on it moved the feet model from 86.5% to 86.6%, inside the
+fold spread, and every other number by a few tenths at most.
 
 ## How to run
 ```
@@ -15,7 +18,7 @@ timing costs.
 .venv/bin/python -m shots.predict
 .venv/bin/python -m shots.results_tables
 ```
-On the dev MacBook Air: `train` 44 s, `compare_hit_points` 1 min 43 s, `compare_features` 2 min 30 s,
+On the dev MacBook Air: `train` 58 s, `compare_hit_points` 1 min 52 s, `compare_features` 43 s,
 `predict` 2 s. Every table below is printed by `shots.results_tables` from
 `data/models/shot_type_classifier_report.json` (written by `train`),
 `data/models/hit_point_comparison.json` (`compare_hit_points`),
@@ -28,7 +31,7 @@ Numbers in the text come from the same files.
 - Feature set `feet` (`shots/features.py`, the shipped one): hit point = `player_x/player_y` (the
   hitter's feet); landing = the **next shot's** `player_x/player_y` turned half a turn into this
   hitter's frame (the reply hitter's feet); receiver = `opponent_x/opponent_y` at the hit; `is_cross`
-  and the shot vector from those two feet points; `ball_round`; timing from `frame_num` and `fps` as
+  (opposite sides of the centre line) and the shot vector from those two feet points; `ball_round`; timing from `frame_num` and `fps` as
   before; the previous shot's length and depth from the previous hitter's feet. Same 16 column
   names as the `contact` set, so everything downstream is unchanged.
 - Shots used: ShuttleSet shots with one of the 7 real groups **and** a hitter position **and** a
@@ -48,14 +51,14 @@ Numbers in the text come from the same files.
 
 | | Held-out accuracy |
 |---|---|
-| **Classifier** | **86.5%** (± 0.7% across folds; folds 85.7, 87.1, 87.1, 86.8, 85.7) |
+| **Classifier** | **86.6%** (± 0.7% across folds; folds 85.5, 87.0, 87.2, 87.0, 86.0) |
 | Majority class (`net`) | 33.1% |
 
 | Shots | Count | Held-out accuracy |
 |---|---|---|
-| excluding each rally's first shot | 29,131 | 85.4% |
+| excluding each rally's first shot | 29,131 | 85.5% |
 | rally's last shot (no next hit, so no flight time) | 0 | none predicted |
-| all other shots | 31,544 | 86.5% |
+| all other shots | 31,544 | 86.6% |
 
 Serves stay easy (`ball_round` = 1). The "last shot" row is empty by construction: with feet-only
 features a shot without a reply has no landing point, so it is neither trained on nor predicted.
@@ -64,25 +67,25 @@ features a shot without a reply has no landing point, so it is neither trained o
 
 | Group | Shots | Precision | Recall | F1 |
 |---|---|---|---|---|
-| serve | 2,393 | 0.997 | 1.000 | 0.998 |
-| net | 10,458 | 0.958 | 0.961 | 0.959 |
-| clear | 2,734 | 0.945 | 0.933 | 0.939 |
-| drop | 3,204 | 0.868 | 0.849 | 0.859 |
-| smash | 3,328 | 0.831 | 0.870 | 0.850 |
-| lift | 5,259 | 0.768 | 0.839 | 0.802 |
-| drive | 4,168 | 0.630 | 0.542 | 0.583 |
+| serve | 2,393 | 0.996 | 1.000 | 0.998 |
+| net | 10,458 | 0.957 | 0.962 | 0.959 |
+| clear | 2,734 | 0.946 | 0.931 | 0.938 |
+| drop | 3,204 | 0.867 | 0.848 | 0.857 |
+| smash | 3,328 | 0.834 | 0.871 | 0.852 |
+| lift | 5,259 | 0.771 | 0.841 | 0.804 |
+| drive | 4,168 | 0.632 | 0.545 | 0.585 |
 
 ## Confusion matrix (held-out; rows = true group, columns = predicted)
 
 | true \ predicted | serve | clear | drop | smash | net | lift | drive |
 |---|---|---|---|---|---|---|---|
 | serve | **2,393** | 0 | 0 | 0 | 0 | 0 | 0 |
-| clear | 0 | **2,552** | 31 | 49 | 1 | 61 | 40 |
-| drop | 0 | 29 | **2,721** | 252 | 138 | 2 | 62 |
-| smash | 2 | 37 | 226 | **2,896** | 15 | 3 | 149 |
-| net | 3 | 1 | 69 | 13 | **10,051** | 15 | 306 |
-| lift | 0 | 42 | 3 | 2 | 31 | **4,412** | 769 |
-| drive | 3 | 40 | 84 | 275 | 258 | 1,249 | **2,259** |
+| clear | 0 | **2,545** | 33 | 50 | 0 | 63 | 43 |
+| drop | 0 | 31 | **2,717** | 247 | 142 | 2 | 65 |
+| smash | 1 | 36 | 228 | **2,898** | 15 | 2 | 148 |
+| net | 3 | 1 | 66 | 14 | **10,058** | 12 | 304 |
+| lift | 0 | 40 | 4 | 3 | 28 | **4,422** | 762 |
+| drive | 5 | 38 | 86 | 262 | 270 | 1,236 | **2,271** |
 
 ## Contact points vs feet, side by side
 
@@ -94,20 +97,20 @@ accuracies are on identical shots; "all its shots" is each set on everything it 
 
 | Feature set | Shared shots | Held-out accuracy | All its shots | Held-out accuracy |
 |---|---|---|---|---|
-| contact (labelled hit point and landing point) | 31,543 | **87.5%** (± 1.0%) | 35,056 | **86.8%** (± 0.8%) |
-| feet (hitter's feet; landing = the reply hitter's feet) | 31,543 | **86.7%** (± 1.0%) | 31,544 | **86.5%** (± 0.7%) |
+| contact (labelled hit point and landing point) | 31,543 | **87.5%** (± 0.9%) | 35,056 | **86.8%** (± 0.8%) |
+| feet (hitter's feet; landing = the reply hitter's feet) | 31,543 | **86.8%** (± 1.1%) | 31,544 | **86.6%** (± 0.7%) |
 
 | Group | Shots | contact P / R / F1 | feet P / R / F1 | F1 change |
 |---|---|---|---|---|
-| serve | 2,393 | 0.996 / 1.000 / 0.998 | 0.996 / 1.000 / 0.998 | +0.000 |
-| net | 10,457 | 0.965 / 0.966 / 0.965 | 0.957 / 0.962 / 0.959 | -0.006 |
-| clear | 2,734 | 0.958 / 0.954 / 0.956 | 0.942 / 0.933 / 0.938 | -0.018 |
-| drop | 3,204 | 0.886 / 0.883 / 0.885 | 0.873 / 0.850 / 0.861 | -0.024 |
-| smash | 3,328 | 0.846 / 0.877 / 0.861 | 0.836 / 0.871 / 0.853 | -0.008 |
-| lift | 5,259 | 0.780 / 0.841 / 0.809 | 0.775 / 0.842 / 0.807 | -0.002 |
-| drive | 4,168 | 0.646 / 0.562 / 0.601 | 0.636 / 0.555 / 0.593 | -0.008 |
+| serve | 2,393 | 0.996 / 1.000 / 0.998 | 0.997 / 1.000 / 0.999 | +0.001 |
+| net | 10,457 | 0.965 / 0.965 / 0.965 | 0.957 / 0.961 / 0.959 | -0.006 |
+| clear | 2,734 | 0.957 / 0.955 / 0.956 | 0.944 / 0.933 / 0.938 | -0.018 |
+| drop | 3,204 | 0.890 / 0.885 / 0.887 | 0.874 / 0.847 / 0.860 | -0.027 |
+| smash | 3,328 | 0.848 / 0.882 / 0.864 | 0.833 / 0.873 / 0.852 | -0.012 |
+| lift | 5,259 | 0.780 / 0.837 / 0.807 | 0.775 / 0.846 / 0.809 | +0.002 |
+| drive | 4,168 | 0.641 / 0.564 / 0.600 | 0.639 / 0.554 / 0.594 | -0.007 |
 
-**Feet cost 0.8 points on the same shots (87.5% -> 86.7%)**, inside one fold's spread (± 1.0%).
+**Feet cost 0.8 points on the same shots (87.5% -> 86.8%)**, inside one fold's spread (± 1.1%).
 The reply hitter's feet are a good stand-in for the labelled landing point:
 
 | Reply hitter's feet vs labelled landing point | |
@@ -120,10 +123,10 @@ The reply hitter's feet are a good stand-in for the labelled landing point:
 The median 0.82 m is the same distance ShuttleSet's labelled hit point sits from the hitter's feet
 (it marks the floor under the racket, not the feet), so swapping both ends of the shot for feet moves
 every shot by a similar, mostly lengthways amount, which the tree re-learns. What the feet lose is
-precision at the ends: `drop` (-0.024 F1) and `clear` (-0.018) are the groups separated by **where
+precision at the ends: `drop` (-0.027 F1) and `clear` (-0.018) are the groups separated by **where
 exactly the shuttle comes down** (a drop just over the net vs a net shot; a clear to the baseline vs
 a lift), and a receiver who reaches a drop late, or takes a clear a step inside the baseline, blurs that.
-`drive` vs `lift` (1,204 drives predicted lift, 760 lifts predicted drive) stays the main error, as
+`drive` vs `lift` (1,213 drives predicted lift, 733 lifts predicted drive) stays the main error, as
 before: it is a matter of height, which neither feature set has.
 
 The two confusion matrices on the shared shots:
@@ -131,33 +134,33 @@ The two confusion matrices on the shared shots:
 | true \ predicted | serve | clear | drop | smash | net | lift | drive |
 |---|---|---|---|---|---|---|---|
 | serve | **2,392** | 0 | 0 | 1 | 0 | 0 | 0 |
-| clear | 0 | **2,608** | 15 | 33 | 1 | 33 | 44 |
-| drop | 0 | 4 | **2,830** | 210 | 113 | 2 | 45 |
-| smash | 2 | 30 | 202 | **2,919** | 14 | 2 | 159 |
-| net | 3 | 1 | 76 | 5 | **10,103** | 6 | 263 |
-| lift | 0 | 40 | 3 | 2 | 16 | **4,425** | 773 |
-| drive | 5 | 40 | 68 | 280 | 227 | 1,206 | **2,342** |
+| clear | 0 | **2,611** | 16 | 31 | 1 | 30 | 45 |
+| drop | 0 | 4 | **2,834** | 205 | 112 | 2 | 47 |
+| smash | 2 | 27 | 190 | **2,934** | 13 | 2 | 160 |
+| net | 3 | 1 | 78 | 7 | **10,090** | 7 | 271 |
+| lift | 0 | 43 | 3 | 1 | 17 | **4,401** | 794 |
+| drive | 4 | 42 | 64 | 281 | 222 | 1,203 | **2,352** |
 
 | true \ predicted | serve | clear | drop | smash | net | lift | drive |
 |---|---|---|---|---|---|---|---|
 | serve | **2,393** | 0 | 0 | 0 | 0 | 0 | 0 |
-| clear | 0 | **2,551** | 28 | 47 | 1 | 61 | 46 |
-| drop | 0 | 35 | **2,722** | 246 | 141 | 2 | 58 |
-| smash | 2 | 37 | 216 | **2,898** | 15 | 2 | 158 |
-| net | 3 | 2 | 70 | 12 | **10,056** | 14 | 300 |
-| lift | 0 | 41 | 4 | 3 | 25 | **4,426** | 760 |
-| drive | 4 | 42 | 79 | 260 | 267 | 1,204 | **2,312** |
+| clear | 0 | **2,550** | 27 | 52 | 1 | 59 | 45 |
+| drop | 0 | 35 | **2,715** | 250 | 138 | 2 | 64 |
+| smash | 1 | 38 | 219 | **2,904** | 16 | 2 | 148 |
+| net | 3 | 1 | 63 | 15 | **10,045** | 14 | 316 |
+| lift | 0 | 40 | 4 | 2 | 30 | **4,450** | 733 |
+| drive | 2 | 37 | 80 | 262 | 263 | 1,213 | **2,311** |
 
 ## Timing jitter
 
 | Hit frames | contact, shared shots | feet, shared shots | feet, all its shots (the shipped model) |
 |---|---|---|---|
-| exact | **87.5%** | **86.7%** | **86.5%** |
-| +/- 5 | 84.6% (-2.9) | 83.5% (-3.3) | 83.4% (-3.1) |
-| +/- 10 | 80.8% (-6.7) | 79.0% (-7.7) | 78.9% (-7.5) |
+| exact | **87.5%** | **86.8%** | **86.6%** |
+| +/- 5 | 84.6% (-3.0) | 83.4% (-3.4) | 83.2% (-3.3) |
+| +/- 10 | 80.9% (-6.6) | 78.9% (-7.9) | 78.8% (-7.8) |
 
-- Hit timing matters about as much for both feature sets: **±5 frames costs 3 points, ±10 frames
-  7.5 points** on the shipped model. Time to the next hit is the third most important feature and
+- Hit timing matters about as much for both feature sets: **±5 frames costs 3.4 points, ±10 frames
+  7.8 points** on the shipped model. Time to the next hit is the third most important feature and
   the main thing that separates a smash from a drop and a lift from a drive; a 10-frame error at 30 fps
   is a third of a second on flights that take 0.3-1.5 s.
 - On my footage the hit frames come from player movement (no shuttle), so the frame error will be
@@ -175,22 +178,22 @@ another carries the same information.
 
 | Feature | Accuracy drop |
 |---|---|
-| landing_y | 0.308 |
-| hit_y | 0.173 |
-| flight_seconds | 0.161 |
-| ball_round | 0.100 |
-| seconds_since_previous_hit | 0.055 |
-| shot_dy | 0.039 |
-| shot_distance | 0.017 |
+| landing_y | 0.311 |
+| hit_y | 0.170 |
+| flight_seconds | 0.160 |
+| ball_round | 0.099 |
+| seconds_since_previous_hit | 0.056 |
+| shot_dy | 0.046 |
+| shot_distance | 0.018 |
 | landing_x | 0.006 |
+| hit_x | 0.005 |
+| previous_hit_y | 0.004 |
 | receiver_y | 0.004 |
-| hit_x | 0.004 |
-| previous_hit_y | 0.003 |
 | previous_shot_distance | 0.003 |
-| receiver_x | 0.001 |
-| shot_lateral_distance | 0.000 |
-| shot_dx | 0.000 |
-| is_cross | -0.000 |
+| receiver_x | 0.003 |
+| shot_lateral_distance | 0.001 |
+| shot_dx | 0.001 |
+| is_cross | 0.000 |
 
 Depth (`landing_y`, `hit_y`, `shot_dy`) and timing still carry the model; sideways position
 barely matters. Player tracking must get the feet's depth and the hit frames right; a lateral
@@ -201,35 +204,34 @@ Recall per original shot type (held-out), for every type below 85%:
 
 | Type (group) | Shots | Recall | Most common mistakes |
 |---|---|---|---|
-| driven flight (drive) | 63 | 22% | net 48, smash 1 |
-| back-court drive (drive) | 442 | 29% | smash 219, drop 78 |
-| rush (net) | 218 | 30% | drive 142, smash 10 |
-| push (drive) | 2,682 | 53% | lift 1,190, net 43 |
-| defensive return lob (lift) | 274 | 58% | drive 72, net 22 |
-| defensive return drive (drive) | 353 | 59% | net 79, lift 50 |
-| drive (drive) | 628 | 78% | net 86, smash 44 |
-| wrist smash (smash) | 1,407 | 81% | drop 141, drive 90 |
-| drop (drop) | 1,924 | 83% | smash 178, net 105 |
+| driven flight (drive) | 63 | 17% | net 51, smash 1 |
+| back-court drive (drive) | 442 | 30% | smash 214, drop 80 |
+| rush (net) | 218 | 30% | drive 141, smash 10 |
+| push (drive) | 2,682 | 53% | lift 1,184, net 37 |
+| defensive return drive (drive) | 353 | 60% | net 81, lift 45 |
+| defensive return lob (lift) | 274 | 61% | drive 69, clear 18 |
+| drive (drive) | 628 | 77% | net 100, smash 36 |
+| wrist smash (smash) | 1,407 | 82% | drop 142, drive 87 |
+| drop (drop) | 1,924 | 83% | smash 176, net 112 |
 
 Compared with the contact model: `rush` (net) drops from 60% to 30% recall, but on a different set
 of shots: 294 of the 512 rushes end their rally (a kill at the net) and are no longer predicted, and
-142 of the 218 that remain are predicted `drive`, the group a rush that gets returned looks like from
-the feet (both players mid-court, a short flight). `push` vs `lob` (1,190 pushes predicted lift) and
-`back-court drive` vs `smash` (219) are the same height problem as before. The other types move by
+141 of the 218 that remain are predicted `drive`, the group a rush that gets returned looks like from
+the feet (both players mid-court, a short flight). `push` vs `lob` (1,184 pushes predicted lift) and
+`back-court drive` vs `smash` (214) are the same height problem as before. The other types move by
 a few points either way.
 
 ## Feature-set experiments (feet features, same 5 match folds, same shots)
 
 | Features | Held-out accuracy |
 |---|---|
-| geometry only (positions, shot vector, `is_cross`, `ball_round`) | 83.6% |
-| + timing (time to next hit, since previous hit) | 86.5% |
-| + previous shot's length and depth (**the shipped model**) | 86.5% |
-| + previous shot's **true** group | 87.1% |
+| geometry only (positions, shot vector, `is_cross`, `ball_round`) | 83.7% |
+| + timing (time to next hit, since previous hit) | 86.4% |
+| + previous shot's length and depth (**the shipped model**) | 86.6% |
+| + previous shot's **true** group | 86.9% |
 
-Timing adds 2.9 points on feet features (83.6% -> 86.5%); the previous shot's length and depth
-change nothing measurable; the previous shot's **true** group would add 0.6 points but is never known
-on my footage.
+Timing adds 2.7 points on feet features (83.7% -> 86.4%); the previous shot's length and depth add
+0.2; the previous shot's **true** group would add 0.4 points but is never known on my footage.
 
 ## Predictions in `shots`
 
@@ -238,19 +240,23 @@ on my footage.
 | ShuttleSet shots in `shots` | 36,483 |
 | With a prediction | 31,701 |
 | Left NULL (no hitter point or no landing point) | 4,782 |
-| `type_conf` mean / lowest | 0.89 / 0.25 |
-| In-sample agreement with `type_group` (not an accuracy) | 93.0% |
-| Shots typed `unknown`, predicted as | NULL 1,250, serve 124, drive 9, clear 8, lift 6, smash 5, net 3, drop 2 |
-| Own rows of `match_tracked` with a prediction | 118 of 126 (8 rallies) |
+| `type_conf` mean / lowest | 0.89 / 0.31 |
+| In-sample agreement with `type_group` (not an accuracy) | 93.4% |
+| Shots typed `unknown`, predicted as | NULL 1,250, serve 128, lift 8, clear 6, drive 5, smash 5, net 4, drop 1 |
+| Own rows of `match_tracked` with a prediction | 119 of 132 (7 rallies) |
+| Own rows of `stand_in_set1` with a prediction | 251 of 287 (36 rallies) |
 
 - `predict` scores both sources with the one feet model. On ShuttleSet, 31,701 rows get a prediction;
   the 4,782 left NULL are the rally-ending shots (no reply), shots without positions, and most
   `unknown`-typed rows.
-- The own rows of `match_tracked` (the tracked broadcast rallies written by the vision track): 118 of
-  126 predicted; the 8 NULL rows are exactly the last shot of each of the 8 rallies.
+- The own rows of `match_tracked` (the tracked broadcast rallies, rebuilt from the movement hits with an inferred
+  serve per rally, `docs/results/no_shuttle.md`): 119 of 132 predicted; the 13 NULL rows are the last shot of each
+  of the 7 rallies and 6 serve rows without a hitter position (the broadcast cuts to a close-up at the serve).
+- The own rows of `stand_in_set1` (the full stand-in club set, `docs/results/end_to_end.md`): 251 of 287 predicted;
+  the 36 NULL rows are the last shot of each of its 36 rallies. Every serve row has the server's feet on that fixed camera.
 - `type_conf` is the model's probability for its chosen group, not calibrated.
 - The in-sample agreement is on shots the final model trained on, so it is **not** an accuracy figure.
-  Use the held-out 86.5%.
+  Use the held-out 86.6%.
 
 ## Notes
 - A model file trained on the `contact` set is refused by `predict` (`ModelFeatureMismatchError`

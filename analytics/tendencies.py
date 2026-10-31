@@ -25,7 +25,7 @@ GROUP_PHRASES = {
     "drive": ("a drive", "drives"),
 }
 DEPTH_PHRASES = {"front": "front court", "mid": "mid court", "rear": "back court"}
-SIDE_PHRASES = {"forehand": "forehand side", "middle": "middle", "backhand": "backhand side"}
+SIDE_PHRASES = {"forehand": "forehand side", "backhand": "backhand side"}
 SERVE_DEPTH_PHRASES = {"front": "short", "mid": "mid-depth", "rear": "long"}
 ERROR_REASON_PHRASES = {
     "out": "hit out",
@@ -228,8 +228,7 @@ def serve_landing_phrase(landing_zone: str) -> str:
     if landing_zone == "not_over_net":
         return "into the net"
     depth, side = landing_zone.split("_")
-    side_text = "down the middle" if side == "middle" else f"to the receiver's {side}"
-    return f"{SERVE_DEPTH_PHRASES[depth]} {side_text}"
+    return f"{SERVE_DEPTH_PHRASES[depth]} to the receiver's {side}"
 
 
 def tendency_text(family: str, condition: str, outcome: str, k: int, n: int) -> str:

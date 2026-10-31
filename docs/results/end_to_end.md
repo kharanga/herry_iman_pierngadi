@@ -48,10 +48,10 @@ batch was dropped.
 | Shot rows | 287: 251 detected hits + 36 inferred serves (one per rally, 0.76 s before the first detected hit) |
 | Rows with a landing point and a prediction | 251 (the 36 rally-ending shots have no reply, so no landing and no prediction) |
 | Serve rows | 36, every one with the server's feet (fixed camera, the serve frame is always in view); predicted `serve` 35, `net` 1 |
-| `me` | 149 rows, 124 predicted: net 33, drive 24, drop 22, serve 22, lift 11, clear 7, smash 5 |
-| `opp` | 138 rows, 127 predicted: net 47, drive 29, lift 16, serve 13, clear 12, drop 5, smash 5 |
-| Habit entries | `me` 124 (30 zone, 87 reply, 7 serve placement), `opp` 135 (32, 98, 5); winner and error families empty (no rally results) |
-| Report | `data/reports/stand_in_set1/index.html`, 346 KB; phone-width screenshot `data/checks/report/stand_in_set1_390px.png` |
+| `me` | 149 rows, 124 predicted: net 35, drop 23, serve 22, drive 20, lift 12, clear 7, smash 5 |
+| `opp` | 138 rows, 127 predicted: net 45, drive 28, lift 18, serve 13, clear 11, drop 6, smash 6 |
+| Habit entries | `me` 106 (21 zone, 81 reply, 4 serve placement), `opp` 114 (22, 89, 3); winner and error families empty (no rally results) |
+| Report | `data/reports/stand_in_set1/index.html`, 298 KB; phone-width screenshot `data/checks/report/stand_in_set1_390px.png` |
 | Database | the 287 rows are also in `data/scout.duckdb` (`source = 'own'`, `match_id = 'stand_in_set1'`), so `report.serve stand_in_set1 --me me` works from the real command |
 
 **Doubled serves.** When the movement detector catches the serve itself, the serve rule puts a second serve row

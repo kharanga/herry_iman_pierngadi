@@ -6,13 +6,10 @@ COURT_WIDTH_M = 6.1
 COURT_LENGTH_M = 13.4
 NET_Y_M = COURT_LENGTH_M / 2
 CENTRE_X_M = COURT_WIDTH_M / 2
-DEPTH_BAND_M = NET_Y_M / 3
-MIDDLE_COLUMN_WIDTH_M = 1.0
-MIDDLE_COLUMN_LEFT_EDGE_X_M = CENTRE_X_M - MIDDLE_COLUMN_WIDTH_M / 2
-MIDDLE_COLUMN_RIGHT_EDGE_X_M = CENTRE_X_M + MIDDLE_COLUMN_WIDTH_M / 2
-CROSS_COURT_MIN_LATERAL_M = 1.0
+SHORT_SERVICE_LINE_FROM_NET_M = 1.98
+DEPTH_EDGES_M = (SHORT_SERVICE_LINE_FROM_NET_M, 3.50)
 DEPTH_NAMES = ("front", "mid", "rear")
-SIDE_NAMES = ("forehand", "middle", "backhand")
+SIDE_NAMES = ("forehand", "backhand")
 NOT_OVER_NET_ZONE = "not_over_net"
 ZONE_NAMES = tuple(f"{depth}_{side}" for depth in DEPTH_NAMES for side in SIDE_NAMES)
 LANDING_ZONE_NAMES = ZONE_NAMES + (NOT_OVER_NET_ZONE,)
@@ -77,19 +74,22 @@ def hitter_is_on_far_half(
 
 
 def depth_name(distance_from_net_m: float) -> str:
-    band_index = min(int(max(distance_from_net_m, 0.0) // DEPTH_BAND_M), len(DEPTH_NAMES) - 1)
+    band_index = sum(distance_from_net_m >= edge_m for edge_m in DEPTH_EDGES_M)
     return DEPTH_NAMES[band_index]
 
 
-def is_in_middle_column(x_m: float) -> bool:
-    return MIDDLE_COLUMN_LEFT_EDGE_X_M <= x_m <= MIDDLE_COLUMN_RIGHT_EDGE_X_M
+def depth_band_from_net_m(depth: str) -> tuple[float, float]:
+    edges = (0.0, *DEPTH_EDGES_M, NET_Y_M)
+    band_index = DEPTH_NAMES.index(depth)
+    return edges[band_index], edges[band_index + 1]
+
+
+def is_right_of_centre(x_m: float) -> bool:
+    return x_m > CENTRE_X_M
 
 
 def side_name(x_m: float, left_handed: bool = False) -> str:
-    if is_in_middle_column(x_m):
-        return "middle"
-    is_right_of_centre = x_m > CENTRE_X_M
-    return "forehand" if is_right_of_centre != left_handed else "backhand"
+    return "forehand" if is_right_of_centre(x_m) != left_handed else "backhand"
 
 
 def zone_in_near_half(point: Point, left_handed: bool = False) -> str:
@@ -111,10 +111,9 @@ def landing_zone(landing: Point | None, receiver_left_handed: bool = False) -> s
 
 
 def is_cross_court(hit: Point | None, landing: Point | None) -> bool | None:
-    if is_missing(hit) or is_missing(landing):
+    if is_missing(hit) or is_missing(landing) or not is_on_far_half(landing):
         return None
-    on_opposite_sides_of_centre = (hit[0] > CENTRE_X_M) != (landing[0] > CENTRE_X_M)
-    return on_opposite_sides_of_centre and abs(landing[0] - hit[0]) >= CROSS_COURT_MIN_LATERAL_M
+    return is_right_of_centre(hit[0]) != is_right_of_centre(landing[0])
 
 
 def hitter_point_for_zone(hit: Point | None, player: Point | None) -> Point | None:

@@ -16,8 +16,8 @@ diagram, to check by eye that positions, normalization, zones and `is_cross` mak
 - Prints one line per shot and the saved path.
 
 The image shows the court in meters with the hitter's half at the bottom: white lines
-are the court lines, thin gray lines the depth bands (front/mid/rear) and the
-edges of the middle column, the black line the net. Each shot is a numbered yellow dot (hit)
+are the court lines, thin gray lines the depth-band edges (1.98 m, the short service line, and 3.50 m from the net)
+and the centre line continued through the front bands, the black line the net. Each shot is a numbered yellow dot (hit)
 with a red arrow to its landing; blue dots are the receivers at the hit. The legend
 lists each shot's type, group, hitter, zones, straight/cross and source rally.
 
@@ -77,7 +77,7 @@ On a database built in a temp folder:
 >>> len(shots), (temp_dir / "checks" / "random_shots.png").exists()
 (10, True)
 >>> shots[0]["type_en"], shots[0]["hit_zone"], shots[0]["landing_zone"], shots[0]["is_cross"]
-('clear', 'rear_backhand', 'rear_middle', True)
+('clear', 'rear_backhand', 'rear_backhand', True)
 >>> shutil.rmtree(temp_dir)
 
 ```

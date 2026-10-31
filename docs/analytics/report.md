@@ -103,7 +103,7 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 >>> bullet["evidence"], bullet["zone_rect"], sorted(bullet)
 ('4 of 9', None, ['evidence', 'family', 'id', 'k', 'label_source', 'n', 'rate', 'reply_rects', 'sets', 'text', 'zone_rect'])
 >>> [tuple(round(value, 2) for value in rect) for rect in bullet["reply_rects"]]
-[(3.55, 4.47, 6.1, 6.7), (3.55, 11.17, 6.1, 13.4)]
+[(3.05, 4.72, 6.1, 6.7), (3.05, 10.2, 6.1, 13.4)]
 >>> [(group["family"], len(group["bullets"])) for group in family_groups([bullet, dict(bullet, family="zone_mix"), bullet])]
 [('zone_mix', 1), ('response', 2)]
 >>> default_me(["A", "B"]), default_me(["me", "opp"]), opponent_of("B", ["A", "B"])
@@ -131,20 +131,20 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 ```python
 >>> from report.court_svg import *
 >>> tuple(round(value, 2) for value in zone_rect_in_near_half("rear_backhand"))
-(0.0, 0.0, 2.55, 2.23)
+(0.0, 0.0, 3.05, 3.2)
 >>> tuple(round(value, 2) for value in zone_rect_in_near_half("rear_backhand", left_handed=True))
-(3.55, 0.0, 6.1, 2.23)
+(3.05, 0.0, 6.1, 3.2)
 >>> tuple(round(value, 2) for value in bullet_zone_rect(False, "zone_mix", "rear_backhand"))
-(3.55, 11.17, 6.1, 13.4)
->>> tuple(round(value, 2) for value in bullet_zone_rect(False, "serve_placement", "front_middle"))
-(2.55, 4.47, 3.55, 6.7)
+(3.05, 10.2, 6.1, 13.4)
+>>> tuple(round(value, 2) for value in bullet_zone_rect(False, "serve_placement", "front_forehand"))
+(3.05, 4.72, 6.1, 6.7)
 >>> bullet_zone_rect(True, "response", "drop cross") is None, bullet_zone_rect(True, "serve_placement", "not_over_net") is None
 (True, True)
 >>> svg = court_svg(bullet_zone_rect(True, "zone_mix", "front_forehand"), "example")
->>> svg.startswith('<svg class="court"'), svg.count("<line") , '<rect x="35.5" y="67" width="25.5" height="22.3" class="zone"/>' in svg
+>>> svg.startswith('<svg class="court"'), svg.count("<line") , '<rect x="30.5" y="67" width="30.5" height="19.8" class="zone"/>' in svg
 (True, 13, True)
 >>> [tuple(round(value, 2) for value in rect) for rect in reply_zone_rects(True, "net|front_forehand|front_backhand")]
-[(0.0, 6.7, 2.55, 8.93), (0.0, 4.47, 2.55, 6.7)]
+[(0.0, 6.7, 3.05, 8.68), (0.0, 4.72, 3.05, 6.7)]
 >>> reply_svg = court_svg(None, "example", reply_zone_rects(True, "net|front_forehand|front_backhand"))
 >>> reply_svg.count('class="zone from"'), reply_svg.count('class="zone"'), reply_svg.count("<polygon"), "id=" in reply_svg
 (1, 1, 1, False)
@@ -193,7 +193,7 @@ matches in the same table don't count, since every player is counted only from t
 >>> connection = duckdb.connect(str(database_path))
 >>> _ = connection.execute(SCHEMA_PATH.read_text())
 >>> def rally_rows(source, match_id, rally, hitter, receiver, hitter_shot, winner):
-...     serve = (source, match_id, 1, rally, 1, rally * 100, receiver, "short service", "serve", "front_middle", "front_middle", None, None)
+...     serve = (source, match_id, 1, rally, 1, rally * 100, receiver, "short service", "serve", "front_backhand", "front_forehand", None, None)
 ...     reply = (source, match_id, 1, rally, 2, rally * 100 + 30, hitter, hitter_shot, hitter_shot, "rear_backhand", "front_forehand",
 ...              winner, "out" if winner == receiver else "opponent winner")
 ...     return [serve, reply]
@@ -213,7 +213,7 @@ matches in the same table don't count, since every player is counted only from t
 >>> [(group["heading"], [bullet["evidence"] for bullet in group["bullets"]]) for group in report["opponent"]["groups"]]
 [('Shots by court zone', ['8 of 10', '2 of 10']), ("Replies to the other player's shot", ['8 of 10', '2 of 10']), ('Winning shots', ['8 of 10', '2 of 10'])]
 >>> [bullet["text"] for bullet in report["me"]["bullets"]]
-['Serves short down the middle 10 of 10 times.']
+["Serves short to the receiver's forehand 10 of 10 times."]
 >>> page = render_page(report)
 >>> page.count("<li>"), page.count("<h3>"), "2 of 10" in page, "<script" in page
 (7, 4, True, False)

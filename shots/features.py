@@ -2,7 +2,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from analytics.court import CENTRE_X_M, COURT_LENGTH_M, COURT_WIDTH_M, CROSS_COURT_MIN_LATERAL_M, NET_Y_M
+from analytics.court import COURT_LENGTH_M, COURT_WIDTH_M, NET_Y_M, is_right_of_centre
 
 FEATURE_SET_NAMES = ("contact", "feet")
 SHIPPED_FEATURE_SET = "feet"
@@ -89,8 +89,7 @@ def feet_landing_columns(shot_rows: pd.DataFrame) -> tuple[np.ndarray, np.ndarra
 
 
 def is_cross_court_columns(hit_x: np.ndarray, landing_x: np.ndarray) -> np.ndarray:
-    on_opposite_sides_of_centre = (hit_x > CENTRE_X_M) != (landing_x > CENTRE_X_M)
-    is_cross = (on_opposite_sides_of_centre & (np.abs(landing_x - hit_x) >= CROSS_COURT_MIN_LATERAL_M)).astype(float)
+    is_cross = (is_right_of_centre(hit_x) != is_right_of_centre(landing_x)).astype(float)
     return np.where(np.isnan(hit_x) | np.isnan(landing_x), np.nan, is_cross)
 
 

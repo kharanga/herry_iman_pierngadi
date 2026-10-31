@@ -60,15 +60,16 @@ only the `source = 'shuttleset'` rows, so `own` rows survive it.
 CHECK constraints reject any other value of `source`, `player`, `getpoint_player`,
 `set_no`, `type_group`, `type_pred`, `hit_zone` and `landing_zone`.
 
-Zones (`analytics.court.ZONE_NAMES`): each half is 3 depths x 3 sides = 9 zones.
+Zones (`analytics.court.ZONE_NAMES`): each half is 3 depth bands x 2 sides = 6 zones, with the
+band edges on the painted lines.
 
 | Depth (from the net) | Side | Zones |
 |---|---|---|
-| front 0-2.23 m, mid 2.23-4.47 m, rear beyond | forehand / middle / backhand | `front_forehand`, `front_middle`, `front_backhand`, `mid_forehand`, `mid_middle`, `mid_backhand`, `rear_forehand`, `rear_middle`, `rear_backhand` |
+| front 0-1.98 m (to the short service line), mid 1.98-3.50 m, rear 3.50 m and beyond | forehand / backhand, split at the centre line | `front_forehand`, `front_backhand`, `mid_forehand`, `mid_backhand`, `rear_forehand`, `rear_backhand` |
 
-The middle column is `MIDDLE_COLUMN_WIDTH_M` = 1.0 m wide, centred on the centre line
-(x 2.55-3.55 m, edges count as middle). Forehand and backhand swap for a left-handed
-player; middle does not. `landing_zone` can also be `not_over_net`. Details in `court.md`.
+Forehand and backhand swap for a left-handed player. `landing_zone` can also be `not_over_net`.
+`is_cross` is TRUE when the hit and landing points are on opposite sides of the centre line, NULL
+for a `not_over_net` landing. Details in `court.md`.
 
 Positions are in court meters (origin near-left corner, `x` 0-6.1 across, `y` 0-13.4
 along, net at 6.7; see `court.md`), turned so that the **hitter is on the near half**.
@@ -102,15 +103,20 @@ How the ShuttleSet columns are filled:
 
 ## `build_shots(database_path, left_handed_player_names=LEFT_HANDED_PLAYER_NAMES)`
 
-Creates `shots` if needed and replaces its ShuttleSet rows, in one transaction.
+Recreates `shots` from `schema.sql` with the ShuttleSet rows, in one transaction, and keeps every
+`own` row: the rows are read before the table is dropped and written back with their `hit_zone`,
+`landing_zone` and `is_cross` re-derived from their stored (normalized) coordinates by
+`court.shot_geometry`, so a zone-definition change reaches own rows too without re-tracking.
+Own rows are assumed right-handed when re-derived (handedness is not stored). Their `rowid`s change.
 
 - `database_path` (`Path`): a database with `raw_shots`, `matches`, `homography`.
 - `left_handed_player_names` (iterable of `str`): player names as in `matches.winner` / `matches.loser`.
 - Returns a `dict`: `raw_shots` (row count), `shuttleset_shots` (rows written),
-  `duplicates_dropped` (the difference).
+  `duplicates_dropped` (the difference), `own_shots` (rows kept).
 - Errors (the transaction rolls back, so the database keeps its previous `shots`):
   - `duckdb.CatalogException` if `raw_shots`, `matches` or `homography` is missing.
-  - `ShotsSchemaMismatchError` if an existing `shots` table has different columns or types than `schema.sql`.
+  - `duckdb.CatalogException` / `BinderException` if an existing `shots` table lacks a column of `schema.sql`
+    (its own rows cannot be read back in full); a table with the current columns but older CHECKs is simply recreated.
   - `analytics.shot_types.UnmappedShotTypeError` if a shot type has no group.
   - `duckdb.IOException` if the database cannot be opened, e.g. its folder does not exist.
 
@@ -126,7 +132,7 @@ Build into a temp folder (never `data/scout.duckdb`):
 >>> database_path = temp_dir / "scout.duckdb"
 >>> build_database(SHUTTLESET_SET_DIR, database_path)
 >>> build_shots(database_path)
-{'raw_shots': 36484, 'shuttleset_shots': 36483, 'duplicates_dropped': 1}
+{'raw_shots': 36484, 'shuttleset_shots': 36483, 'duplicates_dropped': 1, 'own_shots': 0}
 >>> connection = duckdb.connect(str(database_path))
 >>> connection.execute(
 ...     "SELECT type_group, COUNT(*) FROM shots GROUP BY type_group ORDER BY COUNT(*) DESC LIMIT 3"
@@ -137,18 +143,26 @@ Build into a temp folder (never `data/scout.duckdb`):
 
 ```
 
-Own rows survive a rebuild:
+Own rows survive a rebuild, with their zones re-derived from their coordinates (the second row's
+stored `hit_zone` is wrong on purpose):
 
 ```python
 >>> _ = connection.execute(
 ...     "INSERT INTO shots (source, match_id, set_no, rally, ball_round, player) VALUES ('own', 'club_2026_10_20', 1, 1, 1, 'me')"
 ... )
+>>> _ = connection.execute(
+...     "INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, hit_x, hit_y, landing_x, landing_y, player_x, player_y, hit_zone, landing_zone, is_cross) "
+...     "VALUES ('own', 'club_2026_10_20', 1, 1, 2, 'opp', 1.0, 1.0, 5.0, 12.0, 1.0, 1.0, 'front_forehand', 'front_forehand', FALSE)"
+... )
 >>> connection.close()
->>> build_shots(database_path)["shuttleset_shots"]
-36483
+>>> summary = build_shots(database_path)
+>>> summary["shuttleset_shots"], summary["own_shots"]
+(36483, 2)
 >>> connection = duckdb.connect(str(database_path))
 >>> connection.execute("SELECT source, COUNT(*) FROM shots GROUP BY source ORDER BY source").fetchall()
-[('own', 1), ('shuttleset', 36483)]
+[('own', 2), ('shuttleset', 36483)]
+>>> connection.execute("SELECT ball_round, hit_zone, landing_zone, is_cross FROM shots WHERE source = 'own' ORDER BY ball_round").fetchall()
+[(1, None, None, None), (2, 'rear_backhand', 'rear_backhand', True)]
 
 ```
 
@@ -170,7 +184,7 @@ True
 >>> shots_constraints(connection) == schema_columns_and_constraints()[1]
 True
 >>> [constraint for constraint in shots_constraints(connection) if constraint[1] == ("hit_zone",)][0][2].count("_middle")
-3
+0
 
 ```
 
@@ -179,16 +193,16 @@ True
 Runs `schema.sql` (`CREATE TABLE IF NOT EXISTS`), then checks the table's columns and
 constraints. `CREATE TABLE IF NOT EXISTS` leaves an older table as it is, so this is what
 catches a table built from an older `schema.sql`, for example one whose zone CHECK still
-allows only the old 6 zones.
+allows the earlier 9 zones with a middle column. `build_shots` recreates such a table itself.
 Errors: `ShotsSchemaMismatchError` if the columns or the constraints differ from `schema.sql`.
 
 ## `ShotsSchemaMismatchError(existing_columns, expected_columns, existing_constraints=None, expected_constraints=None)`
 
 A `RuntimeError` with `existing_columns`, `expected_columns`, `existing_constraints` and
 `expected_constraints` attributes (constraints default to `[]`). The message lists the
-constraints that differ. To move to a new schema, drop the `shots` table and run
-`build_shots` again. Copy any `own` rows out first and re-insert them afterwards:
-dropping the table deletes them.
+constraints that differ. To move to a new schema, run `build_shots`: it recreates the table
+and keeps the `own` rows (below). The error is for the other writers (`shots.predict`,
+`vision.features`), which must not touch a stale table.
 
 ```python
 >>> _ = connection.execute("ALTER TABLE shots ADD COLUMN speed DOUBLE")
@@ -201,13 +215,13 @@ dropping the table deletes them.
 
 ```
 
-A table with the right columns but an older zone CHECK (the 6 zones without middle) is
+A table with the right columns but the older zone CHECK (the 9 zones with a middle column) is
 also rejected:
 
 ```python
->>> six_zone_schema_sql = SCHEMA_PATH.read_text().replace("'front_middle', ", "").replace("'mid_middle', ", "").replace("'rear_middle', ", "")
+>>> nine_zone_schema_sql = SCHEMA_PATH.read_text().replace("'front_backhand', ", "'front_middle', 'front_backhand', ").replace("'mid_backhand', ", "'mid_middle', 'mid_backhand', ").replace("'rear_backhand'", "'rear_middle', 'rear_backhand'")
 >>> old_connection = duckdb.connect(":memory:")
->>> _ = old_connection.execute(six_zone_schema_sql)
+>>> _ = old_connection.execute(nine_zone_schema_sql)
 >>> shots_columns(old_connection) == schema_columns()
 True
 >>> try:

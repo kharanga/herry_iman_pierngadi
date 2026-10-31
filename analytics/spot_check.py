@@ -5,15 +5,7 @@ import cv2
 import duckdb
 import numpy as np
 
-from analytics.court import (
-    CENTRE_X_M,
-    COURT_LENGTH_M,
-    COURT_WIDTH_M,
-    DEPTH_BAND_M,
-    MIDDLE_COLUMN_LEFT_EDGE_X_M,
-    MIDDLE_COLUMN_RIGHT_EDGE_X_M,
-    NET_Y_M,
-)
+from analytics.court import CENTRE_X_M, COURT_LENGTH_M, COURT_WIDTH_M, DEPTH_EDGES_M, NET_Y_M
 
 DATABASE_PATH = Path("data/scout.duckdb")
 SPOT_CHECK_PATH = Path("data/checks/shots/random_shots.png")
@@ -23,7 +15,7 @@ PIXELS_PER_METER = 60
 MARGIN_PIXELS = 50
 LEGEND_WIDTH_PIXELS = 720
 SINGLES_SIDELINE_INSET_M = 0.46
-SHORT_SERVICE_LINE_FROM_NET_M = 1.98
+SHORT_SERVICE_LINE_FROM_NET_M = DEPTH_EDGES_M[0]
 DOUBLES_LONG_SERVICE_LINE_FROM_BASELINE_M = 0.76
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -90,12 +82,12 @@ def court_lines_m() -> list[tuple[tuple[float, float], tuple[float, float]]]:
 
 def zone_boundaries_m() -> list[tuple[tuple[float, float], tuple[float, float]]]:
     depth_lines = [
-        ((0.0, NET_Y_M + direction * band * DEPTH_BAND_M), (COURT_WIDTH_M, NET_Y_M + direction * band * DEPTH_BAND_M))
+        ((0.0, NET_Y_M + direction * edge_m), (COURT_WIDTH_M, NET_Y_M + direction * edge_m))
         for direction in (-1, 1)
-        for band in (1, 2)
+        for edge_m in DEPTH_EDGES_M
     ]
-    side_lines = [((edge_x, 0.0), (edge_x, COURT_LENGTH_M)) for edge_x in (MIDDLE_COLUMN_LEFT_EDGE_X_M, MIDDLE_COLUMN_RIGHT_EDGE_X_M)]
-    return depth_lines + side_lines
+    centre_line_through_the_front_bands = ((CENTRE_X_M, NET_Y_M - DEPTH_EDGES_M[0]), (CENTRE_X_M, NET_Y_M + DEPTH_EDGES_M[0]))
+    return depth_lines + [centre_line_through_the_front_bands]
 
 
 def blank_court_image() -> np.ndarray:
@@ -142,7 +134,7 @@ def draw_legend(image: np.ndarray, shots: list[dict]) -> None:
         "so the hitter is on the near (bottom) half.",
         "yellow = hit (hitter's feet), red arrow -> landing",
         "(where the receiver reached it), blue = receiver",
-        "at the hit. Gray lines = depth bands and the middle column.",
+        "at the hit. Gray lines = depth bands and the centre line.",
         "",
     ]
     for shot_number, shot in enumerate(shots, start=1):

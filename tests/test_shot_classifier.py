@@ -184,7 +184,10 @@ def test_feet_is_cross_is_recomputed_from_the_two_feet_points():
     )
     feet = shot_features(shot_rows, "feet")
     assert feet["landing_x"].tolist()[:3] == pytest.approx([COURT_WIDTH_M - 1.0, COURT_WIDTH_M - 5.0, COURT_WIDTH_M - 2.6])
-    assert feet["is_cross"].tolist()[:3] == [1.0, 0.0, 0.0]
+    assert feet["is_cross"].tolist()[:3] == [1.0, 0.0, 1.0]
+    centre_line = shot_rows.iloc[[1]].assign(player_x=3.05, next_player_x=3.05)
+    assert shot_features(centre_line, "feet")["is_cross"].tolist() == [0.0]
+    assert shot_features(centre_line.assign(next_player_x=3.04), "feet")["is_cross"].tolist() == [1.0]
     assert np.isnan(feet["is_cross"].iloc[3])
 
 
