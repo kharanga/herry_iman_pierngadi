@@ -185,6 +185,10 @@ def jitter_table(comparison: dict) -> str:
     return "\n".join(lines)
 
 
+def metres_cell(metres: float | None) -> str:
+    return "no shots" if metres is None else f"{metres:.2f} m"
+
+
 def landing_offset_table(comparison: dict) -> str:
     offsets = comparison["landing_offset_m"]
     return "\n".join(
@@ -192,9 +196,9 @@ def landing_offset_table(comparison: dict) -> str:
             "| Reply hitter's feet vs labelled landing point | |",
             "|---|---|",
             f"| Shots | {thousands(offsets['shots'])} |",
-            f"| Median distance | {offsets['p50_m']:.2f} m |",
-            f"| 90th percentile | {offsets['p90_m']:.2f} m |",
-            f"| Mean | {offsets['mean_m']:.2f} m |",
+            f"| Median distance | {metres_cell(offsets['p50_m'])} |",
+            f"| 90th percentile | {metres_cell(offsets['p90_m'])} |",
+            f"| Mean | {metres_cell(offsets['mean_m'])} |",
         ]
     )
 

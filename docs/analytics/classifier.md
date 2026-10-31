@@ -299,8 +299,29 @@ evaluation, fold by fold).
   `matches`, `folds`, `accuracy_mean`, `accuracy_std`, `majority_accuracy_mean`, `out_of_fold_accuracy`,
   `per_group`, `confusion_matrix`, `subsets`, `variants`).
 - Errors: as `train_classifier`.
-- Helpers: `rows_predictable_with_every_feature_set(labelled_rows)`, `landing_offset_summary(shot_rows)`,
-  `evaluate_feature_set(shot_rows, labelled_rows, feature_set, fold_count, random_seed)`, `summary_lines(comparison)`.
+- Helpers: `rows_predictable_with_every_feature_set(labelled_rows)`, `landing_offset_summary(shot_rows)` (with no
+  shot that has both a labelled landing and a reply hitter: `shots` 0 and `None` for every distance, and the results
+  table prints "no shots"), `evaluate_feature_set(shot_rows, labelled_rows, feature_set, fold_count, random_seed)`,
+  `summary_lines(comparison)`.
+
+```python
+>>> import pandas as pd
+>>> from shots.compare_hit_points import landing_offset_summary
+>>> from shots.results_tables import landing_offset_table
+>>> rows = pd.DataFrame({"landing_x": [1.0, 2.0], "landing_y": [12.0, 11.0], "next_player_x": [5.0, 4.4], "next_player_y": [1.4, 2.0]})
+>>> {key: round(value, 2) for key, value in landing_offset_summary(rows).items()}
+{'shots': 2, 'mean_m': 0.3, 'p50_m': 0.3, 'p90_m': 0.46}
+>>> landing_offset_summary(rows.iloc[:0])
+{'shots': 0, 'mean_m': None, 'p50_m': None, 'p90_m': None}
+>>> print(landing_offset_table({"landing_offset_m": landing_offset_summary(rows.iloc[:0])}))
+| Reply hitter's feet vs labelled landing point | |
+|---|---|
+| Shots | 0 |
+| Median distance | no shots |
+| 90th percentile | no shots |
+| Mean | no shots |
+
+```
 
 ## `shots/results_tables.py`
 

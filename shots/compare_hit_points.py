@@ -25,6 +25,8 @@ def landing_offset_summary(shot_rows: pd.DataFrame) -> dict:
     feet_landing_x, feet_landing_y = feet_landing_columns(shot_rows)
     offsets = np.hypot(feet_landing_x - shot_rows["landing_x"].to_numpy(float), feet_landing_y - shot_rows["landing_y"].to_numpy(float))
     offsets = offsets[~np.isnan(offsets)]
+    if len(offsets) == 0:
+        return {"shots": 0, "mean_m": None, **{f"p{int(quantile * 100)}_m": None for quantile in LANDING_OFFSET_QUANTILES}}
     return {
         "shots": int(len(offsets)),
         "mean_m": float(np.mean(offsets)),
