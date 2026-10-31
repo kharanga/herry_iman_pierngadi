@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from analytics.court import CENTRE_X_M, DEPTH_EDGES_M, DEPTH_NAMES, depth_band_from_net_m, rotate_half_turn, zone_in_near_half
 from vision.alignment import label_scale, open_video, read_frame
 
 COURT_WIDTH_M = 6.1
@@ -23,6 +24,9 @@ CALIBRATION_DIR = Path("data/calibration")
 SHUTTLESET_HOMOGRAPHY_CSV = Path("data/CoachAI-Projects/ShuttleSet/set/homography.csv")
 LINE_COLOR_BGR = (0, 0, 255)
 CORNER_COLOR_BGR = (0, 255, 255)
+ZONE_LINE_COLOR_BGR = (0, 255, 255)
+ZONE_TEXT_COLOR_BGR = (255, 255, 255)
+ZONES_CHECK_DIR = Path("data/checks/court")
 
 
 def court_corner_meters() -> np.ndarray:
@@ -227,6 +231,66 @@ def draw_court_lines(
         start_pixel, end_pixel = np.round(court_to_pixels(homography, [start, end])).astype(int)
         cv2.line(drawn_frame, tuple(map(int, start_pixel)), tuple(map(int, end_pixel)), color, thickness, cv2.LINE_AA)
     return drawn_frame
+
+
+def zone_boundary_segments() -> dict[str, tuple[tuple[float, float], tuple[float, float]]]:
+    segments = {}
+    for index, edge_m in enumerate(DEPTH_EDGES_M, start=1):
+        segments[f"near_depth_{index}"] = ((0.0, NET_Y_M - edge_m), (COURT_WIDTH_M, NET_Y_M - edge_m))
+        segments[f"far_depth_{index}"] = ((0.0, NET_Y_M + edge_m), (COURT_WIDTH_M, NET_Y_M + edge_m))
+    segments["centre"] = ((CENTRE_X_M, 0.0), (CENTRE_X_M, COURT_LENGTH_M))
+    return segments
+
+
+def zone_label_points(left_handed: bool = False) -> dict[tuple[str, str], tuple[float, float]]:
+    column_centres = (CENTRE_X_M / 2, (CENTRE_X_M + COURT_WIDTH_M) / 2)
+    labels = {}
+    for depth in DEPTH_NAMES:
+        near_edge_m, far_edge_m = depth_band_from_net_m(depth)
+        distance_m = (near_edge_m + far_edge_m) / 2
+        for x_m in column_centres:
+            near = (x_m, NET_Y_M - distance_m)
+            far = (x_m, NET_Y_M + distance_m)
+            labels[("near", zone_in_near_half(near, left_handed))] = near
+            labels[("far", zone_in_near_half(rotate_half_turn(far), left_handed))] = far
+    return labels
+
+
+def draw_zones(frame: np.ndarray, homography: np.ndarray, left_handed: bool = False) -> np.ndarray:
+    drawn_frame = draw_court_lines(frame, homography, LINE_COLOR_BGR, 2)
+    for start, end in zone_boundary_segments().values():
+        start_pixel, end_pixel = np.round(court_to_pixels(homography, [start, end])).astype(int)
+        cv2.line(drawn_frame, tuple(map(int, start_pixel)), tuple(map(int, end_pixel)), ZONE_LINE_COLOR_BGR, 1, cv2.LINE_AA)
+    for (half, name), point in zone_label_points(left_handed).items():
+        x, y = np.round(court_to_pixels(homography, [point])[0]).astype(int)
+        scale = 0.45 if half == "far" else 0.6
+        text_size = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0]
+        origin = (int(x - text_size[0] / 2), int(y + text_size[1] / 2))
+        cv2.putText(drawn_frame, name, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(drawn_frame, name, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, ZONE_TEXT_COLOR_BGR, 1, cv2.LINE_AA)
+    caption = "near half: my hit zones (right-handed, forehand on my right); far half: landing zones of my shots, named from the receiver's side as in the shots table"
+    cv2.putText(drawn_frame, caption, (10, drawn_frame.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
+    cv2.putText(drawn_frame, caption, (10, drawn_frame.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, ZONE_TEXT_COLOR_BGR, 1, cv2.LINE_AA)
+    return drawn_frame
+
+
+def zones_image_path(video_path: Path, checks_dir: Path = ZONES_CHECK_DIR) -> Path:
+    return checks_dir / f"{video_id(video_path)}_zones.jpg"
+
+
+def write_zones_image(video_path: Path, frame_index: int, calibration_dir: Path = CALIBRATION_DIR, checks_dir: Path = ZONES_CHECK_DIR, left_handed: bool = False) -> Path:
+    calibration = load_calibration(calibration_path(Path(video_path), calibration_dir))
+    capture = open_video(Path(video_path))
+    try:
+        frame = read_frame(capture, frame_index)
+    finally:
+        capture.release()
+    if frame is None:
+        raise ValueError(f"could not read frame {frame_index} of {video_path}")
+    output_path = zones_image_path(Path(video_path), checks_dir)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(output_path), draw_zones(frame, np.array(calibration["pixel_to_court_homography"]), left_handed))
+    return output_path
 
 
 def draw_point_markers(frame: np.ndarray, calibration: dict, color: tuple[int, int, int] = CORNER_COLOR_BGR) -> np.ndarray:
@@ -642,6 +706,8 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     )
     corner_source.add_argument("--pick-points", action="store_true", help="open a click window where you choose which court point you click")
     corner_source.add_argument("--list-points", action="store_true", help="print the names of the known court points and exit")
+    corner_source.add_argument("--zones", action="store_true", help="draw the 6 shot zones per half (front/mid/rear x forehand/backhand) on --frame through the saved calibration, to data/checks/court/<video id>_zones.jpg")
+    parser.add_argument("--left-handed", action="store_true", help="with --zones: name the zones for a left-handed near player")
     parser.add_argument("--output-dir", type=Path, default=CALIBRATION_DIR, help="root folder for calibrations")
     return parser.parse_args(arguments)
 
@@ -653,6 +719,9 @@ def main(arguments: list[str]) -> int:
             print(f"{name}: ({x_m:.2f}, {y_m:.2f}) m")
         return 0
     try:
+        if parsed.zones:
+            print(f"saved {write_zones_image(parsed.video, parsed.frame, parsed.output_dir, left_handed=parsed.left_handed)}")
+            return 0
         corner_pixels = parsed.corners
         if parsed.shuttleset_match:
             corner_pixels = shuttleset_corner_pixels(parsed.shuttleset_match)
