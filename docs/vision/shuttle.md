@@ -1,5 +1,7 @@
 # vision/shuttle.py and vision/tracknet.py
 
+> Shuttle tracking is **not in the pipeline** any more: hits come from the players' movement (`docs/vision/movement.md`). The module, its tests and this page stay for the record and for anyone who wants the shuttle track.
+
 Shuttle tracking: finds the shuttle in every frame of a video range and writes its
 pixel position and whether it is visible. It uses the pretrained TrackNetV3 models
 (Chen and Hsu, [github.com/qaz812345/TrackNetV3](https://github.com/qaz812345/TrackNetV3),

@@ -1,5 +1,7 @@
 # vision/camera.py
 
+> The camera step is **not in the pipeline** any more: it served contact estimation (`vision/contact.py`), which left with the shuttle. The module, its tests and this page stay for the record.
+
 A full pinhole camera for one video: focal length, rotation and position, so a pixel
 can be turned into a line of sight in court meters (and a 3-D point into a pixel).
 The floor calibration (`vision/court.py`) only maps the floor plane; the shuttle and

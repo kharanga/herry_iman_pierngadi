@@ -1,5 +1,37 @@
 # vision/hits.py
 
+`python -m vision.hits` is the pipeline's hit step: it detects hit frames, hitters and
+rallies from the two players' tracks and writes `hits_<start>_<end>.csv` and
+`rallies_<start>_<end>.csv` under `data/hits/<video id>/`. The detection itself lives in
+`vision/movement.py` (`docs/vision/movement.md`); `vision.hits.main` runs
+`vision.movement.main` with the same arguments, so the two commands are
+interchangeable and `scout.run` keeps calling `vision.hits`.
+
+## Command
+
+```
+.venv/bin/python -m vision.hits <video> --start N --end N [--evaluate MATCH_FOLDER SET_NO] [--spot-check N] [--no-serves]
+```
+
+Needs the player tracks of exactly that range (`python -m vision.players <video>
+--start N --end N`, which writes `positions_*.csv` and `boxes_*.csv`) and the movement
+hit model (`data/models/movement_hits.joblib`, `python -m vision.movement --train`).
+Arguments, output columns, printed lines and exit codes: `docs/vision/movement.md`
+"Commands". In short: `hits_*.csv` has `rally`, `frame`, `hitter`, `score` (the
+movement score; NaN on an inferred serve row) and `reach` (always NaN now);
+`rallies_*.csv` has `rally`, `start_frame` (the first row, the inferred serve when
+there is one), `end_frame` (both players still, else 70 frames after the last hit) and
+`hits` (rows, serve included).
+
+## The shuttle-based detector (not in the pipeline)
+
+Everything below is the earlier detector, which used the shuttle track
+(`vision/shuttle.py`) and the player boxes. It stays as a library (its functions,
+settings and evaluation helpers are still used: `vision.movement` imports
+`frames_for_fps`, `output_paths`, `match_hits`, `labelled_hits`, `evaluation_lines`
+and the column names from here) and for the record of `docs/results/hits.md`, but no
+command runs it any more.
+
 Hit detection and rally segmentation from the shuttle track (`vision/shuttle.py`) and
 the player boxes (`vision/players.py`) of a frame range. A hit is a sharp change of
 the shuttle's velocity while the shuttle is within reach of a player; the hitter is
@@ -39,13 +71,9 @@ The detection functions (`window_velocities`, `hit_scores`, `reach_distances`,
 only `load_frame_tracks` and `main` read files, and `load_frame_tracks` runs the
 view check on the video to drop broadcast cutaways.
 
-## Command
+### The old command (no longer wired)
 
-```
-.venv/bin/python -m vision.hits <video> --start N --end N [--evaluate MATCH_FOLDER SET_NO]
-```
-
-Needs the tracks of exactly that range from the two tracking commands:
+It needed the tracks of exactly that range from the two tracking commands:
 `python -m vision.players <video> --start N --end N` (writes `positions_*.csv` and
 `boxes_*.csv`) and `python -m vision.shuttle <video> --start N --end N`. The video
 and its calibration are needed too (view check; `--evaluate` maps the labelled
@@ -437,5 +465,4 @@ FileNotFoundError: track file not found: data/shuttle/none/shuttle_1_2.csv (run:
 ```
 
 ### `main(arguments) -> int`
-Command entry point: loads the tracks, detects and segments, writes both files,
-prints the summary (and the evaluation) and returns the exit code.
+Runs `vision.movement.main(arguments)` (the movement detector) and returns its exit code.

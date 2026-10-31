@@ -283,15 +283,23 @@ def test_output_paths_follow_the_video_id():
     assert (hits_file.as_posix(), rallies_file.as_posix()) == ("data/hits/videos_game/hits_5_9.csv", "data/hits/videos_game/rallies_5_9.csv")
 
 
-def test_main_missing_track_file_exits_one_with_the_command_to_run(tmp_path, monkeypatch, capsys):
+def test_main_runs_the_movement_detector_and_names_the_players_command_for_a_missing_track(tmp_path, monkeypatch, capsys):
+    import vision.movement
+
     monkeypatch.chdir(tmp_path)
     assert main(["clip.mp4", "--start", "1", "--end", "2"]) == 1
+    assert "error: video not found" in capsys.readouterr().err
+    monkeypatch.setattr(vision.movement, "require_video_file", lambda video: None)
+    monkeypatch.setattr(vision.movement, "video_fps_and_width", lambda video: (30.0, 1280.0))
+    assert main(["clip.mp4", "--start", "1", "--end", "2"]) == 1
     error = capsys.readouterr().err
-    assert "track file not found" in error and "python -m vision.shuttle clip.mp4 --start 1 --end 2" in error
+    assert "track file not found" in error and "python -m vision.players clip.mp4 --start 1 --end 2" in error and "shuttle" not in error
+    assert main(["clip.mp4"]) == 1 and "give --start and --end" in capsys.readouterr().err
     assert list(tmp_path.rglob("*")) == []
+    assert vision.hits.main.__module__ == "vision.hits" and not hasattr(vision.hits, "parse_arguments")
 
 
-@pytest.mark.parametrize("arguments", [[], ["clip.mp4"], ["clip.mp4", "--start", "x", "--end", "2"], ["clip.mp4", "--start", "1", "--end", "2", "--evaluate", "M"]])
+@pytest.mark.parametrize("arguments", [[], ["clip.mp4", "--start", "x", "--end", "2"], ["clip.mp4", "--start", "1", "--end", "2", "--evaluate", "M"], ["clip.mp4", "--start", "1", "--end", "2", "--ensemble", "weighted"]])
 def test_main_invalid_arguments_exit_two(arguments):
     with pytest.raises(SystemExit) as raised:
         main(arguments)
@@ -313,7 +321,9 @@ def test_saved_tracks_of_rally_four_reproduce_the_documented_numbers():
     assert np.median([detected - labelled for detected, labelled in matched]) == -1
     assert len(rallies) == 1 and rallies["hits"].iloc[0] == 25
     saved_hits = pd.read_csv(PROJECT_ROOT / "data" / "hits" / "match" / "hits_14201_14947.csv")
-    assert saved_hits["frame"].tolist() == hits["frame"].tolist() and saved_hits["hitter"].tolist() == hits["hitter"].tolist()
+    saved_detected = saved_hits[saved_hits["score"].notna()]
+    assert len(saved_detected) == 25 and saved_hits["score"].isna().sum() == 1 and saved_hits["reach"].isna().all()
+    assert saved_detected["frame"].tolist() != hits["frame"].tolist()
     errors = vision.hits.error_breakdown(hits, labels, tracks)
     assert list(errors.columns) == ["kind", "frame", "cause", "inpainted"]
     assert errors["kind"].value_counts().to_dict() == {"miss": 2, "false positive": 1}

@@ -1,5 +1,7 @@
 # vision/contact.py
 
+> Contact estimation is **not in the pipeline** any more: the hit point is the hitter's feet (`docs/vision/features.md`), because the shuttle is no longer tracked. The module, its tests and this page stay for the record.
+
 Estimates where the racket met the shuttle at each detected hit, and its floor point,
 which becomes the shot's `hit_x/hit_y` (`vision/features.py`). ShuttleSet's hit point
 is the floor point under the racket contact, not the hitter's feet; on a reaching shot

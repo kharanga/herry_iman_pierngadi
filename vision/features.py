@@ -10,19 +10,17 @@ import pandas as pd
 from analytics.build_shots import create_shots_table, schema_columns
 from analytics.court import COURT_LENGTH_M, COURT_WIDTH_M, shot_geometry
 from vision.alignment import SHUTTLESET_SET_DIR, label_scale, load_set_shots, open_video
-from vision.camera import camera_path, load_camera
-from vision.contact import contacts_for_range, method_counts
-from vision.court import calibration_path, court_to_pixels, load_calibration, pixels_to_court
-from vision.hits import REST_FRAME_COUNT, REST_RADIUS_PX, frames_for_fps, is_at_rest, output_paths, settings_for_video, video_fps_and_width
-from vision.players import PLAYERS, require_video_file
+from vision.court import calibration_path, court_to_pixels, load_calibration, video_id
+from vision.hits import HITS_DIR, frames_for_fps, output_paths, video_fps_and_width
+from vision.players import PLAYERS, PLAYERS_DIR, effective_fps, frame_stride_of, is_default_dir, require_video_file
 from vision.players import positions_path as player_positions_path
-from vision.shuttle import positions_path as shuttle_positions_path
 
 DATABASE_PATH = Path("data/scout.duckdb")
 CHECKS_DIR = Path("data/checks/features")
 SOURCE_OWN = "own"
-HIT_POINT_SOURCES = ("contact", "feet")
+HIT_POINT_SOURCES = ("feet",)
 SPOT_CHECK_ROWS = 20
+ORDERED_SHEET_ROWS = 10
 SPOT_CHECK_SEED = 1
 LABEL_VS_FEET_ROWS = 6
 TILE_WIDTH, TILE_HEIGHT = 440, 280
@@ -108,20 +106,6 @@ def other_player(player: str) -> str:
     return PLAYERS[1] if player == PLAYERS[0] else PLAYERS[0]
 
 
-def floor_point_at_rest(
-    shuttle: pd.DataFrame,
-    end_frame: int,
-    homography: np.ndarray,
-    rest_frame_count: int = REST_FRAME_COUNT,
-    rest_radius: float = REST_RADIUS_PX,
-) -> tuple[float, float] | None:
-    window = shuttle[(shuttle["frame"] >= end_frame) & (shuttle["frame"] < end_frame + rest_frame_count)].sort_values("frame")
-    if len(window) < rest_frame_count or not is_at_rest(window[["x", "y"]].to_numpy(float), window["visibility"].to_numpy() == 1, rest_radius):
-        return None
-    x_m, y_m = pixels_to_court(homography, [window[["x", "y"]].to_numpy(float)[0]])[0]
-    return float(x_m), float(y_m)
-
-
 def point_columns(name: str, point: tuple[float, float] | None) -> dict:
     return {f"{name}_x": None if point is None else point[0], f"{name}_y": None if point is None else point[1]}
 
@@ -173,68 +157,48 @@ def shot_row(
     }
 
 
-def contact_by_frame(contacts: pd.DataFrame | None) -> dict[int, tuple[float, float]]:
-    if contacts is None:
-        return {}
-    usable = contacts[contacts["method"].str.startswith("contact") & contacts["hit_x"].notna() & contacts["hit_y"].notna()]
-    return {int(row.frame): (float(row.hit_x), float(row.hit_y)) for row in usable.itertuples()}
-
-
 def rally_shot_rows(
     rally_hits: pd.DataFrame,
     feet: dict,
-    last_landing: tuple[float, float] | None,
     match_id: str,
     set_no: int,
     rally: int,
     fps: float,
     left_handed: frozenset[str],
-    contacts: dict[int, tuple[float, float]] | None = None,
     feet_max_gap: int = FEET_MAX_FRAME_GAP,
 ) -> list[dict]:
     ordered = rally_hits.sort_values("frame")
-    contacts = {} if contacts is None else contacts
-    feet_points = [feet_at(feet, hit.hitter, int(hit.frame), feet_max_gap) for hit in ordered.itertuples()]
-    hit_points = [contacts.get(int(hit.frame), feet_point) for hit, feet_point in zip(ordered.itertuples(), feet_points)]
+    hit_points = [feet_at(feet, hit.hitter, int(hit.frame), feet_max_gap) for hit in ordered.itertuples()]
     rows = []
-    for ball_round, (hit, hit_point, feet_point) in enumerate(zip(ordered.itertuples(), hit_points, feet_points), start=1):
-        landing = hit_points[ball_round] if ball_round < len(hit_points) else last_landing
+    for ball_round, (hit, hit_point) in enumerate(zip(ordered.itertuples(), hit_points), start=1):
+        landing = hit_points[ball_round] if ball_round < len(hit_points) else None
         opponent = feet_at(feet, other_player(hit.hitter), int(hit.frame), feet_max_gap)
-        rows.append(
-            shot_row(match_id, set_no, rally, ball_round, int(hit.frame), fps, hit.hitter, hit_point, landing, opponent, left_handed, feet_point)
-        )
+        rows.append(shot_row(match_id, set_no, rally, ball_round, int(hit.frame), fps, hit.hitter, hit_point, landing, opponent, left_handed))
     return rows
+
+
+def effective_frame_numbers(table: pd.DataFrame, frame_stride: int) -> pd.DataFrame:
+    if frame_stride == 1:
+        return table
+    return table.assign(frame=table["frame"] // frame_stride)
 
 
 def own_shot_rows(
     hits: pd.DataFrame,
-    rallies: pd.DataFrame,
     positions: pd.DataFrame,
-    shuttle: pd.DataFrame,
-    homography: np.ndarray,
     match_id: str,
     set_no: int,
     fps: float,
     first_rally: int = 1,
     left_handed: frozenset[str] = frozenset(),
-    contacts: pd.DataFrame | None = None,
-    frame_width: float | None = None,
+    frame_stride: int = 1,
 ) -> list[dict]:
-    feet = feet_by_frame(positions)
-    contact_points = contact_by_frame(contacts)
-    end_frame_by_rally = dict(zip(rallies["rally"], rallies["end_frame"]))
-    scaled = settings_for_video(fps, frame_width) if frame_width else None
-    rest_frame_count = REST_FRAME_COUNT if scaled is None else scaled.rest_frame_count
-    rest_radius = REST_RADIUS_PX if scaled is None else scaled.rest_radius_px
-    feet_max_gap = FEET_MAX_FRAME_GAP if scaled is None else frames_for_fps(FEET_MAX_FRAME_GAP, fps)
+    hits = effective_frame_numbers(hits, frame_stride)
+    feet = feet_by_frame(effective_frame_numbers(positions, frame_stride))
+    feet_max_gap = frames_for_fps(FEET_MAX_FRAME_GAP, fps)
     rows = []
-    for rally_offset, (rally_in_range, rally_hits) in enumerate(hits.groupby("rally")):
-        last_landing = floor_point_at_rest(shuttle, int(end_frame_by_rally[rally_in_range]), homography, rest_frame_count, rest_radius)
-        rows.extend(
-            rally_shot_rows(
-                rally_hits, feet, last_landing, match_id, set_no, first_rally + rally_offset, fps, left_handed, contact_points, feet_max_gap
-            )
-        )
+    for rally_offset, (_, rally_hits) in enumerate(hits.groupby("rally")):
+        rows.extend(rally_shot_rows(rally_hits, feet, match_id, set_no, first_rally + rally_offset, fps, left_handed, feet_max_gap))
     return rows
 
 
@@ -362,18 +326,29 @@ def compare_with_shuttleset(database_path: Path, own_match_id: str, shuttleset_m
     return comparison_summary(pairs, len(own), len(labelled)), pairs
 
 
-def load_range_tracks(video_path: Path, start_frame: int, end_frame: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    hits_file, rallies_file = output_paths(video_path, start_frame, end_frame)
+def load_range_tracks(
+    video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR, hits_dir: Path = HITS_DIR
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    hits_file, rallies_file = output_paths(video_path, start_frame, end_frame, *(() if is_default_dir(hits_dir, HITS_DIR) else (hits_dir,)))
     files = {
         "hits": (hits_file, f"python -m vision.hits {video_path} --start {start_frame} --end {end_frame}"),
         "rallies": (rallies_file, f"python -m vision.hits {video_path} --start {start_frame} --end {end_frame}"),
-        "positions": (player_positions_path(video_path, start_frame, end_frame), f"python -m vision.players {video_path} --start {start_frame} --end {end_frame}"),
-        "shuttle": (shuttle_positions_path(video_path, start_frame, end_frame), f"python -m vision.shuttle {video_path} --start {start_frame} --end {end_frame}"),
+        "positions": (positions_file_for(video_path, start_frame, end_frame, players_dir), f"python -m vision.players {video_path} --start {start_frame} --end {end_frame}"),
     }
     for path, command in files.values():
         if not path.is_file():
             raise FileNotFoundError(f"track file not found: {path} (run: {command})")
     return tuple(pd.read_csv(path) for path, _ in files.values())
+
+
+def positions_file_for(video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR) -> Path:
+    if is_default_dir(players_dir, PLAYERS_DIR):
+        return player_positions_path(video_path, start_frame, end_frame)
+    return player_positions_path(video_path, start_frame, end_frame, players_dir)
+
+
+def range_frame_stride(video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR) -> int:
+    return frame_stride_of(positions_file_for(video_path, start_frame, end_frame, players_dir))
 
 
 def build_own_match(
@@ -382,32 +357,25 @@ def build_own_match(
     ranges: list[tuple[int, int, int]],
     database_path: Path = DATABASE_PATH,
     left_handed: frozenset[str] = frozenset(),
-    hit_point: str = "contact",
+    hit_point: str = "feet",
     keep_other_sets: bool = False,
+    players_dir: Path = PLAYERS_DIR,
+    hits_dir: Path = HITS_DIR,
 ) -> pd.DataFrame:
     if hit_point not in HIT_POINT_SOURCES:
         raise ValueError(f"hit point must be one of {HIT_POINT_SOURCES}, got {hit_point!r}")
     require_video_file(video_path)
-    homography = load_calibration(calibration_path(video_path))["pixel_to_court_homography"]
-    camera = load_camera(camera_path(video_path)) if hit_point == "contact" else None
-    fps, frame_width = video_fps_and_width(video_path)
+    video_fps, _ = video_fps_and_width(video_path)
     next_rally_by_set: dict[int, int] = {}
     rows = []
-    fallback_counts: dict[str, int] = {}
     for start_frame, end_frame, set_no in ranges:
-        hits, rallies, positions, shuttle = load_range_tracks(video_path, start_frame, end_frame)
-        contacts = None
-        if camera is not None:
-            contacts = contacts_for_range(video_path, start_frame, end_frame, camera, left_handed)
-            for method, count in method_counts(contacts).items():
-                fallback_counts[method] = fallback_counts.get(method, 0) + count
+        hits, _, positions = load_range_tracks(video_path, start_frame, end_frame, players_dir, hits_dir)
+        frame_stride = range_frame_stride(video_path, start_frame, end_frame, players_dir)
+        fps = effective_fps(video_fps, frame_stride)
         first_rally = next_rally_by_set.get(set_no, 1)
-        rows.extend(
-            own_shot_rows(hits, rallies, positions, shuttle, homography, match_id, set_no, fps, first_rally, left_handed, contacts, frame_width)
-        )
+        rows.extend(own_shot_rows(hits, positions, match_id, set_no, fps, first_rally, left_handed, frame_stride))
         next_rally_by_set[set_no] = first_rally + hits["rally"].nunique()
     shots_frame = schema_frame(rows)
-    shots_frame.attrs["hit_point_methods"] = fallback_counts
     replace_sets = sorted({set_no for _, _, set_no in ranges}) if keep_other_sets else None
     write_own_shots(database_path, match_id, shots_frame, replace_sets)
     return shots_frame
@@ -494,26 +462,101 @@ def spot_check_sample(own: pd.DataFrame, row_count: int = SPOT_CHECK_ROWS, seed:
     return own.iloc[sorted(picks)]
 
 
-def spot_check_tile_pair(capture: cv2.VideoCapture, homography: np.ndarray, row, next_row) -> np.ndarray:
-    frame = read_frame(capture, int(row.frame_num))
-    hit_pixel = court_to_pixels(homography, [unnormalised_point(row.hit_x, row.hit_y, row.player)])[0]
-    centre = draw_point(frame, hit_pixel, HIT_COLOR_BGR, "hit")
+def direction_word(is_cross) -> str:
+    if pd.isna(is_cross):
+        return "no direction"
+    return "cross" if bool(is_cross) else "straight"
+
+
+def frame_centre(frame: np.ndarray) -> tuple[int, int]:
+    return frame.shape[1] // 2, frame.shape[0] // 2
+
+
+def frame_stride_of_row(row, video_fps: float) -> int:
+    if not video_fps or pd.isna(row.fps) or not row.fps:
+        return 1
+    return max(1, int(round(video_fps / float(row.fps))))
+
+
+def video_frame_of_row(row, video_fps: float) -> int:
+    return int(row.frame_num) * frame_stride_of_row(row, video_fps)
+
+
+def is_inferred_serve(row, serve_frames: set[int], video_fps: float) -> bool:
+    frame_stride = frame_stride_of_row(row, video_fps)
+    return int(row.frame_num) in {frame // frame_stride for frame in serve_frames}
+
+
+def spot_check_tile_pair(capture: cv2.VideoCapture, homography: np.ndarray, row, next_row, inferred_serve: bool = False) -> np.ndarray:
+    video_fps = capture.get(cv2.CAP_PROP_FPS)
+    frame_index = video_frame_of_row(row, video_fps)
+    frame = read_frame(capture, frame_index)
+    hit_point = unnormalised_point(row.hit_x, row.hit_y, row.player)
+    centre = draw_point(frame, court_to_pixels(homography, [hit_point])[0], HIT_COLOR_BGR, "hit") if hit_point is not None else frame_centre(frame)
     opponent = unnormalised_point(row.opponent_x, row.opponent_y, row.player)
     if opponent is not None:
         draw_point(frame, court_to_pixels(homography, [opponent])[0], OPPONENT_COLOR_BGR, "opp")
     prediction = f"pred {row.type_pred} ({row.type_conf:.2f})" if pd.notna(row.type_pred) else "no pred"
     label = f"label {row.label_type_group}/{row.label_player}" if pd.notna(row.label_type_group) else "no label"
-    left = crop_around(frame, centre, f"s{row.set_no} r{row.rally} #{row.ball_round} f{row.frame_num} {row.player} {prediction} {label}")
-    geometry = f"{row.hit_zone} -> {row.landing_zone} cross={row.is_cross}"
+    kind = " inferred serve" if inferred_serve else ""
+    left = crop_around(frame, centre, f"s{row.set_no} r{row.rally} #{row.ball_round}{kind} f{frame_index} {row.player} {prediction} {label}")
+    geometry = f"{row.hit_zone} -> {row.landing_zone} {direction_word(row.is_cross)}"
     if next_row is None:
         right = np.zeros((TILE_HEIGHT, TILE_WIDTH, 3), dtype=np.uint8)
         landing = "set" if pd.notna(row.landing_x) else "NULL"
         cv2.putText(right, f"last shot: landing {landing}; {geometry}", (5, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, TEXT_COLOR_BGR, 2)
     else:
-        next_frame = read_frame(capture, int(next_row.frame_num))
-        landing_pixel = court_to_pixels(homography, [unnormalised_point(next_row.hit_x, next_row.hit_y, next_row.player)])[0]
-        right = crop_around(next_frame, draw_point(next_frame, landing_pixel, LANDING_COLOR_BGR, "landing"), f"next hit f{next_row.frame_num} by {next_row.player}: {geometry}")
+        next_frame_index = video_frame_of_row(next_row, video_fps)
+        next_frame = read_frame(capture, next_frame_index)
+        landing_point = unnormalised_point(next_row.hit_x, next_row.hit_y, next_row.player)
+        landing_centre = draw_point(next_frame, court_to_pixels(homography, [landing_point])[0], LANDING_COLOR_BGR, "landing") if landing_point is not None else frame_centre(next_frame)
+        right = crop_around(next_frame, landing_centre, f"next hit f{next_frame_index} by {next_row.player}: {geometry}")
     return np.hstack([left, right])
+
+
+def inferred_serve_frames(video_path: Path, hits_dir: Path = HITS_DIR) -> set[int]:
+    folder = Path(hits_dir) / video_id(video_path)
+    frames: set[int] = set()
+    for hits_file in sorted(folder.glob("hits_*.csv")):
+        hits = pd.read_csv(hits_file)
+        if "score" in hits.columns:
+            frames.update(int(frame) for frame in hits.loc[hits["score"].isna(), "frame"])
+    return frames
+
+
+def first_rows(own: pd.DataFrame, row_count: int) -> pd.DataFrame:
+    return own.sort_values(["set_no", "rally", "ball_round"]).head(row_count)
+
+
+def ordered_sheet_path(match_id: str, row_count: int, sheet_index: int, checks_dir: Path = CHECKS_DIR) -> Path:
+    return checks_dir / f"{match_id}_first{row_count}_{sheet_index}.jpg"
+
+
+def write_ordered_spot_check_sheets(
+    video_path: Path, homography: np.ndarray, own: pd.DataFrame, row_count: int, match_id: str, serve_frames: set[int], checks_dir: Path = CHECKS_DIR, rows_per_sheet: int = ORDERED_SHEET_ROWS
+) -> list[Path]:
+    checks_dir.mkdir(parents=True, exist_ok=True)
+    rows = first_rows(own, row_count)
+    capture = open_video(video_path)
+    try:
+        tile_pairs = [spot_check_tile_pair(capture, homography, row, next_row_in_rally(own, row), is_inferred_serve(row, serve_frames, capture.get(cv2.CAP_PROP_FPS))) for row in rows.itertuples()]
+    finally:
+        capture.release()
+    written = []
+    for sheet_index, first in enumerate(range(0, len(tile_pairs), rows_per_sheet)):
+        path = ordered_sheet_path(match_id, row_count, sheet_index, checks_dir)
+        cv2.imwrite(str(path), np.vstack(tile_pairs[first : first + rows_per_sheet]), [cv2.IMWRITE_JPEG_QUALITY, 88])
+        written.append(path)
+    return written
+
+
+def ordered_spot_check(video_path: Path, match_id: str, row_count: int, database_path: Path = DATABASE_PATH, shuttleset_match_id: str | None = None, checks_dir: Path = CHECKS_DIR, hits_dir: Path = HITS_DIR) -> list[Path]:
+    require_video_file(video_path)
+    homography = load_calibration(calibration_path(video_path))["pixel_to_court_homography"]
+    own = own_rows_with_labels(database_path, match_id, shuttleset_match_id)
+    if own.empty:
+        raise ValueError(f"no own rows for match {match_id!r} in {database_path}")
+    return write_ordered_spot_check_sheets(video_path, homography, own, row_count, match_id, inferred_serve_frames(video_path, hits_dir), checks_dir)
 
 
 def next_row_in_rally(own: pd.DataFrame, row):
@@ -601,17 +644,17 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--range", nargs=3, action="append", metavar=("START", "END", "SET"), default=[], help="a tracked frame range and its set number; repeatable (required unless --spot-check)")
     parser.add_argument("--left-handed", default="", help="comma-separated players who are left-handed: me, opp")
     parser.add_argument(
-        "--hit-point", choices=HIT_POINT_SOURCES, default="contact", help="contact: estimated racket contact (needs the camera and pose weights); feet: the hitter's feet"
-    )
-    parser.add_argument(
         "--keep-other-sets", action="store_true", help="replace only this match's rows of the sets in --range, keep its other sets (one video per set)"
     )
     parser.add_argument("--database", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
+    parser.add_argument("--players-dir", type=Path, default=PLAYERS_DIR, help="root of the player tracking files (default data/players)")
+    parser.add_argument("--hits-dir", type=Path, default=HITS_DIR, help="root of the hit files (default data/hits)")
     parser.add_argument("--compare", metavar="SHUTTLESET_MATCH", help="after writing, compare with this ShuttleSet match's labelled rows")
     parser.add_argument("--spot-check", action="store_true", help="don't write rows; draw the spot-check sheets for the match's rows already in the database (with --compare, also label vs feet)")
+    parser.add_argument("--spot-check-first", type=int, metavar="N", help="don't write rows; draw the match's first N rows in order (set, rally, ball_round), 10 per sheet, to data/checks/features/<match-id>_first<N>_<k>.jpg")
     parsed = parser.parse_args(arguments)
-    if not parsed.range and not parsed.spot_check:
-        parser.error("give at least one --range START END SET, or --spot-check")
+    if not parsed.range and not parsed.spot_check and parsed.spot_check_first is None:
+        parser.error("give at least one --range START END SET, --spot-check or --spot-check-first N")
     return parsed
 
 
@@ -630,12 +673,17 @@ def run_spot_check(parsed: argparse.Namespace) -> int:
 def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
     try:
+        if parsed.spot_check_first is not None:
+            for path in ordered_spot_check(parsed.video, parsed.match_id, parsed.spot_check_first, parsed.database, parsed.compare, hits_dir=parsed.hits_dir):
+                print(f"saved {path}")
+            return 0
         if parsed.spot_check:
             return run_spot_check(parsed)
         ranges = [parse_range(text) for text in parsed.range]
         left_handed = frozenset(player for player in parsed.left_handed.split(",") if player)
         shots_frame = build_own_match(
-            parsed.video, parsed.match_id, ranges, parsed.database, left_handed, parsed.hit_point, parsed.keep_other_sets
+            parsed.video, parsed.match_id, ranges, parsed.database, left_handed, keep_other_sets=parsed.keep_other_sets,
+            players_dir=parsed.players_dir, hits_dir=parsed.hits_dir,
         )
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
@@ -644,9 +692,6 @@ def main(arguments: list[str]) -> int:
         f"wrote {len(shots_frame)} own shots for match {parsed.match_id!r} "
         f"({rally_count(shots_frame)} rallies, {shots_frame['landing_x'].notna().sum()} with a landing point) to {parsed.database}"
     )
-    methods = shots_frame.attrs.get("hit_point_methods", {})
-    if methods:
-        print("hit points: " + ", ".join(f"{method}: {count}" for method, count in sorted(methods.items())))
     if parsed.compare:
         summary, _ = compare_with_shuttleset(parsed.database, parsed.match_id, parsed.compare)
         for key, value in summary.items():

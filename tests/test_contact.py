@@ -236,7 +236,7 @@ def pose_caches_are_fresh() -> bool:
 
 real_contacts_required = pytest.mark.skipif(
     not ((PROJECT_ROOT / VIDEO_PATH).exists() and camera_path(VIDEO_PATH).exists() and SHUTTLESET_SET_DIR.is_dir() and pose_caches_are_fresh()),
-    reason="needs data/match.mp4, its camera, ShuttleSet and the pose caches of the five ranges (python -m vision.contact)")
+    reason="needs data/match.mp4, its camera, ShuttleSet and pose caches newer than the hits files of the five ranges; contact left the pipeline and data/hits now holds the movement detector's files, so these stay skipped unless the shuttle-era hits and caches are restored")
 
 
 @pytest.fixture(scope="module")

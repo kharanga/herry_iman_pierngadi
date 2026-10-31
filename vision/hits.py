@@ -1,4 +1,3 @@
-import argparse
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -420,53 +419,10 @@ def error_breakdown(
     return pd.DataFrame(rows, columns=["kind", "frame", "cause", "inpainted"]).sort_values(["kind", "frame"]).reset_index(drop=True)
 
 
-def parse_arguments(arguments: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="python -m vision.hits",
-        description="Detect hits and rallies from the player and shuttle tracks of a frame range.",
-    )
-    parser.add_argument("video", type=Path, help="path to the match video")
-    parser.add_argument("--start", type=int, required=True, help="first frame of the tracked range")
-    parser.add_argument("--end", type=int, required=True, help="last frame of the tracked range")
-    parser.add_argument(
-        "--evaluate", nargs=2, metavar=("MATCH_FOLDER", "SET_NO"), help="compare with the ShuttleSet hit frames of this set"
-    )
-    return parser.parse_args(arguments)
-
-
 def main(arguments: list[str]) -> int:
-    parsed = parse_arguments(arguments)
-    try:
-        tracks = load_frame_tracks(parsed.video, parsed.start, parsed.end)
-        settings = settings_for_video(*video_fps_and_width(parsed.video))
-        hits, rallies = segment_rallies(
-            detect_hits(tracks, settings), tracks, settings.rally_gap_frames, settings.rest_radius_px, settings.rest_frame_count
-        )
-        labels = None
-        if parsed.evaluate:
-            match_folder, set_no = parsed.evaluate
-            homography = load_calibration(calibration_path(parsed.video))["pixel_to_court_homography"]
-            labels = labelled_hits(load_set_shots(SHUTTLESET_SET_DIR, match_folder, int(set_no)), homography, parsed.start, parsed.end)
-    except (FileNotFoundError, OSError, ValueError) as error:
-        print(f"error: {error}", file=sys.stderr)
-        return 1
-    hits_file, rallies_file = output_paths(parsed.video, parsed.start, parsed.end)
-    hits_file.parent.mkdir(parents=True, exist_ok=True)
-    hits.to_csv(hits_file, index=False)
-    rallies.to_csv(rallies_file, index=False)
-    print(f"rallies: {len(rallies)}, hits: {len(hits)}")
-    if labels is not None:
-        for line in evaluation_lines(hits, labels):
-            print(line)
-        errors = error_breakdown(hits, labels, tracks)
-        for error in errors.itertuples():
-            print(f"{error.kind} at {error.frame}: {error.cause}" + (" (InpaintNet-filled frame)" if error.inpainted else ""))
-        for kind, kind_errors in errors.groupby("kind"):
-            plural = "misses" if kind == "miss" else "false positives"
-            print(f"{plural} on InpaintNet-filled frames: {int(kind_errors['inpainted'].sum())}/{len(kind_errors)}")
-    print(f"saved {hits_file}")
-    print(f"saved {rallies_file}")
-    return 0
+    from vision.movement import main as movement_main
+
+    return movement_main(arguments)
 
 
 if __name__ == "__main__":
