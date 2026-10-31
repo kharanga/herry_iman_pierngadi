@@ -1,13 +1,18 @@
 import argparse
+import json
 import os
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from queue import Queue
+from threading import Event, Thread
+from typing import Iterable, Iterator
 
 import cv2
 import numpy as np
 import pandas as pd
+import torch
 
 from vision.alignment import SHUTTLESET_SET_DIR, load_set_shots, open_video, read_frame
 from vision.court import (
@@ -29,11 +34,16 @@ COURT_MARGIN_M = 1.0
 BEHIND_FAR_BASELINE_MARGIN_M = 2.0
 DUPLICATE_BOX_MAX_IOU = 0.5
 MAX_DETECTION_WIDTH_PX = 1280
+DETECTION_BATCH_FRAMES = 8
+PREFETCHED_CHUNKS = 2
+GPU_DEVICE = "mps"
+CPU_DEVICE = "cpu"
 LINE_SAMPLES_PER_LINE = 40
 MAIN_VIEW_MIN_LINE_SAMPLE_SHARE = 0.6
 MAIN_VIEW_SHARE_OF_CALIBRATION_FRAME = 0.6
 DEFAULT_MODEL_PATH = Path("data/models/yolo11s.pt")
 PLAYERS_DIR = Path("data/players")
+TRACKING_RECORD_SUFFIX = ".tracking.json"
 CHECKS_DIR = Path("data/checks/players")
 POSITION_COLUMNS = ["frame", "player", "x_m", "y_m", "track_id", "confidence"]
 BOX_COLUMNS = ["frame", "player", "left", "top", "right", "bottom"]
@@ -232,11 +242,26 @@ def check_frame_range(start_frame: int, end_frame: int) -> None:
         raise ValueError(f"end frame {end_frame} is before start frame {start_frame}")
 
 
-def frames_in_range(capture: cv2.VideoCapture, start_frame: int, end_frame: int):
+def check_frame_stride(frame_stride: int) -> None:
+    if frame_stride < 1:
+        raise ValueError(f"frame stride must be >= 1, got {frame_stride}")
+
+
+def sampled_frames(start_frame: int, end_frame: int, frame_stride: int = 1) -> np.ndarray:
+    check_frame_stride(frame_stride)
+    return np.arange(start_frame, end_frame + 1, frame_stride)
+
+
+def frames_in_range(capture: cv2.VideoCapture, start_frame: int, end_frame: int, frame_stride: int = 1):
     check_frame_range(start_frame, end_frame)
+    check_frame_stride(frame_stride)
     capture.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
     frames_read = 0
     for frame_index in range(start_frame, end_frame + 1):
+        if (frame_index - start_frame) % frame_stride:
+            if not capture.grab():
+                break
+            continue
         frame_was_read, frame = capture.read()
         if not frame_was_read:
             break
@@ -247,6 +272,63 @@ def frames_in_range(capture: cv2.VideoCapture, start_frame: int, end_frame: int)
         raise ValueError(
             f"no frames could be read from {start_frame} to {end_frame} (the video has {video_frame_count} frames)"
         )
+
+
+def default_device() -> str:
+    return GPU_DEVICE if torch.backends.mps.is_available() else CPU_DEVICE
+
+
+def chunked(items: Iterable, size: int) -> Iterator[list]:
+    if size < 1:
+        raise ValueError(f"chunk size must be >= 1, got {size}")
+    chunk = []
+    for item in items:
+        chunk.append(item)
+        if len(chunk) == size:
+            yield chunk
+            chunk = []
+    if chunk:
+        yield chunk
+
+
+def prefetched(items: Iterable, depth: int = PREFETCHED_CHUNKS) -> Iterator:
+    queue: Queue = Queue(maxsize=depth)
+    stop_producing = Event()
+    end_of_items = object()
+
+    def produce():
+        try:
+            for item in items:
+                if stop_producing.is_set():
+                    break
+                queue.put(item)
+        except BaseException as error:
+            queue.put(error)
+        finally:
+            queue.put(end_of_items)
+
+    producer = Thread(target=produce, daemon=True)
+    producer.start()
+    end_seen = False
+    try:
+        while True:
+            item = queue.get()
+            if item is end_of_items:
+                end_seen = True
+                break
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+    finally:
+        stop_producing.set()
+        while not end_seen:
+            end_seen = queue.get() is end_of_items
+        producer.join()
+
+
+def frames_with_view(frames: Iterable[tuple[int, np.ndarray]], homography: np.ndarray, minimum_share: float) -> Iterator[tuple[int, np.ndarray, bool]]:
+    for frame_index, frame in frames:
+        yield frame_index, frame, is_main_view(court_line_sample_share(frame, homography), minimum_share)
 
 
 def load_person_tracker(model_path: Path):
@@ -266,16 +348,21 @@ def load_person_tracker(model_path: Path):
         np.set_printoptions(**numpy_print_options)
 
 
-def track_people(tracker, frame: np.ndarray) -> FrameDetections:
-    result = tracker.track(
-        frame,
-        persist=True,
+def frame_shape_of_capture(capture: cv2.VideoCapture) -> tuple[int, int, int]:
+    return int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)), 3
+
+
+def warm_up_tracker(tracker, frame_shape: tuple[int, int, int], device: str = CPU_DEVICE) -> None:
+    tracker.predict(
+        np.zeros(frame_shape, dtype=np.uint8),
         classes=[PERSON_CLASS_ID],
-        iou=DUPLICATE_BOX_MAX_IOU,
-        tracker="bytetrack.yaml",
-        imgsz=min(frame.shape[1], MAX_DETECTION_WIDTH_PX),
+        imgsz=min(frame_shape[1], MAX_DETECTION_WIDTH_PX),
+        device=device,
         verbose=False,
-    )[0]
+    )
+
+
+def detections_of_result(result) -> FrameDetections:
     if result.boxes is None or result.boxes.id is None:
         return empty_detections()
     return FrameDetections(
@@ -283,6 +370,22 @@ def track_people(tracker, frame: np.ndarray) -> FrameDetections:
         result.boxes.id.cpu().numpy().astype(int),
         result.boxes.conf.cpu().numpy(),
     )
+
+
+def track_people(tracker, frames: list[np.ndarray], device: str = CPU_DEVICE) -> list[FrameDetections]:
+    if not frames:
+        return []
+    results = tracker.track(
+        list(frames),
+        persist=True,
+        classes=[PERSON_CLASS_ID],
+        iou=DUPLICATE_BOX_MAX_IOU,
+        tracker="bytetrack.yaml",
+        imgsz=min(frames[0].shape[1], MAX_DETECTION_WIDTH_PX),
+        device=device,
+        verbose=False,
+    )
+    return [detections_of_result(result) for result in results]
 
 
 @dataclass
@@ -302,32 +405,40 @@ def track_players(
     model_path: Path = DEFAULT_MODEL_PATH,
     overlay_frames: tuple[int, ...] = (),
     checks_dir: Path = CHECKS_DIR,
+    device: str | None = None,
+    batch_frames: int = DETECTION_BATCH_FRAMES,
+    frame_stride: int = 1,
+    tracker=None,
 ) -> TrackingRun:
     check_frame_range(start_frame, end_frame)
+    check_frame_stride(frame_stride)
     require_video_file(video_path)
     calibration = load_calibration(calibration_file or calibration_path(video_path))
     homography = calibration["pixel_to_court_homography"]
     minimum_share = main_view_min_share(calibration_frame_share(video_path, calibration))
-    tracker = load_person_tracker(model_path)
+    tracker = tracker if tracker is not None else load_person_tracker(model_path)
+    device = device or default_device()
     capture = open_video(Path(video_path))
+    warm_up_tracker(tracker, frame_shape_of_capture(capture), device)
     state = PlayerTrackingState()
     rows, box_rows, main_view_frames, skipped_frames, overlay_paths = [], [], [], [], []
     try:
-        for frame_index, frame in frames_in_range(capture, start_frame, end_frame):
-            if not is_main_view(court_line_sample_share(frame, homography), minimum_share):
-                skipped_frames.append(frame_index)
-                continue
-            main_view_frames.append(frame_index)
-            detections = track_people(tracker, frame)
-            court_positions = court_positions_of_feet(homography, detections.boxes_xyxy)
-            frame_rows, state = label_players(frame_index, detections, court_positions, state)
-            rows.extend(frame_rows)
-            box_rows.extend(player_box_rows(detections, frame_rows))
-            if frame_index in overlay_frames:
-                checks_dir.mkdir(parents=True, exist_ok=True)
-                overlay_path = checks_dir / f"{video_id(video_path)}_players_frame{frame_index}.jpg"
-                cv2.imwrite(str(overlay_path), draw_players(frame, detections, frame_rows))
-                overlay_paths.append(overlay_path)
+        viewed_frames = frames_with_view(frames_in_range(capture, start_frame, end_frame, frame_stride), homography, minimum_share)
+        for chunk in prefetched(chunked(viewed_frames, batch_frames)):
+            skipped_frames.extend(frame_index for frame_index, _, in_main_view in chunk if not in_main_view)
+            main_view_chunk = [(frame_index, frame) for frame_index, frame, in_main_view in chunk if in_main_view]
+            main_view_frames.extend(frame_index for frame_index, _ in main_view_chunk)
+            detections_per_frame = track_people(tracker, [frame for _, frame in main_view_chunk], device)
+            for (frame_index, frame), detections in zip(main_view_chunk, detections_per_frame):
+                court_positions = court_positions_of_feet(homography, detections.boxes_xyxy)
+                frame_rows, state = label_players(frame_index, detections, court_positions, state)
+                rows.extend(frame_rows)
+                box_rows.extend(player_box_rows(detections, frame_rows))
+                if frame_index in overlay_frames:
+                    checks_dir.mkdir(parents=True, exist_ok=True)
+                    overlay_path = checks_dir / f"{video_id(video_path)}_players_frame{frame_index}.jpg"
+                    cv2.imwrite(str(overlay_path), draw_players(frame, detections, frame_rows))
+                    overlay_paths.append(overlay_path)
     finally:
         capture.release()
     return TrackingRun(
@@ -368,10 +479,60 @@ def boxes_path(video_path: Path, start_frame: int, end_frame: int, players_dir: 
     return players_dir / video_id(video_path) / f"boxes_{start_frame}_{end_frame}.csv"
 
 
+def is_default_dir(directory: Path | None, default: Path) -> bool:
+    return directory is None or Path(directory) == Path(default)
+
+
 def save_positions(positions: pd.DataFrame, output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     positions.to_csv(output_path, index=False)
     return output_path
+
+
+def tracking_record_path(positions_file: Path) -> Path:
+    return Path(positions_file).with_name(Path(positions_file).name + TRACKING_RECORD_SUFFIX)
+
+
+def tracking_record(video_fps: float, frame_width: float, frame_stride: int, model_path: Path, device: str, batch_frames: int) -> dict:
+    return {
+        "frame_stride": int(frame_stride),
+        "video_fps": float(video_fps),
+        "effective_fps": float(video_fps) / int(frame_stride),
+        "frame_width": float(frame_width),
+        "model": Path(model_path).name,
+        "device": device,
+        "batch_frames": int(batch_frames),
+    }
+
+
+def write_tracking_record(positions_file: Path, record: dict) -> Path:
+    record_path = tracking_record_path(positions_file)
+    record_path.write_text(json.dumps(record, indent=1))
+    return record_path
+
+
+def read_tracking_record(positions_file: Path) -> dict:
+    record_path = tracking_record_path(positions_file)
+    if not record_path.is_file():
+        return {"frame_stride": 1}
+    return json.loads(record_path.read_text())
+
+
+def frame_stride_of(positions_file: Path) -> int:
+    return int(read_tracking_record(positions_file).get("frame_stride", 1))
+
+
+def effective_fps(video_fps: float, frame_stride: int) -> float:
+    check_frame_stride(frame_stride)
+    return float(video_fps) / frame_stride
+
+
+def video_fps_and_width(video_path: Path) -> tuple[float, float]:
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        return float(capture.get(cv2.CAP_PROP_FPS)), float(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    finally:
+        capture.release()
 
 
 def summary_lines(run: TrackingRun, measured_frames: list[int]) -> list[str]:
@@ -388,6 +549,41 @@ def summary_lines(run: TrackingRun, measured_frames: list[int]) -> list[str]:
     return lines
 
 
+def read_stretches(stretches_file: Path) -> list[tuple[int, int]]:
+    table = pd.read_csv(stretches_file)
+    if not {"start_frame", "end_frame"} <= set(table.columns):
+        raise ValueError(f"{stretches_file} needs start_frame and end_frame columns")
+    return [(int(start), int(end)) for start, end in zip(table["start_frame"], table["end_frame"])]
+
+
+def stretch_is_tracked(video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR) -> bool:
+    return positions_path(video_path, start_frame, end_frame, players_dir).is_file() and boxes_path(video_path, start_frame, end_frame, players_dir).is_file()
+
+
+def track_stretches(
+    video_path: Path,
+    stretches: list[tuple[int, int]],
+    calibration_file: Path | None = None,
+    model_path: Path = DEFAULT_MODEL_PATH,
+    device: str | None = None,
+    batch_frames: int = DETECTION_BATCH_FRAMES,
+    players_dir: Path = PLAYERS_DIR,
+) -> tuple[int, int, int]:
+    pending = [(start, end) for start, end in stretches if not stretch_is_tracked(video_path, start, end, players_dir)]
+    if not pending:
+        return 0, len(stretches), 0
+    tracker = load_person_tracker(model_path)
+    video_fps, frame_width = video_fps_and_width(video_path)
+    record = tracking_record(video_fps, frame_width, 1, model_path, device or default_device(), batch_frames)
+    frames = 0
+    for start_frame, end_frame in pending:
+        run = track_players(video_path, start_frame, end_frame, calibration_file, model_path, device=device, batch_frames=batch_frames, tracker=tracker)
+        save_positions(run.boxes, boxes_path(video_path, start_frame, end_frame, players_dir))
+        write_tracking_record(save_positions(run.positions, positions_path(video_path, start_frame, end_frame, players_dir)), record)
+        frames += end_frame - start_frame + 1
+    return len(pending), len(stretches) - len(pending), frames
+
+
 def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m vision.players",
@@ -402,11 +598,16 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
         metavar=("MATCH_FOLDER", "SET_NO", "RALLY"),
         help="track one labeled rally: its first to last hit frame, plus --padding frames each side",
     )
+    parser.add_argument("--stretches", type=Path, metavar="CSV", help="track every start_frame-end_frame row of this file with one loaded model, skipping rows already tracked (python -m vision.label_offset --stretches writes it)")
     parser.add_argument("--padding", type=int, default=30, help="frames tracked before and after a ShuttleSet rally")
     parser.add_argument("--calibration", type=Path, help="court.json (default: data/calibration/<video stem>/court.json)")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH, help="YOLO weights under data/models/")
     parser.add_argument("--views-only", action="store_true", help="only count main-view and skipped frames (no YOLO)")
     parser.add_argument("--overlay-frame", type=int, action="append", default=[], help="save an overlay image of this frame")
+    parser.add_argument("--device", choices=(GPU_DEVICE, CPU_DEVICE), help="where YOLO runs (default: mps when available, else cpu)")
+    parser.add_argument("--batch-frames", type=int, default=DETECTION_BATCH_FRAMES, help="frames per YOLO call (1 = one frame at a time)")
+    parser.add_argument("--frame-stride", type=int, default=1, help="track every Nth frame (default 1 = every frame); the files keep the video's frame numbers")
+    parser.add_argument("--players-dir", type=Path, default=PLAYERS_DIR, help="root of the output files (default data/players)")
     return parser.parse_args(arguments)
 
 
@@ -420,8 +621,21 @@ def frames_to_track(parsed: argparse.Namespace) -> tuple[int, int, list[int]]:
     return parsed.start, parsed.end, list(range(parsed.start, parsed.end + 1))
 
 
+def stretches_command(parsed: argparse.Namespace) -> int:
+    try:
+        stretches = read_stretches(parsed.stretches)
+        tracked, skipped, frames = track_stretches(parsed.video, stretches, parsed.calibration, parsed.model, parsed.device, parsed.batch_frames, parsed.players_dir)
+    except (FileNotFoundError, OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(f"{len(stretches)} stretches: {tracked} tracked ({frames} frames), {skipped} already tracked")
+    return 0
+
+
 def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
+    if parsed.stretches:
+        return stretches_command(parsed)
     try:
         start_frame, end_frame, rally_frames = frames_to_track(parsed)
         if parsed.views_only:
@@ -429,18 +643,30 @@ def main(arguments: list[str]) -> int:
             print(f"frames: {len(main_view_frames) + len(skipped_frames)}, main view: {len(main_view_frames)}, skipped (not main view): {len(skipped_frames)}")
             return 0
         run = track_players(
-            parsed.video, start_frame, end_frame, parsed.calibration, parsed.model, tuple(parsed.overlay_frame)
+            parsed.video,
+            start_frame,
+            end_frame,
+            parsed.calibration,
+            parsed.model,
+            tuple(parsed.overlay_frame),
+            device=parsed.device,
+            batch_frames=parsed.batch_frames,
+            frame_stride=parsed.frame_stride,
         )
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    output_path = save_positions(run.positions, positions_path(parsed.video, start_frame, end_frame))
+    custom_dir = () if is_default_dir(parsed.players_dir, PLAYERS_DIR) else (parsed.players_dir,)
+    output_path = save_positions(run.positions, positions_path(parsed.video, start_frame, end_frame, *custom_dir))
     main_view_frames = set(run.main_view_frames)
     measured_frames = [frame for frame in rally_frames if frame in main_view_frames]
     for line in summary_lines(run, measured_frames):
         print(line)
     print(f"saved {output_path}")
-    print(f"saved {save_positions(run.boxes, boxes_path(parsed.video, start_frame, end_frame))}")
+    print(f"saved {save_positions(run.boxes, boxes_path(parsed.video, start_frame, end_frame, *custom_dir))}")
+    video_fps, frame_width = video_fps_and_width(parsed.video)
+    record = tracking_record(video_fps, frame_width, parsed.frame_stride, parsed.model, parsed.device or default_device(), parsed.batch_frames)
+    print(f"saved {write_tracking_record(output_path, record)} (frame stride {parsed.frame_stride}, effective fps {record['effective_fps']:g})")
     for overlay_path in run.overlay_paths:
         print(f"saved {overlay_path}")
     return 0

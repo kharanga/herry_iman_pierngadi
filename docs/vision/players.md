@@ -45,9 +45,31 @@ tracking error (an ID swap); it isn't hidden by re-labelling each frame.
 
 The per-frame steps (`foot_points`, `court_positions_of_feet`, `on_court_mask`,
 `side_of_court`, `court_line_sample_share`, `is_main_view`, `sides_with_new_tracks`,
-`chosen_detection_index`, `label_players`) are pure: arrays in, arrays or rows out.
-`track_people` is the thin wrapper around the YOLO call. Only `load_person_tracker`,
-`track_players`, `split_frames_by_view` and `save_positions` touch files.
+`chosen_detection_index`, `label_players`, `detections_of_result`) are pure: arrays in,
+arrays or rows out. `track_people` is the thin wrapper around the YOLO call; it takes a
+list of frames and runs them as one batch. `track_players` reads the video in chunks of
+`DETECTION_BATCH_FRAMES` frames (`chunked`), runs the view check on each frame
+(`frames_with_view`), drops the frames that fail it and sends the rest of the chunk to
+`track_people` in one call. ByteTrack still sees the frames one after the other, so track
+ids are the same as with one frame per call. Reading and view-checking the next chunks
+happens on a background thread (`prefetched`) while the GPU works on the current one.
+Before the first chunk, `warm_up_tracker` runs the model once on a black frame: the first
+call on the GPU compiles its kernels and takes seconds, and Ultralytics drops the boxes of
+any batch whose post-processing runs past its time limit (about 2.4 s), so without the
+warm-up the first batch of a run could come back empty. Only `load_person_tracker`,
+`track_players`, `split_frames_by_view` and `save_positions` touch files; `track_people`
+and `warm_up_tracker` are the only functions that call the model. `track_people` is the
+seam for another detector: frames in, person boxes with track ids out. A HailoRT
+implementation on the Pi would be a second version of that one function (its detector
+followed by ByteTrack), and nothing else in the module would change.
+
+YOLO runs on the Mac's GPU (`mps`, Apple Metal) when PyTorch can see it, else on the CPU
+(`default_device`); `--device` overrides. The batch size is a trade-off on an 8 GB
+machine: at 1280 px each frame in a batch needs about 150 MB of GPU memory for its
+activations, so 8 frames use about 2.3 GB, 15 about 4.5 GB, and 30 more than the
+machine has; the run then swaps and is slower than the CPU. The default 8 is the largest
+size measured that doesn't slow down (see `docs/results/players.md`). On the CPU a
+batch brings nothing and costs memory, so `--device cpu` is best with `--batch-frames 1`.
 
 ## Model weights
 
@@ -66,7 +88,7 @@ needs `lap`, which is in `requirements.txt`. Ultralytics is AGPL-3.0.
 ## Command
 
 ```
-.venv/bin/python -m vision.players <video> (--start N --end N | --shuttleset-rally MATCH SET RALLY) [options]
+.venv/bin/python -m vision.players <video> (--start N --end N | --shuttleset-rally MATCH SET RALLY | --stretches CSV) [options]
 ```
 
 | Argument | Meaning |
@@ -74,17 +96,24 @@ needs `lap`, which is in `requirements.txt`. Ultralytics is AGPL-3.0.
 | `video` | path to the match video; needs a calibration (`python -m vision.court`) |
 | `--start`, `--end` | first and last frame to track (inclusive) |
 | `--shuttleset-rally` | track one labelled rally: ShuttleSet match folder, set number, rally number. Tracks from the rally's first hit frame to its last, plus `--padding` frames each side |
+| `--stretches CSV` | track every `start_frame, end_frame` row of the file (`python -m vision.label_offset <video> --stretches` writes one) with one loaded model, each into its own `positions_<start>_<end>.csv` / `boxes_` pair and record. Rows that already have both files are skipped, so a stopped run resumes where it stopped (a stretch's files are written only once it is complete). Prints `N stretches: T tracked (F frames), S already tracked` |
 | `--padding` | frames before and after a ShuttleSet rally (default 30); the start is clamped to frame 0 |
 | `--calibration` | `court.json` to use (default `data/calibration/<video id>/court.json`) |
 | `--model` | YOLO weights (default `data/models/yolo11s.pt`) |
 | `--overlay-frame N` | save an overlay of frame N to `data/checks/players/<video id>_players_frame<N>.jpg`; repeatable. `me` in blue, `opp` in red with track id and meters, everyone else grey |
 | `--views-only` | only run the view check and print how many frames are main view and how many are skipped; no YOLO, about 12 ms per frame |
+| `--device` | `mps` or `cpu`; default `mps` when PyTorch reports it available, else `cpu` |
+| `--batch-frames N` | frames read per chunk and sent to YOLO in one call (default `DETECTION_BATCH_FRAMES`, 8); `1` tracks one frame at a time |
+| `--frame-stride N` | track every Nth frame only (default 1). The files keep the video's frame numbers (0, 2, 4, ... for stride 2) and cover the sampled frames only; skipped frames are decoded with `grab()` (no conversion) and never view-checked. The record file (below) tells `vision.hits` and `vision.features` the stride, so they treat the tracks as a video at `fps / N` |
+| `--players-dir DIR` | root of the output files (default `data/players`); use another root to keep a second configuration's tracks next to the default ones |
 
 Output: `data/players/<video id>/positions_<start>_<end>.csv`, one row per
 player per main-view frame where that player was found, and next to it
 `boxes_<start>_<end>.csv` with the same rows' pixel boxes (`BOX_COLUMNS`: `frame`,
-`player`, `left`, `top`, `right`, `bottom`), which hit detection uses to measure how
-far the shuttle is from each player:
+`player`, `left`, `top`, `right`, `bottom`), which the movement hit detector uses for
+the box-shape features, and `positions_<start>_<end>.csv.tracking.json`, the tracking
+record: `frame_stride`, `video_fps`, `effective_fps` (`video_fps / frame_stride`),
+`frame_width`, `model`, `device`, `batch_frames`. A missing record means stride 1.
 
 | Column | Type | Meaning |
 |---|---|---|
@@ -121,12 +150,16 @@ nothing is written in those cases. `2` for invalid arguments.
 | `BEHIND_FAR_BASELINE_MARGIN_M` | `2.0` | the same, behind the far baseline (jumping far player) |
 | `DUPLICATE_BOX_MAX_IOU` | `0.5` | overlap above which YOLO keeps only the more confident of two boxes |
 | `MAX_DETECTION_WIDTH_PX` | `1280` | YOLO runs at the frame width, but at most this (a 1920-wide video is detected at 1280, about twice as fast) |
+| `DETECTION_BATCH_FRAMES` | `8` | frames per chunk and per YOLO call (measured best on an 8 GB M2; 30 runs out of GPU memory) |
+| `PREFETCHED_CHUNKS` | `2` | chunks read and view-checked ahead of the YOLO call |
+| `GPU_DEVICE`, `CPU_DEVICE` | `"mps"`, `"cpu"` | the two devices `default_device` chooses between |
 | `LINE_SAMPLES_PER_LINE` | `40` | samples per floor line in the view check |
 | `MAIN_VIEW_MIN_LINE_SAMPLE_SHARE` | `0.6` | `is_main_view`'s default threshold (the commands use the relative one below) |
 | `MAIN_VIEW_SHARE_OF_CALIBRATION_FRAME` | `0.6` | a main-view frame needs at least this fraction of the calibration frame's share |
 | `DEFAULT_MODEL_PATH` | `Path("data/models/yolo11s.pt")` | default weights |
 | `PLAYERS_DIR` | `Path("data/players")` | root of the position files |
 | `CHECKS_DIR` | `Path("data/checks/players")` | overlay images |
+| `TRACKING_RECORD_SUFFIX` | `".tracking.json"` | appended to the positions file name for the tracking record |
 | `POSITION_COLUMNS` | `["frame", "player", "x_m", "y_m", "track_id", "confidence"]` | columns of the position file |
 | `BOX_COLUMNS` | `["frame", "player", "left", "top", "right", "bottom"]` | columns of the box file (pixels, one decimal) |
 
@@ -414,6 +447,71 @@ else grey with just the track id.
 
 ```
 
+### `default_device() -> str`
+`"mps"` when `torch.backends.mps.is_available()`, else `"cpu"`. Never raises.
+
+```python
+>>> from vision.players import CPU_DEVICE, GPU_DEVICE, default_device
+>>> default_device() in (GPU_DEVICE, CPU_DEVICE)
+True
+
+```
+
+### `chunked(items, size) -> iterator of list`
+Groups any iterable into lists of `size` items; the last list is shorter when the
+count doesn't divide. Lazy: it reads only one chunk ahead, so video frames aren't all
+held in memory. Errors: `ValueError` for a size below 1.
+
+```python
+>>> from vision.players import chunked
+>>> list(chunked(range(7), 3))
+[[0, 1, 2], [3, 4, 5], [6]]
+>>> list(chunked([], 3))
+[]
+>>> list(chunked(range(2), 0))
+Traceback (most recent call last):
+ValueError: chunk size must be >= 1, got 0
+
+```
+
+### `prefetched(items, depth=PREFETCHED_CHUNKS) -> iterator`
+Yields the items of any iterable in order, producing them on a background thread up to
+`depth` items ahead of the consumer. An exception raised while producing is re-raised in
+the consumer at that point; closing the generator early (or an exception in the
+consumer) stops the producer and waits for it, so a video capture that feeds it is never
+released while the thread still reads from it.
+
+```python
+>>> from vision.players import prefetched
+>>> list(prefetched(chunked(range(7), 3)))
+[[0, 1, 2], [3, 4, 5], [6]]
+>>> def failing_after_one():
+...     yield 1
+...     raise ValueError("decoder failed")
+>>> list(prefetched(failing_after_one()))
+Traceback (most recent call last):
+ValueError: decoder failed
+>>> early = prefetched(iter(range(1000)))
+>>> next(early), next(early)
+(0, 1)
+>>> early.close()
+
+```
+
+### `frames_with_view(frames, homography, minimum_share) -> iterator of (int, ndarray, bool)`
+Adds the view check to a stream of `(frame_index, frame)` pairs: each item becomes
+`(frame_index, frame, in_main_view)` with `is_main_view(court_line_sample_share(frame,
+homography), minimum_share)`. Pure and lazy. With `court_frame` from the
+`court_line_sample_share` example and a blank frame:
+
+```python
+>>> from vision.players import frames_with_view
+>>> blank_frame = np.full((720, 1280, 3), 90, dtype=np.uint8)
+>>> [(index, in_view) for index, _, in_view in frames_with_view([(5, court_frame), (6, blank_frame)], homography, 0.6)]
+[(5, True), (6, False)]
+
+```
+
 ### `load_person_tracker(model_path) -> YOLO`
 Loads YOLO weights. Errors: `FileNotFoundError` with the download command if the
 file doesn't exist (no automatic download into the current folder). Importing
@@ -459,11 +557,26 @@ ValueError: end frame 5 is before start frame 10
 
 ```
 
-### `frames_in_range(capture, start_frame, end_frame) -> iterator of (int, ndarray)`
+### `check_frame_stride(frame_stride) -> None`, `sampled_frames(start_frame, end_frame, frame_stride=1) -> ndarray`
+A stride below 1 is a `ValueError`; `sampled_frames` is the frame numbers a stride
+keeps, `start_frame, start_frame + stride, ...` up to `end_frame`.
+
+```python
+>>> from vision.players import check_frame_stride, sampled_frames
+>>> sampled_frames(10, 17, 3)
+array([10, 13, 16])
+>>> check_frame_stride(0)
+Traceback (most recent call last):
+ValueError: frame stride must be >= 1, got 0
+
+```
+
+### `frames_in_range(capture, start_frame, end_frame, frame_stride=1) -> iterator of (int, ndarray)`
 Yields `(frame_index, frame)` from `start_frame` to `end_frame` inclusive, stopping
-early at the end of the video, with indices that match the video's own frame numbers.
-Errors: those of `check_frame_range`, and `ValueError` if not a single frame could be
-read (raised once the iteration ends).
+early at the end of the video, with indices that match the video's own frame numbers;
+with a stride, only every `frame_stride`-th frame from `start_frame` (the others are
+skipped with `grab()`). Errors: those of `check_frame_range` and `check_frame_stride`,
+and `ValueError` if not a single frame could be read (raised once the iteration ends).
 
 ```python
 >>> import tempfile
@@ -476,6 +589,8 @@ read (raised once the iteration ends).
 >>> capture = cv2.VideoCapture(str(video_path))
 >>> [(frame_index, int(frame[0, 0, 0])) for frame_index, frame in frames_in_range(capture, 3, 10)]
 [(3, 150), (4, 200)]
+>>> [(frame_index, int(frame[0, 0, 0])) for frame_index, frame in frames_in_range(capture, 0, 4, 2)]
+[(0, 0), (2, 100), (4, 200)]
 >>> list(frames_in_range(capture, 7, 9))
 Traceback (most recent call last):
 ValueError: no frames could be read from 7 to 9 (the video has 5 frames)
@@ -483,18 +598,85 @@ ValueError: no frames could be read from 7 to 9 (the video has 5 frames)
 
 ```
 
-### `track_people(tracker, frame) -> FrameDetections`
-Runs YOLO + ByteTrack on one frame (persons only, NMS IoU 0.5, `persist=True` so
-ids carry over between calls on the same tracker). Returns `empty_detections()` when
-nobody is tracked.
+### `frame_shape_of_capture(capture) -> (int, int, int)`
+`(height, width, 3)` of an open `cv2.VideoCapture`, from its properties, without reading
+a frame. With the five-frame video from the `frames_in_range` example:
 
-### `track_players(video_path, start_frame, end_frame, calibration_file=None, model_path=DEFAULT_MODEL_PATH, overlay_frames=(), checks_dir=CHECKS_DIR) -> TrackingRun`
+```python
+>>> from vision.players import frame_shape_of_capture
+>>> capture = cv2.VideoCapture(str(video_path))
+>>> frame_shape_of_capture(capture)
+(48, 64, 3)
+>>> capture.release()
+
+```
+
+### `warm_up_tracker(tracker, frame_shape, device=CPU_DEVICE) -> None`
+Runs the detector once (`predict`, not `track`, so ByteTrack's state is untouched) on a
+black frame of `frame_shape` at the same `imgsz` and `device` that `track_people` will
+use. Called by `track_players` before the first chunk; see the note on the GPU's first
+call above.
+
+### `detections_of_result(result) -> FrameDetections`
+Turns one Ultralytics `Results` object into `FrameDetections` (boxes, track ids,
+confidences as NumPy arrays on the CPU); `empty_detections()` when it has no boxes or no
+track ids.
+
+```python
+>>> from types import SimpleNamespace
+>>> from vision.players import detections_of_result
+>>> detections_of_result(SimpleNamespace(boxes=None)).track_ids
+array([], dtype=int64)
+>>> detections_of_result(SimpleNamespace(boxes=SimpleNamespace(id=None))).boxes_xyxy.shape
+(0, 4)
+
+```
+
+### `track_people(tracker, frames, device=CPU_DEVICE) -> list[FrameDetections]`
+Runs YOLO + ByteTrack on a list of frames in one call (persons only, NMS IoU 0.5,
+`persist=True` so ids carry over between calls on the same tracker, inference at
+`min(frame width, MAX_DETECTION_WIDTH_PX)` on `device`). Ultralytics runs the batch
+through one detector pass and then updates the single tracker frame by frame in list
+order, so the result is the same sequence of ids as one call per frame. Returns one
+`FrameDetections` per input frame, in order (`empty_detections()` where nobody is
+tracked), and `[]` for an empty list without calling the model. One frame:
+`track_people(tracker, [frame], device)[0]`.
+
+### `track_players(video_path, start_frame, end_frame, calibration_file=None, model_path=DEFAULT_MODEL_PATH, overlay_frames=(), checks_dir=CHECKS_DIR, device=None, batch_frames=DETECTION_BATCH_FRAMES, frame_stride=1, tracker=None) -> TrackingRun`
 Tracks frames `start_frame` to `end_frame` (inclusive, stops early at the end of
-the video): view check, tracking, on-court filter and labelling for each frame,
-and saves overlays for the frames listed in `overlay_frames`. Errors: `ValueError`
-for a negative start, a reversed range, or a range with no readable frame (see
-`frames_in_range`); `FileNotFoundError` for a missing video (checked first after the
-range), calibration or weights file; `OSError` if the video can't be opened.
+the video; every `frame_stride`-th frame only): warms the model up, then reads
+`batch_frames` sampled frames at a time on a background thread, runs the view check on
+each, sends the main-view frames of the chunk to `track_people` in one call on `device`
+(`default_device()` when `None`), then applies the on-court filter and labelling per
+frame and saves overlays for the frames listed in `overlay_frames`. An already loaded
+`tracker` (from `load_person_tracker`) is reused instead of loading `model_path`, so many
+short ranges of one video can be tracked in one process; ByteTrack's state carries over
+between calls, which only affects track ids (`me`/`opp` don't depend on them). Errors: `ValueError`
+for a negative start, a reversed range, a `batch_frames` below 1, or a range with no
+readable frame (see `frames_in_range`); `FileNotFoundError` for a missing video (checked
+first after the range), calibration or weights file; `OSError` if the video can't be
+opened.
+
+### `read_stretches(stretches_file) -> list[(int, int)]`, `stretch_is_tracked(video_path, start_frame, end_frame, players_dir=PLAYERS_DIR) -> bool`, `track_stretches(video_path, stretches, calibration_file=None, model_path=DEFAULT_MODEL_PATH, device=None, batch_frames=DETECTION_BATCH_FRAMES, players_dir=PLAYERS_DIR) -> (tracked, skipped, frames)`
+The `--stretches` mode. `track_stretches` loads the model once (only when a stretch is
+left to track) and passes it to `track_players` for every stretch; ByteTrack's state
+carries over from one stretch to the next, which only changes track ids.
+
+```python
+>>> import tempfile
+>>> from vision.players import read_stretches, stretch_is_tracked
+>>> folder = Path(tempfile.mkdtemp())
+>>> _ = (folder / "s.csv").write_text("start_frame,end_frame\n0,99\n150,300\n")
+>>> read_stretches(folder / "s.csv")
+[(0, 99), (150, 300)]
+>>> _ = (folder / "bad.csv").write_text("start,end\n0,99\n")
+>>> read_stretches(folder / "bad.csv")  # doctest: +ELLIPSIS
+Traceback (most recent call last):
+ValueError: .../bad.csv needs start_frame and end_frame columns
+>>> stretch_is_tracked(Path("data/never.mp4"), 0, 99, folder)
+False
+
+```
 
 ### `split_frames_by_view(video_path, start_frame, end_frame, calibration_file=None) -> (list[int], list[int])`
 Only the view check: main-view frame indices and skipped frame indices. Same
@@ -510,6 +692,30 @@ errors as `track_players` (no weights needed).
 'data/players/match/boxes_14201_14947.csv'
 
 ```
+
+### `tracking_record_path(positions_file) -> Path`, `tracking_record(video_fps, frame_width, frame_stride, model_path, device, batch_frames) -> dict`, `write_tracking_record(positions_file, record) -> Path`, `read_tracking_record(positions_file) -> dict`, `frame_stride_of(positions_file) -> int`, `effective_fps(video_fps, frame_stride) -> float`
+The tracking record next to a positions file. `read_tracking_record` gives
+`{"frame_stride": 1}` when there is none, so tracks written before the record existed
+count as stride 1; `effective_fps` is `video_fps / frame_stride`.
+
+```python
+>>> from vision.players import effective_fps, frame_stride_of, read_tracking_record, tracking_record, tracking_record_path, write_tracking_record
+>>> positions_file = Path(tempfile.mkdtemp()) / "positions_0_99.csv"
+>>> tracking_record_path(positions_file).name
+'positions_0_99.csv.tracking.json'
+>>> frame_stride_of(positions_file), read_tracking_record(positions_file)
+(1, {'frame_stride': 1})
+>>> record = tracking_record(60.0, 1920, 2, Path("data/models/yolo11n.pt"), "mps", 8)
+>>> record["effective_fps"], record["model"], record["frame_stride"]
+(30.0, 'yolo11n.pt', 2)
+>>> _ = write_tracking_record(positions_file, record)
+>>> frame_stride_of(positions_file), effective_fps(60.0, frame_stride_of(positions_file))
+(2, 30.0)
+
+```
+
+### `video_fps_and_width(video_path) -> (float, float)`
+The video's frame rate and width from its properties (also exported by `vision.hits`).
 
 ### `save_positions(positions, output_path) -> Path`
 Writes the positions as CSV (creating folders) and returns `output_path`.

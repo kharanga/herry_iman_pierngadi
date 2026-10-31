@@ -49,6 +49,17 @@ from vision.players import (
     summary_lines,
     track_people,
     track_players,
+    chunked,
+    default_device,
+    detections_of_result,
+    frames_with_view,
+    prefetched,
+    warm_up_tracker,
+    CPU_DEVICE,
+    DETECTION_BATCH_FRAMES,
+    GPU_DEVICE,
+    MAX_DETECTION_WIDTH_PX,
+    PERSON_CLASS_ID,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -402,7 +413,7 @@ def test_players_source_has_no_comments_or_docstrings():
 
 
 def touches_yolo(function_node: ast.FunctionDef) -> bool:
-    calls_track = any(isinstance(inner, ast.Attribute) and inner.attr == "track" for inner in ast.walk(function_node))
+    calls_track = any(isinstance(inner, ast.Attribute) and inner.attr in ("track", "predict") for inner in ast.walk(function_node))
     imports_ultralytics = any(isinstance(inner, ast.ImportFrom) and inner.module == "ultralytics" for inner in ast.walk(function_node))
     return calls_track or imports_ultralytics
 
@@ -412,7 +423,7 @@ def test_yolo_is_only_called_inside_the_thin_wrappers():
     functions_touching_yolo = {
         node.name for node in ast.walk(module) if isinstance(node, ast.FunctionDef) and touches_yolo(node)
     }
-    assert functions_touching_yolo == {"load_person_tracker", "track_people"}
+    assert functions_touching_yolo == {"load_person_tracker", "track_people", "warm_up_tracker"}
     assert not any(isinstance(node, (ast.Import, ast.ImportFrom)) and "ultralytics" in ast.dump(node) for node in module.body)
 
 
@@ -458,7 +469,7 @@ def match_frame(frame_index: int) -> np.ndarray:
 
 @requires_yolo_and_match_video
 def test_yolo_frame_has_one_near_and_one_far_player_and_drops_bystanders(match_tracker):
-    detections = track_people(match_tracker, match_frame(14700))
+    detections = track_people(match_tracker, [match_frame(14700)], default_device())[0]
     positions = court_positions_of_feet(MATCH_HOMOGRAPHY, detections.boxes_xyxy)
     rows, _ = label_players(14700, detections, positions, PlayerTrackingState())
     assert len(detections.track_ids) > 2
