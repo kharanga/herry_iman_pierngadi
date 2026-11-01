@@ -1,3 +1,4 @@
+import argparse
 import sys
 from pathlib import Path
 
@@ -178,7 +179,21 @@ def print_summary(database_path: Path) -> None:
     connection.close()
 
 
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m ingest.load_shuttleset",
+        description="Load the ShuttleSet CSVs into the database's raw tables.",
+    )
+    parser.add_argument("database_path", nargs="?", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
+    build_database(SHUTTLESET_SET_DIR, parsed.database_path)
+    print_summary(parsed.database_path)
+    return 0
+
+
 if __name__ == "__main__":
-    database_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DATABASE_PATH
-    build_database(SHUTTLESET_SET_DIR, database_path)
-    print_summary(database_path)
+    sys.exit(main(sys.argv[1:]))

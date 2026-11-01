@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -354,15 +355,27 @@ def parse_sets(sets_text: str | None) -> tuple[int, ...] | None:
     return tuple(int(set_no) for set_no in sets_text.split(","))
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("usage: python -m analytics.tendencies <match_id> <player> [sets, e.g. 1,2] [database_path]", file=sys.stderr)
-        sys.exit(2)
-    match_id, player = sys.argv[1], sys.argv[2]
-    sets = parse_sets(sys.argv[3]) if len(sys.argv) > 3 else None
-    database_path = Path(sys.argv[4]) if len(sys.argv) > 4 else DATABASE_PATH
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m analytics.tendencies",
+        description="Print every habit count of one player in one match as JSON.",
+    )
+    parser.add_argument("match_id", help="match folder name (ShuttleSet) or own recording id")
+    parser.add_argument("player", help="A or B for ShuttleSet; me or opp for own footage")
+    parser.add_argument("sets", nargs="?", default=None, help="comma-separated set numbers, e.g. 1 or 1,2 (default: whole match)")
+    parser.add_argument("database_path", nargs="?", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
     try:
-        print(json.dumps(tendencies_for(match_id, player, database_path, sets), indent=2))
+        print(json.dumps(tendencies_for(parsed.match_id, parsed.player, parsed.database_path, parse_sets(parsed.sets)), indent=2))
     except UnknownMatchPlayerError as error:
         print(f"error: {error}", file=sys.stderr)
-        sys.exit(1)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

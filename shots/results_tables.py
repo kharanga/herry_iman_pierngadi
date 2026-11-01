@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -215,14 +216,31 @@ def hit_point_results_tables(comparison: dict) -> str:
     return "\n\n".join(f"### {title}\n\n{table}" for title, table in sections)
 
 
-if __name__ == "__main__":
-    model_path = Path(sys.argv[1]) if len(sys.argv) > 1 else MODEL_PATH
-    comparison_path = Path(sys.argv[2]) if len(sys.argv) > 2 else COMPARISON_PATH
-    report = json.loads(report_path_for(model_path).read_text())
-    database_path = Path(sys.argv[3]) if len(sys.argv) > 3 else DATABASE_PATH
-    hit_point_comparison_path = Path(sys.argv[4]) if len(sys.argv) > 4 else HIT_POINT_COMPARISON_PATH
-    comparison = json.loads(comparison_path.read_text())
-    print(results_tables(report, comparison, prediction_summary(database_path)))
-    if hit_point_comparison_path.is_file():
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m shots.results_tables",
+        description="Print the classifier results tables as Markdown.",
+    )
+    parser.add_argument("model_path", nargs="?", type=Path, default=MODEL_PATH, help=f"trained model (default {MODEL_PATH})")
+    parser.add_argument("comparison_path", nargs="?", type=Path, default=COMPARISON_PATH, help=f"feature-set comparison (default {COMPARISON_PATH})")
+    parser.add_argument("database_path", nargs="?", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
+    parser.add_argument(
+        "hit_point_comparison_path", nargs="?", type=Path, default=HIT_POINT_COMPARISON_PATH,
+        help=f"hit-point comparison, skipped when missing (default {HIT_POINT_COMPARISON_PATH})",
+    )
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
+    report = json.loads(report_path_for(parsed.model_path).read_text())
+    comparison = json.loads(parsed.comparison_path.read_text())
+    print(results_tables(report, comparison, prediction_summary(parsed.database_path)))
+    if parsed.hit_point_comparison_path.is_file():
         print()
-        print(hit_point_results_tables(json.loads(hit_point_comparison_path.read_text())))
+        print(hit_point_results_tables(json.loads(parsed.hit_point_comparison_path.read_text())))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

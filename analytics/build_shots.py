@@ -1,3 +1,4 @@
+import argparse
 import sys
 from pathlib import Path
 
@@ -322,11 +323,25 @@ def build_shots(database_path: Path, left_handed_player_names: frozenset[str] = 
     }
 
 
-if __name__ == "__main__":
-    database_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DATABASE_PATH
-    summary = build_shots(database_path)
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m analytics.build_shots",
+        description="Rebuild the ShuttleSet rows of the shots table; own rows are kept with their zones re-derived.",
+    )
+    parser.add_argument("database_path", nargs="?", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
+    summary = build_shots(parsed.database_path)
     print(
         f"shots: {summary['shuttleset_shots']} shuttleset rows "
         f"from {summary['raw_shots']} raw shots ({summary['duplicates_dropped']} exact duplicates dropped); "
         f"{summary['own_shots']} own rows kept with zones re-derived"
     )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

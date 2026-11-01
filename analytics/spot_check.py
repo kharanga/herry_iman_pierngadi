@@ -1,3 +1,4 @@
+import argparse
 import sys
 from pathlib import Path
 
@@ -171,10 +172,24 @@ def draw_spot_check(
     return shots
 
 
-if __name__ == "__main__":
-    database_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DATABASE_PATH
-    output_path = Path(sys.argv[2]) if len(sys.argv) > 2 else SPOT_CHECK_PATH
-    shots = draw_spot_check(database_path, output_path)
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m analytics.spot_check",
+        description="Draw random shots on the court diagram with their zones, for checking by eye.",
+    )
+    parser.add_argument("database_path", nargs="?", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
+    parser.add_argument("output_path", nargs="?", type=Path, default=SPOT_CHECK_PATH, help=f"PNG to write (default {SPOT_CHECK_PATH})")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
+    shots = draw_spot_check(parsed.database_path, parsed.output_path)
     for shot_number, shot in enumerate(shots, start=1):
         print(shot_legend_line(shot_number, shot))
-    print(f"saved {output_path}")
+    print(f"saved {parsed.output_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

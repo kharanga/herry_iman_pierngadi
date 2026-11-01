@@ -1,3 +1,4 @@
+import argparse
 import subprocess
 import sys
 import tempfile
@@ -49,10 +50,29 @@ def screenshot_at_width(
     return output_png
 
 
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m report.preview",
+        description=f"Screenshot a report page at phone width ({PHONE_WIDTH_PX} px) with headless Chrome.",
+    )
+    parser.add_argument("page_path", type=Path, help="report HTML file")
+    parser.add_argument(
+        "output_png", nargs="?", type=Path, default=None,
+        help=f"PNG to write (default {PREVIEW_DIR}/<report folder>_{PHONE_WIDTH_PX}px.png)",
+    )
+    return parser.parse_args(arguments)
+
+
+def default_preview_path(page_path: Path) -> Path:
+    return PREVIEW_DIR / f"{page_path.parent.name}_{PHONE_WIDTH_PX}px.png"
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
+    output_png = parsed.output_png or default_preview_path(parsed.page_path)
+    print(f"saved {screenshot_at_width(parsed.page_path, output_png)}")
+    return 0
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("usage: python -m report.preview <report.html> [output.png]", file=sys.stderr)
-        sys.exit(2)
-    page_path = Path(sys.argv[1])
-    output_png = Path(sys.argv[2]) if len(sys.argv) > 2 else PREVIEW_DIR / f"{page_path.parent.name}_{PHONE_WIDTH_PX}px.png"
-    print(f"saved {screenshot_at_width(page_path, output_png)}")
+    sys.exit(main(sys.argv[1:]))

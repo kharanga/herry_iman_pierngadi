@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -92,9 +93,23 @@ def compare_feature_sets(
     return comparison
 
 
-if __name__ == "__main__":
-    database_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DATABASE_PATH
-    comparison_path = Path(sys.argv[2]) if len(sys.argv) > 2 else COMPARISON_PATH
-    for set_name, result in compare_feature_sets(database_path, comparison_path).items():
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m shots.compare_features",
+        description="Cross-validate the classifier on each feature set and write the comparison.",
+    )
+    parser.add_argument("database_path", nargs="?", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
+    parser.add_argument("comparison_path", nargs="?", type=Path, default=COMPARISON_PATH, help=f"JSON to write (default {COMPARISON_PATH})")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
+    for set_name, result in compare_feature_sets(parsed.database_path, parsed.comparison_path).items():
         print(f"{set_name}: {result['accuracy_mean']:.1%}")
-    print(f"saved {comparison_path}")
+    print(f"saved {parsed.comparison_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

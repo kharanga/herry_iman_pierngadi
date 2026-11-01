@@ -1,3 +1,4 @@
+import argparse
 import json
 import sys
 from pathlib import Path
@@ -254,8 +255,22 @@ def summary_lines(report: dict) -> list[str]:
     ]
 
 
-if __name__ == "__main__":
-    database_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DATABASE_PATH
-    model_path = Path(sys.argv[2]) if len(sys.argv) > 2 else MODEL_PATH
-    for line in summary_lines(train_classifier(database_path, model_path)):
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m shots.train",
+        description="Train the shot-type classifier on the labelled ShuttleSet rows and write its report.",
+    )
+    parser.add_argument("database_path", nargs="?", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
+    parser.add_argument("model_path", nargs="?", type=Path, default=MODEL_PATH, help=f"model file to write (default {MODEL_PATH})")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
+    for line in summary_lines(train_classifier(parsed.database_path, parsed.model_path)):
         print(line)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

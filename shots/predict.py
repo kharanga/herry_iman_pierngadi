@@ -1,3 +1,4 @@
+import argparse
 import sys
 from pathlib import Path
 
@@ -121,8 +122,22 @@ def predict_shot_types(database_path: Path = DATABASE_PATH, model_path: Path = M
     return int(shot_predictions["type_pred"].notna().sum())
 
 
-if __name__ == "__main__":
-    database_path = Path(sys.argv[1]) if len(sys.argv) > 1 else DATABASE_PATH
-    model_path = Path(sys.argv[2]) if len(sys.argv) > 2 else MODEL_PATH
-    print(f"type_pred and type_conf filled for {predict_shot_types(database_path, model_path)} shots; "
+def parse_arguments(arguments: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m shots.predict",
+        description="Fill type_pred and type_conf for every shot with a hitter point and a landing point.",
+    )
+    parser.add_argument("database_path", nargs="?", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
+    parser.add_argument("model_path", nargs="?", type=Path, default=MODEL_PATH, help=f"trained model (default {MODEL_PATH})")
+    return parser.parse_args(arguments)
+
+
+def main(arguments: list[str]) -> int:
+    parsed = parse_arguments(arguments)
+    print(f"type_pred and type_conf filled for {predict_shot_types(parsed.database_path, parsed.model_path)} shots; "
           "shots without both a hitter point and a landing point are left NULL")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
