@@ -123,7 +123,7 @@ def test_labels_saved_by_the_ui_come_back_after_a_restart_and_in_the_opencv_tool
         act(port, action)
     restarted = LabelSession(session.video_path, labels_dir / "ui.csv", labels_dir / "ui_rallies.csv", tmp_path / "players", tmp_path / "hits")
     try:
-        assert state_json(restarted.state)["progress"] == {"rallies_labelled": 2, "rallies": 2, "hits_labelled": 2}
+        assert state_json(restarted.state)["progress"] == {"rallies_labelled": 2, "rallies": 2, "hits_labelled": 2, "serves_without_length": 0, "unchecked_rallies": 2}
         assert restarted.state.labels == session.state.labels
     finally:
         restarted.close()
@@ -254,7 +254,7 @@ def test_pure_navigation_and_progress():
     assert jump_to_frame(state, -5).frame == 0
     assert go_to_rally_index(state, 9).frame == 150
     labelled = apply_action(apply_action(state, {"type": "key", "key": "a"}), {"type": "key", "key": "c"})
-    assert progress(labelled) == {"rallies_labelled": 1, "rallies": 2, "hits_labelled": 1}
+    assert progress(labelled) == {"rallies_labelled": 1, "rallies": 2, "hits_labelled": 1, "serves_without_length": 0, "unchecked_rallies": 2}
     assert delete_label_at(labelled, 39) is labelled
     assert progress(delete_label_at(labelled, 40))["hits_labelled"] == 0
     with pytest.raises(ValueError):
@@ -328,9 +328,9 @@ def test_the_server_keeps_answering_after_clients_hang_up_mid_answer(labelling):
     assert request(labelling["port"], "GET", "/api/state")[0] == 200
 
 
-def test_the_ten_label_keys_through_http_give_the_state_and_the_csvs_of_handle_key(labelling):
+def test_the_label_keys_through_http_give_the_state_and_the_csvs_of_handle_key(labelling):
     reference, labels_dir = labelling["reference"], labelling["labels_dir"]
-    keys = ["h", "s", "h", "m", "s", "c", "k", "o", "l", ".", ".", "h", "o", "s", "esc", "h", "o", "t", ">", "h", "m", "p", "]", "h", "o", "s", "s", ">", "h", "m", "l"]
+    keys = ["h", "s", "h", "m", "s", "c", "k", "o", "l", ".", ".", "h", "o", "s", "esc", "h", "o", "n", ">", "h", "m", "v", "]", "h", "o", "s", "s", ">", "h", "m", "l"]
     for key in keys:
         status, state = act(labelling["port"], {"type": "key", "key": key})
         reference = handle_key(reference, key)
@@ -339,7 +339,7 @@ def test_the_ten_label_keys_through_http_give_the_state_and_the_csvs_of_handle_k
         assert status == 200 and state == state_json(reference), key
     saved = pd.read_csv(labels_dir / "ui.csv")
     assert (labels_dir / "ui.csv").read_bytes() == (labels_dir / "ref.csv").read_bytes()
-    assert saved[["type_group", "type_detail"]].values.tolist() == [["serve", "serve_long"], ["net", "return_net"], ["drive", "push"], ["serve", "serve_short"], ["lift", "lift"]]
+    assert saved[["type_group", "type_detail"]].values.tolist() == [["serve", "serve_long"], ["net", "net"], ["drive", "drive"], ["serve", "serve_short"], ["lift", "lift"]]
 
 
 def test_the_serve_prompt_shows_in_the_state_and_the_page_has_a_button_per_label(labelling):
@@ -351,6 +351,8 @@ def test_the_serve_prompt_shows_in_the_state_and_the_page_has_a_button_per_label
     assert state["pending"] is None and [(label["type_group"], label["type_detail"]) for label in state["labels"]] == [("serve", "serve_long")]
     page = request(port, "GET", "/")[2].decode()
     assert "data-keys='[\"s\",\"s\"]'" in page and "data-keys='[\"s\",\"l\"]'" in page
-    for key in ("c", "d", "k", "n", "t", "l", "v", "p"):
+    for key in ("c", "d", "k", "n", "l", "v"):
         assert f'data-key="{key}"' in page, key
+    for key in ("t", "p"):
+        assert f'data-key="{key}"' not in page, key
     assert "SERVE, press s for SHORT or l for LONG (esc cancels)" in page

@@ -21,15 +21,18 @@ from vision.players import positions_path as player_positions_path
 
 LABELS_DIR = Path("data/labels")
 LABEL_COLUMNS = ["rally", "frame_num", "player", "type_group", "type_detail", "source"]
-RALLY_COLUMNS = ["rally", "start_frame", "end_frame"]
+RALLY_COLUMNS = ["rally", "start_frame", "end_frame", "bounds_checked"]
 SOURCE_HAND, SOURCE_ACCEPTED = "hand", "accepted"
-TYPE_KEYS = {"c": "clear", "d": "drop", "k": "smash", "n": "net", "t": "return_net", "l": "lift", "v": "drive", "p": "push", "?": "unknown"}
+TYPE_KEYS = {"c": "clear", "d": "drop", "k": "smash", "n": "net", "l": "lift", "v": "drive", "?": "unknown"}
+SERVE_GROUP = "serve"
+SERVE_WITHOUT_LENGTH_TEXT = "serve ?"
 SERVE_KEY = "s"
 SERVE_LENGTH_KEYS = {"s": "serve_short", "l": "serve_long"}
 PLAYER_KEYS = {"m": "me", "o": "opp"}
 STEP_KEYS = {",": -1, ".": 1, "<": -10, ">": 10}
 RALLY_START_KEY, RALLY_END_KEY = "b", "e"
 DEFAULT_SEGMENT_SECONDS = 60.0
+UNCHECKED_START_REACH_SECONDS = 3.0
 ARROW_KEY_CODES = {2: -1, 3: 1, 81: -1, 83: 1}
 NEW_RALLY_SECONDS = 2.0
 PROPOSAL_MAX_DISTANCE_FRAMES = 60
@@ -39,7 +42,7 @@ LOOP_MAX_FRAMES = 900
 TIMELINE_HEIGHT = 48
 KEY_HELP = (
     "space play/pause left   , . one frame   < > ten frames (arrows too)   [ ] previous/next rally",
-    "h hit here, then m/o hitter + s serve (then s short / l long) c clear d drop k smash n net t return net l lift v drive p push ? unknown",
+    "h hit here, then m/o hitter + s serve (then s short / l long) c clear d drop k smash n net l lift v drive ? unknown",
     "a accept nearest proposal (then hitter + type)   x delete nearest label   u undo   r rally start/end here",
     "b rally starts here   e rally ends here   (with --blank: [ ] previous/next segment)",
     "+ add rally here   - delete rally   1/2/3 loop speed   w write   q write and quit   esc quit without writing",
@@ -66,6 +69,12 @@ class RallySpan:
     rally: int
     start_frame: int
     end_frame: int
+    start_marked: bool = field(default=False, repr=False)
+    end_marked: bool = field(default=False, repr=False)
+
+    @property
+    def bounds_checked(self) -> bool:
+        return self.start_marked and self.end_marked
 
 
 @dataclass(frozen=True)
@@ -109,7 +118,7 @@ class LabelState:
 
 def renumbered(rallies) -> tuple[RallySpan, ...]:
     ordered = sorted(rallies, key=lambda span: span.start_frame)
-    return tuple(RallySpan(number, span.start_frame, span.end_frame) for number, span in enumerate(ordered, start=1))
+    return tuple(replace(span, rally=number) for number, span in enumerate(ordered, start=1))
 
 
 def rally_containing(rallies, frame: int) -> int | None:
@@ -272,7 +281,7 @@ def set_rally_bound(state: LabelState) -> LabelState:
     if span is None:
         return state
     midpoint = (span.start_frame + span.end_frame) / 2
-    updated = replace(span, start_frame=state.frame) if state.frame < midpoint else replace(span, end_frame=state.frame)
+    updated = replace(span, start_frame=state.frame, start_marked=False) if state.frame < midpoint else replace(span, end_frame=state.frame, end_marked=False)
     if updated.start_frame > updated.end_frame:
         return state
     rallies = renumbered(state.rallies[: state.rally_index] + (updated,) + state.rallies[state.rally_index + 1 :])
@@ -302,15 +311,38 @@ def with_rallies(state: LabelState, rallies, focus_frame: int) -> LabelState:
     return replace(remembered(state), rallies=rallies, labels=labels_relabelled(state.labels, rallies), rally_index=0 if index is None else index, dirty=True)
 
 
+def labels_in(state: LabelState, first_frame: int, last_frame: int) -> bool:
+    return any(first_frame <= label.frame <= last_frame for label in state.labels)
+
+
+def replaced_rally(state: LabelState, index: int, *spans: RallySpan) -> tuple[RallySpan, ...]:
+    return state.rallies[:index] + spans + state.rallies[index + 1 :]
+
+
 def mark_rally_start(state: LabelState) -> LabelState:
     frame = state.frame
     index = rally_containing(state.rallies, frame)
     if index is not None:
-        moved = replace(state.rallies[index], start_frame=frame)
-        return with_rallies(state, state.rallies[:index] + (moved,) + state.rallies[index + 1 :], frame)
-    later_starts = [span.start_frame for span in state.rallies if span.start_frame > frame]
+        span = state.rallies[index]
+        if frame > span.start_frame and labels_in(state, span.start_frame, frame - 1):
+            ended = replace(span, end_frame=frame - 1, end_marked=False)
+            following = rally_containing(state.rallies, span.end_frame + 1)
+            if following is not None and not state.rallies[following].start_marked and not labels_in(state, frame, span.end_frame):
+                handed = replace(state.rallies[following], start_frame=frame, start_marked=True)
+                rallies = tuple(handed if position == following else (ended if position == index else rally) for position, rally in enumerate(state.rallies))
+                return with_rallies(state, rallies, frame)
+            started = replace(span, start_frame=frame, start_marked=True)
+            return with_rallies(state, replaced_rally(state, index, ended, started), frame)
+        return with_rallies(state, replaced_rally(state, index, replace(span, start_frame=frame, start_marked=True)), frame)
+    later = [position for position, span in enumerate(state.rallies) if span.start_frame > frame]
+    if later:
+        following = min(later, key=lambda position: state.rallies[position].start_frame)
+        span = state.rallies[following]
+        if not span.start_marked and span.start_frame - frame <= UNCHECKED_START_REACH_SECONDS * state.fps:
+            return with_rallies(state, replaced_rally(state, following, replace(span, start_frame=frame, start_marked=True)), frame)
+    later_starts = [state.rallies[position].start_frame for position in later]
     end_frame = min(later_starts) - 1 if later_starts else state.last_frame
-    return with_rallies(state, state.rallies + (RallySpan(0, frame, end_frame),), frame)
+    return with_rallies(state, state.rallies + (RallySpan(0, frame, end_frame, start_marked=True),), frame)
 
 
 def mark_rally_end(state: LabelState) -> LabelState:
@@ -321,8 +353,19 @@ def mark_rally_end(state: LabelState) -> LabelState:
         if not earlier:
             return state
         index = max(earlier, key=lambda position: state.rallies[position].end_frame)
-    shortened = replace(state.rallies[index], end_frame=frame)
-    return with_rallies(state, state.rallies[:index] + (shortened,) + state.rallies[index + 1 :], frame)
+        return with_rallies(state, replaced_rally(state, index, replace(state.rallies[index], end_frame=frame, end_marked=True)), frame)
+    span = state.rallies[index]
+    previous = rally_containing(state.rallies, span.start_frame - 1)
+    if previous is not None and not state.rallies[previous].end_marked and not span.start_marked and not labels_in(state, span.start_frame, frame):
+        handed = replace(state.rallies[previous], end_frame=frame, end_marked=True)
+        rest = replace(span, start_frame=frame + 1, start_marked=False)
+        rallies = tuple(handed if position == previous else (rest if position == index else rally) for position, rally in enumerate(state.rallies))
+        return with_rallies(state, tuple(rally for rally in rallies if rally.start_frame <= rally.end_frame), frame)
+    if frame < span.end_frame and labels_in(state, frame + 1, span.end_frame):
+        ended = replace(span, end_frame=frame, end_marked=True)
+        rest = replace(span, start_frame=frame + 1, start_marked=False)
+        return with_rallies(state, replaced_rally(state, index, ended, rest), frame)
+    return with_rallies(state, replaced_rally(state, index, replace(span, end_frame=frame, end_marked=True)), frame)
 
 
 def handle_key(state: LabelState, key: str) -> LabelState:
@@ -357,24 +400,58 @@ def labels_frame(state: LabelState) -> pd.DataFrame:
 
 
 def rallies_frame(state: LabelState) -> pd.DataFrame:
-    return pd.DataFrame([(span.rally, span.start_frame, span.end_frame) for span in state.rallies], columns=RALLY_COLUMNS)
+    return pd.DataFrame([(span.rally, span.start_frame, span.end_frame, span.bounds_checked) for span in state.rallies], columns=RALLY_COLUMNS)
 
 
 def detail_of(value) -> str:
     return "" if value is None or pd.isna(value) else str(value)
 
 
+def detail_for(type_group: str, type_detail: str) -> str:
+    if type_detail in TYPE_GROUP_BY_TYPE_DETAIL:
+        return type_detail
+    if type_group == SERVE_GROUP or type_group not in TYPE_GROUP_BY_TYPE_DETAIL:
+        return ""
+    return type_group
+
+
+def needs_serve_length(label: HitLabel) -> bool:
+    return label.type_group == SERVE_GROUP and label.type_detail not in SERVE_LENGTH_KEYS.values()
+
+
+def type_text(label: HitLabel) -> str:
+    if needs_serve_length(label):
+        return SERVE_WITHOUT_LENGTH_TEXT
+    return label.type_detail or label.type_group
+
+
+def unfinished_counts(state: "LabelState") -> dict[str, int]:
+    return {
+        "serves_without_length": sum(needs_serve_length(label) for label in state.labels),
+        "unchecked_rallies": sum(not span.bounds_checked for span in state.rallies),
+    }
+
+
 def labels_from_frame(table: pd.DataFrame) -> tuple[HitLabel, ...]:
     details = table["type_detail"] if "type_detail" in table.columns else pd.Series([""] * len(table), index=table.index)
     labels = (
-        HitLabel(int(row.rally), int(row.frame_num), str(row.player), str(row.type_group), str(row.source), detail_of(detail))
+        HitLabel(int(row.rally), int(row.frame_num), str(row.player), str(row.type_group), str(row.source), detail_for(str(row.type_group), detail_of(detail)))
         for row, detail in zip(table.itertuples(), details)
     )
     return tuple(sorted(labels, key=lambda label: label.frame))
 
 
+def checked_flags(table: pd.DataFrame) -> list[bool]:
+    if "bounds_checked" not in table.columns:
+        return [False] * len(table)
+    return [str(value).strip().lower() in ("true", "1") for value in table["bounds_checked"]]
+
+
 def rallies_from_frame(table: pd.DataFrame) -> tuple[RallySpan, ...]:
-    return renumbered(RallySpan(int(row.rally), int(row.start_frame), int(row.end_frame)) for row in table.itertuples())
+    return renumbered(
+        RallySpan(int(row.rally), int(row.start_frame), int(row.end_frame), start_marked=checked, end_marked=checked)
+        for row, checked in zip(table.itertuples(), checked_flags(table))
+    )
 
 
 def proposals_from_hits(hits: pd.DataFrame) -> tuple[Proposal, ...]:
@@ -491,7 +568,7 @@ def draw_timeline(state: LabelState, width: int, height: int = TIMELINE_HEIGHT) 
         if span.start_frame <= label.frame <= span.end_frame:
             x = timeline_x(label.frame, span, width)
             cv2.line(bar, (x, 6), (x, height - 6), COLOR_LABEL_BGR, 2)
-            put_text(bar, f"{label.player[0]}{label.type_group[0]}", (x + 2, height - 8), 0.4, COLOR_LABEL_BGR)
+            put_text(bar, f"{label.player[0]}{'s?' if needs_serve_length(label) else label.type_group[0]}", (x + 2, height - 8), 0.4, COLOR_LABEL_BGR)
     if span.start_frame <= state.frame <= span.end_frame:
         x = timeline_x(state.frame, span, width)
         cv2.line(bar, (x, 0), (x, height - 1), COLOR_CURSOR_BGR, 2)
@@ -512,7 +589,17 @@ def status_line(state: LabelState) -> str:
     pending = ""
     if state.pending is not None:
         pending = f"   HIT at f{state.pending.frame}{pending_prompt(state.pending)}"
-    return f"f{state.frame}  {rally_text}  labels in {'segment' if state.segments else 'rally'}: {len(inside)}  total: {len(state.labels)}{'  (unsaved)' if state.dirty else ''}{pending}"
+    return f"f{state.frame}  {rally_text}  labels in {'segment' if state.segments else 'rally'}: {len(inside)}  total: {len(state.labels)}{unfinished_text(state)}{'  (unsaved)' if state.dirty else ''}{pending}"
+
+
+def unfinished_text(state: LabelState) -> str:
+    counts = unfinished_counts(state)
+    parts = []
+    if counts["serves_without_length"]:
+        parts.append(f"{counts['serves_without_length']} serves need short/long")
+    if counts["unchecked_rallies"] and state.segments:
+        parts.append(f"{counts['unchecked_rallies']} rallies unchecked")
+    return "  " + ", ".join(parts) if parts else ""
 
 
 def compose_panels(left: np.ndarray, right: np.ndarray, timeline: np.ndarray, status: str, help_lines=KEY_HELP) -> np.ndarray:

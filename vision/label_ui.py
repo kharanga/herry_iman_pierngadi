@@ -40,6 +40,8 @@ from vision.label import (
     overlay_state,
     rally_containing,
     remembered,
+    type_text,
+    unfinished_counts,
     save_labels,
     scaled,
     segment_seconds_of,
@@ -117,7 +119,7 @@ def apply_action(state: LabelState, action) -> LabelState:
 
 def progress(state: LabelState) -> dict:
     labelled_rallies = {label.rally for label in state.labels}
-    return {"rallies_labelled": len(labelled_rallies), "rallies": len(state.rallies), "hits_labelled": len(state.labels)}
+    return {"rallies_labelled": len(labelled_rallies), "rallies": len(state.rallies), "hits_labelled": len(state.labels), **unfinished_counts(state)}
 
 
 def state_json(state: LabelState) -> dict:
@@ -131,11 +133,11 @@ def state_json(state: LabelState) -> dict:
         "rally_index": state.rally_index,
         "rally": None if span is None else {"rally": span.rally, "start_frame": span.start_frame, "end_frame": span.end_frame},
         "rally_count": len(state.rallies),
-        "labels": [{"rally": label.rally, "frame": label.frame, "player": label.player, "type_group": label.type_group, "type_detail": label.type_detail, "source": label.source} for label in state.labels if in_rally(label.frame)],
+        "labels": [{"rally": label.rally, "frame": label.frame, "player": label.player, "type_group": label.type_group, "type_detail": label.type_detail, "type_text": type_text(label), "source": label.source} for label in state.labels if in_rally(label.frame)],
         "proposals": [{"frame": proposal.frame, "hitter": proposal.hitter} for proposal in state.proposals if in_rally(proposal.frame)],
         "segment_count": len(state.segments),
         "blank": state.blank,
-        "user_rallies": [[rally.rally, rally.start_frame, rally.end_frame] for rally in state.rallies if span is not None and rally.end_frame >= span.start_frame and rally.start_frame <= span.end_frame] if state.segments else [],
+        "user_rallies": [[rally.rally, rally.start_frame, rally.end_frame, rally.bounds_checked] for rally in state.rallies if span is not None and rally.end_frame >= span.start_frame and rally.start_frame <= span.end_frame] if state.segments else [],
         "user_rally": None if containing is None else [state.rallies[containing].rally, state.rallies[containing].start_frame, state.rallies[containing].end_frame],
         "pending": None if state.pending is None else {"frame": state.pending.frame, "source": state.pending.source, "player": state.pending.player, "choosing_serve_length": state.pending.choosing_serve_length},
         "dirty": state.dirty,
@@ -350,6 +352,7 @@ table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px s
 .small{color:#aaa;font-size:12px}
 .serveprompt{background:#f6f;color:#111;padding:2px 8px;border-radius:4px}
 .rblock{position:absolute;top:0;height:44px;background:#2f5f3f}
+.rblock.unchecked{background:#5f4f2f}
 </style></head><body>
 <header><b>Label hits</b><span id="status"></span><span id="progress" class="small"></span><span id="pending" class="pending"></span></header>
 <main>
@@ -361,7 +364,7 @@ table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px s
 <div><button data-key="b">rally starts here (b)</button><button data-key="e">rally ends here (e)</button></div>
 <div><button data-key="h">hit (h)</button><button data-key="a" class="detector">accept proposal (a)</button><button data-key="m">me (m)</button><button data-key="o">opp (o)</button>
 <button data-keys='["s","s"]'>serve short (s s)</button><button data-keys='["s","l"]'>serve long (s l)</button><button data-key="c">clear (c)</button><button data-key="d">drop (d)</button><button data-key="k">smash (k)</button>
-<button data-key="n">net (n)</button><button data-key="t">return net (t)</button><button data-key="l">lift (l)</button><button data-key="v">drive (v)</button><button data-key="p">push (p)</button><button data-key="?">unknown (?)</button></div>
+<button data-key="n">net (n)</button><button data-key="l">lift (l)</button><button data-key="v">drive (v)</button><button data-key="?">unknown (?)</button></div>
 <div><button data-key="x">delete nearest (x)</button><button data-key="u">undo (u)</button><button data-key="r" class="detector">rally start/end here (r)</button>
 <button data-key="+" class="detector">add rally (+)</button><button data-key="-">remove rally (-)</button><button data-key="esc">cancel (esc)</button></div>
 <div class="small" id="help"></div></div></section>
@@ -384,15 +387,15 @@ function render(s){if(s.error){alert(s.error);return;}state=s;
  document.querySelectorAll("button.detector").forEach(b=>b.hidden=s.blank);
  $("hitshead").textContent=s.segment_count?"Hits in this segment":"Hits in this rally";
  $("prev").textContent=s.segment_count?"prev segment ([)":"prev rally";$("next").textContent=s.segment_count?"next segment (])":"next rally";
- $("progress").textContent=s.progress.rallies_labelled+" of "+s.progress.rallies+" rallies labelled, "+s.progress.hits_labelled+" hits";
+ const p0=s.progress;$("progress").textContent=p0.rallies_labelled+" of "+p0.rallies+" rallies labelled, "+p0.hits_labelled+" hits"+(p0.serves_without_length?", "+p0.serves_without_length+" serves need short/long":"")+(p0.unchecked_rallies?", "+p0.unchecked_rallies+" rallies unchecked":"");
  const p=s.pending;$("pending").className=p&&p.choosing_serve_length?"pending serveprompt":"pending";
  $("pending").textContent=p?("HIT at f"+p.frame+(!p.player?": pick me or opp":p.choosing_serve_length?" by "+p.player+": SERVE, press s for SHORT or l for LONG (esc cancels)":" by "+p.player+": pick a type")):"";
  const t=$("timeline"),w=t.clientWidth;t.innerHTML="";
- s.user_rallies.forEach(u=>{const d=document.createElement("div");d.className="rblock";const a=x(Math.max(u[1],r.start_frame),w),b=x(Math.min(u[2],r.end_frame),w);d.style.left=a+"px";d.style.width=Math.max(2,b-a)+"px";d.title="rally "+u[0]+" ["+u[1]+"-"+u[2]+"]";t.appendChild(d);});
+ s.user_rallies.forEach(u=>{const d=document.createElement("div");d.className=u[3]?"rblock":"rblock unchecked";const a=x(Math.max(u[1],r.start_frame),w),b=x(Math.min(u[2],r.end_frame),w);d.style.left=a+"px";d.style.width=Math.max(2,b-a)+"px";d.title="rally "+u[0]+" ["+u[1]+"-"+u[2]+"]"+(u[3]?"":" (bounds not checked: press b and e)");t.appendChild(d);});
  s.proposals.forEach(p=>{const d=document.createElement("div");d.className="tick";d.style.left=x(p.frame,w)+"px";d.title="proposal f"+p.frame+" "+p.hitter;t.appendChild(d);});
- s.labels.forEach(l=>{const d=document.createElement("div");d.className="lab";d.style.left=x(l.frame,w)+"px";d.title=l.frame+" "+l.player+" "+(l.type_detail||l.type_group);t.appendChild(d);});
+ s.labels.forEach(l=>{const d=document.createElement("div");d.className="lab";d.style.left=x(l.frame,w)+"px";d.title=l.frame+" "+l.player+" "+l.type_text;t.appendChild(d);});
  if(r&&s.frame>=r.start_frame&&s.frame<=r.end_frame){const c=document.createElement("div");c.className="cur";c.style.left=x(s.frame,w)+"px";t.appendChild(c);}
- const rows=s.labels.map(l=>"<tr class='row' data-frame='"+l.frame+"'><td>f"+l.frame+"</td><td>"+l.player+"</td><td>"+(l.type_detail||l.type_group)+"</td><td class='small'>"+l.source+"</td><td><button data-delete='"+l.frame+"'>delete</button></td></tr>");
+ const rows=s.labels.map(l=>"<tr class='row' data-frame='"+l.frame+"'><td>f"+l.frame+"</td><td>"+l.player+"</td><td>"+l.type_text+"</td><td class='small'>"+l.source+"</td><td><button data-delete='"+l.frame+"'>delete</button></td></tr>");
  $("hits").innerHTML=rows.join("")||"<tr><td class='small'>none yet</td></tr>";
  if(r){const key=r.start_frame+"-"+r.end_frame;if(key!==clipKey){clipKey=key;$("clip").src="/clip.mp4?start="+r.start_frame+"&end="+r.end_frame;$("clip").playbackRate=speed;}}
 }

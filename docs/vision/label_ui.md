@@ -35,9 +35,21 @@ For labelling a whole video by hand, with nothing the detector inferred on scree
 - **Rallies:** you mark them yourself:
   - `b` (**rally starts here**) starts a rally at the current frame. The new rally runs
     to the frame before the next rally, or to the end of the video, until you end it.
-    Pressed inside a rally, `b` moves that rally's start instead.
-  - `e` (**rally ends here**) ends the rally holding the current frame there. Pressed
-    after a rally, `e` extends that rally to the current frame.
+    Pressed inside a rally, `b` moves that rally's start, unless the rally already has
+    hits before the frame. In that case `b` splits the rally there, and the frame
+    starts the next point. If the next rally follows right after and its start isn't
+    checked yet, the boundary simply moves to the frame (this is how `b` fixes old
+    back-to-back rallies). Pressed less than 3 s before an unchecked rally
+    (`UNCHECKED_START_REACH_SECONDS`), `b` moves that rally's start back to the frame.
+  - `e` (**rally ends here**) ends the rally holding the current frame there. If the
+    rally has hits after the frame, `e` splits it, so those hits keep a rally. If the
+    frame is in the head of a rally (no hits yet, and its start not checked) right after
+    a rally whose end isn't checked, `e` moves that earlier rally's end to the frame
+    instead. Pressed after a
+    rally, `e` extends that rally to the current frame.
+  - A rally counts as **checked** once both its start (`b`) and its end (`e`) have been
+    pressed. Unchecked rallies are a brown block on the timeline, and the header counts
+    them. Moving a bound with `r` unchecks that side.
   - Rallies never overlap, and they may cross segment edges.
   - `r` and `-` act only on the rally holding the current frame. `-` leaves the frame
     where it is. `u` undoes any of these.
@@ -52,7 +64,28 @@ For labelling a whole video by hand, with nothing the detector inferred on scree
   labels file and one rallies file hold the whole video.
 
 The status line shows `BLANK`, the clock time, the segment, the rally holding the frame
-and the number of rallies. Screenshot: `data/checks/label_ui/blank_segments.png` (Chong
+and the number of rallies. The header adds how many serves still need short / long and
+how many rallies are unchecked.
+
+### Relabelling an older file
+
+Stand-in set 1 was labelled before the serve lengths and the checked rally bounds
+existed. To bring it to the same standard, keeping its 153 hits:
+
+```
+.venv/bin/python -m vision.label_ui data/recordings/stand_in/set1.mp4 --match-id stand_in_set1 --blank --port 8768
+```
+
+1. The header shows "24 serves need short/long, 26 rallies unchecked".
+2. For each rally:
+   - step to the serve's contact and press `b`;
+   - step to the landing and press `e`.
+
+   The old bounds move to those frames, and the rally turns from brown to green. A
+   detected rally that holds two points splits where you press `b` at the second serve.
+3. On each `serve ?` hit, press `h`, the hitter, then `s` and `s` or `l`.
+4. Every change is saved at once. Rallies you haven't checked keep `bounds_checked`
+   false, so they aren't used as in-play training data. Screenshot: `data/checks/label_ui/blank_segments.png` (Chong
 v Ding, segment 2).
 
 ## The page
@@ -76,7 +109,7 @@ Every action is a button and a key; the keys are the OpenCV tool's (`docs/vision
 | shift+arrow, `<` `>` | -10, +10 | ten frames |
 | `[` `]` | prev rally, next rally (prev / next segment with segments) | rally, or segment |
 | `b`, `e` | rally starts here, rally ends here | mark your own rally's start and end (blank mode) |
-| `h`, then `m`/`o`, then `c d k n t l v p ?` | hit, me, opp, clear ... unknown | label a hit at the current frame: clear, drop, smash, net, return net, lift, drive, push, unknown |
+| `h`, then `m`/`o`, then `c d k n l v ?` | hit, me, opp, clear ... unknown | label a hit at the current frame: clear, drop, smash, net, lift, drive, unknown |
 | `h`, then `m`/`o`, then `s` and `s`/`l` | serve short (s s), serve long (s l) | a serve: after `s` a pink banner asks **SERVE, press s for SHORT or l for LONG**; inside it `l` means long, not lift. Each serve button sends both keys |
 | `a` | accept proposal | the nearest proposal (within 60 frames) with its hitter, then a type |
 | `x`, `u` | delete nearest, undo | |
@@ -149,7 +182,7 @@ The request handling is a thin layer over pure functions:
 >>> for action in ({"type": "jump", "frame": 131}, {"type": "key", "key": "h"}, {"type": "key", "key": "o"}, {"type": "key", "key": "n"}):
 ...     state = apply_action(state, action)
 >>> state.labels, progress(state)
-((HitLabel(rally=1, frame=131, player='opp', type_group='net', source='hand', type_detail='net'),), {'rallies_labelled': 1, 'rallies': 2, 'hits_labelled': 1})
+((HitLabel(rally=1, frame=131, player='opp', type_group='net', source='hand', type_detail='net'),), {'rallies_labelled': 1, 'rallies': 2, 'hits_labelled': 1, 'serves_without_length': 0, 'unchecked_rallies': 2})
 >>> view = state_json(state)
 >>> view["rally"], [p["frame"] for p in view["proposals"]], view["labels"][0]["frame"], view["pending"], view["can_undo"]
 ({'rally': 1, 'start_frame': 90, 'end_frame': 200}, [100, 130], 131, None, True)

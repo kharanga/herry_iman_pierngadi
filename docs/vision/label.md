@@ -41,7 +41,7 @@ loop's own position. The key map is printed on start and drawn under the panels.
 | `<` `>` | ten frames back / forward |
 | `[` `]` | previous / next rally (the left panel jumps to its start, the right panel reloads) |
 | `h` | mark a hit at the current frame; then `m` or `o` for the hitter, then a type key |
-| `c` `d` `k` `n` `t` `l` `v` `p` `?` | after `h` or `a` and the hitter: clear, drop, smash, net, return net, lift, drive, push, unknown; the label is stored and shown |
+| `c` `d` `k` `n` `l` `v` `?` | after `h` or `a` and the hitter: clear, drop, smash, net, lift, drive, unknown; the label is stored and shown |
 | `s`, then `s` or `l` | after `h` or `a` and the hitter: a serve; the status line asks **SERVE, press s for SHORT or l for LONG**, and the second key picks `serve_short` or `serve_long` (`esc` cancels). Inside this prompt `l` means long, not lift |
 | `a` | accept the nearest proposal within 60 frames: jumps to it, takes its hitter, waits for the type key |
 | `x` | delete the labelled hit nearest to the current frame |
@@ -82,12 +82,27 @@ before labelling its hits.
 
 Output: `data/labels/<video id>.csv` with `rally, frame_num, player, type_group,
 type_detail, source` (`hand` for `h`, `accepted` for `a`). `type_detail` is one of the
-11 labels of `analytics.shot_types.SHOT_TYPE_DETAILS` (`serve_short`, `serve_long`,
-`net`, `return_net`, `drive`, `push`, `clear`, `drop`, `smash`, `lift`, `unknown`), and
-`type_group` is derived from it (`TYPE_GROUP_BY_TYPE_DETAIL`: both serves are `serve`,
-`return_net` is `net`, `push` is `drive`). Files written before `type_detail` existed
-still load, with an empty detail; their `serve` labels keep the group `serve`. and `data/labels/<video id>_rallies.csv`
-with `rally, start_frame, end_frame`, rallies numbered by start frame. On start the
+9 labels of `analytics.shot_types.SHOT_TYPE_DETAILS` (`serve_short`, `serve_long`,
+`net`, `drive`, `clear`, `drop`, `smash`, `lift`, `unknown`). `type_group` is derived
+from it (`TYPE_GROUP_BY_TYPE_DETAIL`); both serves are `serve`, and every other detail is
+its own group.
+
+Older files still load:
+
+- Without `type_detail`: a non-serve's detail is its group. A serve has no short / long
+  yet. It shows as **`serve ?`** in the hit list and on the timeline (`s?`), and the
+  status line counts them ("24 serves need short/long"). Labelling that frame again with
+  `s` then `s` or `l` fills it in, because labelling a frame that already has a label
+  replaces it.
+- A detail that is no longer a label (`return_net`, `push` from the ten-label files)
+  loads as its group (`net`, `drive`).
+
+The rallies file is `data/labels/<video id>_rallies.csv`, with
+`rally, start_frame, end_frame, bounds_checked`, rallies numbered by start frame.
+`bounds_checked` is true once both `b` (start) and `e` (end) have been pressed for that
+rally. Only checked bounds count as in-play training data. Files without the column load
+with every rally unchecked; a start or end checked in a session but not both is not
+saved. On start the
 tool loads both if they exist (the rallies file replaces the detector's rallies).
 Scoring a hits file against the labels: `python -m vision.hits <video> --start N --end N
 --evaluate-labels data/labels/<video id>.csv [--database data/scout.duckdb --match-id ID]`
@@ -245,14 +260,42 @@ Blank mode with segments (`docs/vision/label_ui.md`, "Blank mode"):
 >>> blank = handle_key(blank, "]")
 >>> blank.frame, blank.segment_index, handle_key(blank, ",").segment_index
 (1440, 1, 0)
->>> for key in ["b", "h", "m", "s", "s"] + ["."] * 30 + ["h", "o", "t"] + [">"] * 9 + ["e"]:
+>>> for key in ["b", "h", "m", "s", "s"] + ["."] * 30 + ["h", "o", "n"] + [">"] * 9 + ["e"]:
 ...     blank = handle_key(blank, key)
->>> blank.rallies, [(label.rally, label.frame, label.type_detail) for label in blank.labels]
-((RallySpan(rally=1, start_frame=1440, end_frame=1560),), [(1, 1440, 'serve_short'), (1, 1470, 'return_net')])
+>>> blank.rallies, [(label.rally, label.frame, label.type_detail) for label in blank.labels], blank.rallies[0].bounds_checked
+((RallySpan(rally=1, start_frame=1440, end_frame=1560),), [(1, 1440, 'serve_short'), (1, 1470, 'net')], True)
 >>> handle_key(replace(blank, frame=500), "b").rallies
 (RallySpan(rally=1, start_frame=500, end_frame=1439), RallySpan(rally=2, start_frame=1440, end_frame=1560))
 >>> handle_key(replace(blank, frame=2000), "e").rallies, handle_key(replace(blank, frame=10), "-").rallies == blank.rallies
 ((RallySpan(rally=1, start_frame=1440, end_frame=2000),), True)
+
+```
+
+### `detail_for(type_group, type_detail)`, `needs_serve_length(label)`, `type_text(label)`, `unfinished_counts(state)`, `checked_flags(table)`, `labels_in(state, first, last)`
+Older files and checked rally bounds. A non-serve without a detail takes its group, and
+a serve without short / long shows as `serve ?`. `unfinished_counts` gives the header's
+two counts. `RallySpan.bounds_checked` is true once both `start_marked` and
+`end_marked` are set by `b` and `e`.
+
+```python
+>>> from vision.label import checked_flags, detail_for, rallies_from_frame, type_text, unfinished_counts
+>>> detail_for("lift", ""), detail_for("serve", ""), detail_for("net", "return_net"), detail_for("serve", "serve_long")
+('lift', '', 'net', 'serve_long')
+>>> old = pd.DataFrame({"rally": [1, 1, 2], "frame_num": [100, 130, 400], "player": ["me", "opp", "opp"], "type_group": ["serve", "lift", "serve"], "source": "hand"})
+>>> old_rallies = pd.DataFrame({"rally": [1, 2], "start_frame": [90, 300], "end_frame": [299, 500]})
+>>> relabel = initial_state(no_hits, no_rallies, 3599, 24.0, old, old_rallies, segment_seconds=60, blank=True)
+>>> [type_text(label) for label in relabel.labels], unfinished_counts(relabel)
+(['serve ?', 'lift', 'serve ?'], {'serves_without_length': 2, 'unchecked_rallies': 2})
+>>> for frame, key in [(100, "b"), (160, "e"), (400, "b"), (450, "e")]:
+...     relabel = handle_key(replace(relabel, frame=frame), key)
+>>> relabel.rallies, [rally.bounds_checked for rally in relabel.rallies]
+((RallySpan(rally=1, start_frame=100, end_frame=160), RallySpan(rally=2, start_frame=400, end_frame=450)), [True, True])
+>>> for key in ["h", "m", "s", "l"]:
+...     relabel = handle_key(replace(relabel, frame=100) if key == "h" else relabel, key)
+>>> [type_text(label) for label in relabel.labels], unfinished_counts(relabel)
+(['serve_long', 'lift', 'serve ?'], {'serves_without_length': 1, 'unchecked_rallies': 0})
+>>> [rally.bounds_checked for rally in rallies_from_frame(rallies_frame(relabel))], checked_flags(old_rallies)
+([True, True], [False, False])
 
 ```
 
@@ -283,8 +326,8 @@ group name such as `serve` is kept as the group with an empty detail.
 >>> from analytics.shot_types import SHOT_TYPE_DETAILS
 >>> sorted(set(TYPE_KEYS.values()) | set(SERVE_LENGTH_KEYS.values())) == sorted(SHOT_TYPE_DETAILS)
 True
->>> group_and_detail("push"), group_and_detail("return_net"), group_and_detail("serve")
-(('drive', 'push'), ('net', 'return_net'), ('serve', ''))
+>>> group_and_detail("serve_long"), group_and_detail("drive"), group_and_detail("serve")
+(('serve', 'serve_long'), ('drive', 'drive'), ('serve', ''))
 
 ```
 
@@ -299,9 +342,9 @@ file without `type_detail` loads with empty details (`detail_of`).
 0      1        131     me        net         net      hand
 1      1        160    opp       lift        lift  accepted
 >>> rallies_frame(two)
-   rally  start_frame  end_frame
-0      1          100        200
-1      2          400        500
+   rally  start_frame  end_frame  bounds_checked
+0      1          100        200           False
+1      2          400        500           False
 >>> import tempfile
 >>> from pathlib import Path
 >>> folder = Path(tempfile.mkdtemp())

@@ -73,9 +73,10 @@ def test_rally_navigation_add_and_remove_relabel_and_drop_labels_outside():
 
 
 def test_saving_writes_both_files_and_reloading_gives_the_same_state(tmp_path):
-    state = pressed(starting_state(), ["h", "o", "s", "l", ".", ".", "a", "t"])
+    state = pressed(starting_state(), ["h", "o", "s", "l", ".", ".", "a", "n"])
     saved = save_labels(state, tmp_path / "labels.csv", tmp_path / "labels_rallies.csv")
-    assert not saved.dirty and [(label.type_group, label.type_detail) for label in state.labels] == [("serve", "serve_long"), ("net", "return_net")]
+    assert not saved.dirty and [(label.type_group, label.type_detail) for label in state.labels] == [("serve", "serve_long"), ("net", "net")]
+    assert rallies_frame(state)["bounds_checked"].tolist() == [False, False]
     labels, rallies = pd.read_csv(tmp_path / "labels.csv"), pd.read_csv(tmp_path / "labels_rallies.csv")
     assert list(labels.columns) == LABEL_COLUMNS and list(rallies.columns) == RALLY_COLUMNS
     pd.testing.assert_frame_equal(labels, labels_frame(state))
@@ -106,18 +107,21 @@ def test_serve_before_a_hitter_does_nothing_and_every_type_key_gives_its_group()
     for key, detail in TYPE_KEYS.items():
         state = pressed(starting_state(), ["h", "o", key])
         assert [(label.type_group, label.type_detail) for label in state.labels] == [group_and_detail(detail)]
-    assert group_and_detail("push") == ("drive", "push") and group_and_detail("return_net") == ("net", "return_net")
+    assert "t" not in TYPE_KEYS and "p" not in TYPE_KEYS
+    assert pressed(starting_state(), ["h", "o", "t"]).labels == () and pressed(starting_state(), ["h", "o", "p"]).labels == ()
+    assert group_and_detail("drive") == ("drive", "drive") and group_and_detail("net") == ("net", "net")
     assert group_and_detail("serve") == ("serve", "") and group_and_detail("unknown")[0] == "unknown"
 
 
-def test_an_old_label_file_without_details_loads_and_saves_with_an_empty_detail(tmp_path):
+def test_an_old_label_file_without_details_loads_with_the_group_as_detail_and_serves_left_open(tmp_path):
     old = pd.DataFrame({"rally": [1, 1], "frame_num": [130, 77], "player": ["opp", "opp"], "type_group": ["clear", "serve"], "source": ["hand", "hand"]})
     labels = labels_from_frame(old)
-    assert [(label.frame, label.type_group, label.type_detail) for label in labels] == [(77, "serve", ""), (130, "clear", "")]
+    assert [(label.frame, label.type_group, label.type_detail) for label in labels] == [(77, "serve", ""), (130, "clear", "clear")]
     state = initial_state(pd.DataFrame(columns=["rally", "frame", "hitter", "score", "reach"]), pd.DataFrame(columns=["rally", "start_frame", "end_frame", "hits"]), 1000, 60.0, old, pd.DataFrame({"rally": [1], "start_frame": [77], "end_frame": [200]}))
     save_labels(replace_dirty(state), tmp_path / "labels.csv", tmp_path / "labels_rallies.csv")
     saved = pd.read_csv(tmp_path / "labels.csv")
-    assert list(saved.columns) == LABEL_COLUMNS and saved["type_detail"].isna().all()
+    assert list(saved.columns) == LABEL_COLUMNS and saved["type_detail"].fillna("").tolist() == ["", "clear"]
+    assert pd.read_csv(tmp_path / "labels_rallies.csv")["bounds_checked"].tolist() == [False]
     assert labels_from_frame(saved) == labels
 
 

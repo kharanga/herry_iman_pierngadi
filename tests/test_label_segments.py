@@ -116,11 +116,11 @@ def test_e_before_any_rally_and_r_or_minus_outside_every_rally_do_nothing():
 def test_hits_take_the_rally_holding_them_and_rally_zero_outside():
     state = blank_state()
     state = pressed(at(state, 1440), ["b", "h", "m", "s", "s"])
-    state = pressed(at(state, 1470), ["h", "o", "t"])
+    state = pressed(at(state, 1470), ["h", "o", "n"])
     state = pressed(at(state, 1560), ["e"])
     state = pressed(at(state, 3000), ["h", "m", "c"])
     assert [(label.rally, label.frame, label.type_group, label.type_detail) for label in state.labels] == [
-        (1, 1440, "serve", "serve_short"), (1, 1470, "net", "return_net"), (0, 3000, "clear", "clear")
+        (1, 1440, "serve", "serve_short"), (1, 1470, "net", "net"), (0, 3000, "clear", "clear")
     ]
     after_rally_change = pressed(at(state, 100), ["b"])
     assert [label.frame for label in after_rally_change.labels] == [1440, 1470]
@@ -141,7 +141,7 @@ def test_saved_files_hold_video_frames_and_no_segments(tmp_path):
     assert labels_frame(state).to_dict("records") == [
         {"rally": 1, "frame_num": 2000, "player": "me", "type_group": "serve", "type_detail": "serve_long", "source": "hand"}
     ]
-    assert rallies_frame(state).to_dict("records") == [{"rally": 1, "start_frame": 2000, "end_frame": 2120}]
+    assert rallies_frame(state).to_dict("records") == [{"rally": 1, "start_frame": 2000, "end_frame": 2120, "bounds_checked": True}]
     reloaded = initial_state(
         *detector_tables(pd.io.common.Path("never.mp4"), LAST_FRAME, blank=True), LAST_FRAME, FPS, labels_frame(state), rallies_frame(state), segment_seconds=60, blank=True
     )
@@ -155,7 +155,7 @@ def test_state_json_reports_segments_and_the_rallies_in_view():
     shown = state_json(at(state, 1450))
     assert shown["blank"] is True and shown["segment_count"] == 3
     assert shown["rally"] == {"rally": 2, "start_frame": 1440, "end_frame": 2879}
-    assert shown["user_rallies"] == [[1, 1400, 1500]]
+    assert shown["user_rallies"] == [[1, 1400, 1500, True]]
     assert shown["user_rally"] == [1, 1400, 1500]
     assert state_json(at(state, 2000))["user_rally"] is None
     assert "segment 2 of 3" in status_line(at(state, 1450))
