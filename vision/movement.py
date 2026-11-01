@@ -23,6 +23,7 @@ from vision.hits import (
     labelled_hits,
     match_hits,
     match_tolerances,
+    tolerance_frames,
     tolerance_label,
     output_paths,
     require_track_file,
@@ -33,6 +34,7 @@ from vision.players import positions_path as player_positions_path
 
 MODEL_PATH = Path("data/models/movement_hits.joblib")
 SERVE_TO_RETURN_SECONDS = 0.76
+SAME_HIT_AS_SERVE_SECONDS = 0.25
 SPOT_CHECK_DIR = Path("data/checks/hits")
 SPOT_CHECK_SEED = 1
 SPOT_CHECK_OFFSET_FRAMES = 6
@@ -387,6 +389,24 @@ def detect_hits(tracks: PlayerTracks, model, settings: MovementSettings) -> tupl
     return hits_from_scores(tracks, sample_hit_scores(tracks, model, settings), settings)
 
 
+def newer_hits_in_rally(newer_hits: pd.DataFrame, serve_frame: int, end_frame: int, same_hit_frames: int) -> pd.DataFrame:
+    frames = newer_hits["frame"]
+    return newer_hits[(frames > serve_frame + same_hit_frames) & (frames <= end_frame)]
+
+
+def rallies_with_newer_hits(rally_hits: pd.DataFrame, rallies: pd.DataFrame, newer_hits: pd.DataFrame, same_hit_frames: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    newer_detected = detected_hits_only(newer_hits).sort_values("frame")
+    hit_tables, counts = [], []
+    for rally in rallies.itertuples(index=False):
+        serve_row = rally_hits[rally_hits["rally"] == rally.rally].sort_values("frame").head(1)
+        following = newer_hits_in_rally(newer_detected, int(serve_row["frame"].iloc[0]), int(rally.end_frame), same_hit_frames) if len(serve_row) else newer_detected.iloc[:0]
+        table = pd.concat([serve_row, following.assign(rally=rally.rally)], ignore_index=True)
+        hit_tables.append(table)
+        counts.append(len(table))
+    hits = pd.concat(hit_tables, ignore_index=True)[HIT_COLUMNS] if hit_tables else pd.DataFrame(columns=HIT_COLUMNS)
+    return hits, rallies.assign(hits=counts)
+
+
 def save_hit_model(model, model_path: Path = MODEL_PATH, trained_on: list[str] | None = None) -> Path:
     model_path = Path(model_path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -688,6 +708,9 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--hit-score-min", type=float, default=MovementSettings().hit_score_min, help="hit score a candidate needs (default 0.5)")
     parser.add_argument("--rally-end-score-min", type=float, default=MovementSettings().rally_end_score_min, help="score a rally's first and last hit need (default 0.7)")
     parser.add_argument("--no-serves", action="store_true", help="don't add an inferred serve row at the start of each rally")
+    parser.add_argument("--rallies-from", type=Path, metavar="MODEL", help="rallies and serve rows come from this hit model (with the gap rule and the inferred serve); the --model hits fill each rally after its serve row, and its hits outside these rallies are dropped")
+    parser.add_argument("--rallies-hit-score-min", type=float, default=MovementSettings().hit_score_min, help="with --rallies-from: that model's hit score minimum (default 0.5)")
+    parser.add_argument("--rallies-end-score-min", type=float, default=MovementSettings().rally_end_score_min, help="with --rallies-from: that model's rally end score minimum (default 0.7)")
     return parser.parse_args(arguments)
 
 
@@ -714,12 +737,27 @@ def detected_tables(tracks: PlayerTracks, model, in_play_model_path: Path | None
     return detect_hits_in_play(tracks, sample_hit_scores(tracks, model, settings), load_in_play_model(in_play_model_path), settings)
 
 
+def tables_with_rallies_from(tracks: PlayerTracks, parsed: argparse.Namespace, settings: MovementSettings) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if parsed.in_play_model is not None:
+        raise ValueError("give --rallies-from or --in-play-model, not both")
+    if not settings.infer_serves:
+        raise ValueError("--rallies-from needs the inferred serves; drop --no-serves")
+    rally_settings = replace(settings, hit_score_min=parsed.rallies_hit_score_min, rally_end_score_min=parsed.rallies_end_score_min)
+    rally_hits, rallies = detect_hits(tracks, load_hit_model(parsed.rallies_from), rally_settings)
+    newer_hits, _ = detect_hits(tracks, load_hit_model(parsed.model), settings)
+    same_hit_frames = tolerance_frames(SAME_HIT_AS_SERVE_SECONDS, video_fps_and_width(parsed.video)[0])
+    return rallies_with_newer_hits(rally_hits, rallies, newer_hits, same_hit_frames)
+
+
 def detect_command(parsed: argparse.Namespace, settings: MovementSettings) -> int:
     if parsed.start is None or parsed.end is None:
         raise ValueError("give --start and --end")
     tracks = load_player_tracks(parsed.video, parsed.start, parsed.end, parsed.players_dir)
     settings = settings_for_tracks(parsed.video, track_frame_stride(parsed.video, parsed.start, parsed.end, parsed.players_dir), settings)
-    hits, rallies = detected_tables(tracks, load_hit_model(parsed.model), parsed.in_play_model, settings)
+    if parsed.rallies_from is not None:
+        hits, rallies = tables_with_rallies_from(tracks, parsed, settings)
+    else:
+        hits, rallies = detected_tables(tracks, load_hit_model(parsed.model), parsed.in_play_model, settings)
     labels = None
     if parsed.evaluate:
         match_folder, set_no = parsed.evaluate

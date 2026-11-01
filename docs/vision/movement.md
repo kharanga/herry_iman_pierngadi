@@ -65,6 +65,7 @@ pure: arrays and tables in, tables out. Only `load_player_tracks`, `load_hit_mod
 | `--spot-check N` | draw N random detected hits (seed 1; inferred serves excluded), each as the frame 6 frames before (12 at 60 fps), the hit frame and 6 after, cropped around the hitter's box, both boxes drawn (`me` blue, `opp` red), to `data/checks/hits/<video id>_movement_spot_check_<start>_<end>.jpg` |
 | `--no-serves` | don't add an inferred serve row to each rally |
 | `--in-play-model MODEL` | rallies are the in-play stretches this model finds (`python -m vision.in_play`, `docs/vision/in_play.md`) instead of the gap rule. Hits are the hit chain inside each stretch. The inferred serve sits at the stretch's start unless the first detected hit is within 0.3 s of it. Off by default |
+| `--rallies-from MODEL` | rallies and serve rows come from this hit model (run with the gap rule and the inferred serve, at `--rallies-hit-score-min` and `--rallies-end-score-min`, default 0.5 and 0.7); the `--model` hits fill each of those rallies after its serve row (`rallies_with_newer_hits`). Can't be combined with `--in-play-model` or `--no-serves`. Off by default |
 | `--train` | fit the model on the `--range` ranges (labelled through `--match`) and save it to `--model` |
 | `--cross-validate` | hold out each `--range` in turn, train on the others, and print precision, recall and hitter accuracy per range and in total |
 | `--range START END SET_NO`, `--match` | a labelled range of `<video>` and the ShuttleSet match folder; the range needs its player tracking files |
@@ -85,6 +86,7 @@ without `--match`/`--range`; `2` for invalid arguments.
 | Name | Value | Meaning |
 |---|---|---|
 | `MODEL_PATH` | `data/models/movement_hits.joblib` | the shipped hit model (gitignored, rebuilt with `--train`) |
+| `SAME_HIT_AS_SERVE_SECONDS` | `0.25` | with `--rallies-from`: a `--model` hit this close after the serve row is the serve itself |
 | `SERVE_TO_RETURN_SECONDS` | `0.76` | median serve-to-return time in ShuttleSet (3,502 rallies; quartiles 0.64 and 1.00 s), see `docs/results/no_shuttle.md` |
 | `SPEED_CAP_M_PER_S` | `12.0` | speeds above this are tracking jumps and are clipped |
 | `SELF_FEATURE_NAMES`, `OTHER_FEATURE_NAMES`, `FEATURE_NAMES` | 14, 6, 20 names | the feature columns; the model file stores them and `load_hit_model` refuses a mismatch |
@@ -405,6 +407,31 @@ runs the chain, rallies and tables on them. `detect_hits(tracks, model, settings
 >>> quiet = {player: np.zeros(3) for player in scores}
 >>> [len(table) for table in hits_from_scores(tracks, quiet, MovementSettings())]
 [0, 0]
+
+```
+
+### `rallies_with_newer_hits(rally_hits, rallies, newer_hits, same_hit_frames) -> (hits, rallies)`, `newer_hits_in_rally(newer_hits, serve_frame, end_frame, same_hit_frames) -> DataFrame`
+The `--rallies-from` combination. The rallies, their bounds and their serve rows (each
+rally's first row) come from `rally_hits` and `rallies`. The rest of each rally is the
+newer scorer's detected hits after the serve row, up to the rally's `end_frame`:
+- a newer hit within `same_hit_frames` after the serve row is the serve itself, so it is
+  dropped;
+- newer hits outside every rally are dropped;
+- so are the newer scorer's own inferred serves.
+
+`hits` counts the rows again.
+
+```python
+>>> from vision.movement import rallies_with_newer_hits
+>>> nan = float("nan")
+>>> rally_hits = pd.DataFrame({"rally": [1, 1, 2, 2], "frame": [100, 150, 400, 450], "hitter": ["opp", "me", "me", "opp"], "score": [nan, 0.9, nan, 0.9], "reach": nan})
+>>> rallies = pd.DataFrame({"rally": [1, 2], "start_frame": [100, 400], "end_frame": [300, 500], "hits": [2, 2]})
+>>> newer = pd.DataFrame({"rally": [1, 1, 1, 1, 2, 3], "frame": [50, 110, 160, 290, 420, 600], "hitter": ["me", "opp", "me", "opp", "me", "opp"], "score": [0.8, 0.8, 0.8, 0.8, nan, 0.8], "reach": nan})
+>>> hits, table = rallies_with_newer_hits(rally_hits, rallies, newer, same_hit_frames=15)
+>>> hits[["rally", "frame", "hitter"]].values.tolist()
+[[1, 100, 'opp'], [1, 160, 'me'], [1, 290, 'opp'], [2, 400, 'me']]
+>>> table["hits"].tolist()
+[3, 1]
 
 ```
 

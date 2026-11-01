@@ -154,6 +154,86 @@ Sensitivity, at the shipped thresholds (reported only):
   - the same 1/3 fit as `_w0.33_tuned.joblib`, used with
     `--hit-score-min 0.55 --rally-end-score-min 0.5`.
 
+## Lin's weight at 1/2, 0.6 and 0.7 (set 1 only)
+
+The nine + Lin scorer is refitted with Lin's share of the sample weight at 0.5, 0.6 and 0.7:
+- each is one fit on the nine matches plus Lin;
+- its thresholds are tuned on those 10 training sources, each scored by a model trained
+  without it (`--save --tune`), never on set 1;
+- there is no pro held-out run for these.
+
+The 1/3 tuned model is the reference.
+
+| Model | Tuned thresholds (hit / rally end) |
+|---|---|
+| `movement_hits_nine_plus_lin_w0.33_tuned.joblib` | 0.55 / 0.5 |
+| `movement_hits_nine_plus_lin_w0.5_tuned.joblib` | 0.55 / 0.5 |
+| `movement_hits_nine_plus_lin_w0.6_tuned.joblib` | 0.55 / 0.5 |
+| `movement_hits_nine_plus_lin_w0.7_tuned.joblib` | 0.5 / 0.5 |
+
+The `_tuned` names keep `_w0.5.joblib`, the 1/2 sensitivity model above at the shipped
+thresholds, as it was.
+
+Set 1 against the relabel (172 hits). Detected hits unless the row says otherwise:
+
+| | 1/3, tuned | 1/2 | 0.6 | 0.7 |
+|---|---|---|---|---|
+| Recall ±0.25 s / ±0.50 s | **80.8%** / **87.8%** | 76.7% / 84.9% | 73.8% / 82.0% | 76.2% / 84.3% |
+| Precision inside rallies ±0.25 s / ±0.50 s | 74.7% / 78.6% | 75.4% / 81.1% | **79.4%** / **86.0%** | 74.0% / 80.6% |
+| F1 ±0.25 s | **77.6** | 76.0 | 76.5 | 75.1 |
+| Hitter right ±0.25 s | 94.2% | 93.9% | **96.9%** | 94.7% |
+| Shot type, with serves (±0.50 s, detected + inferred serves) | 97/144 = 67.4% | 92/139 = 66.2% | 89/132 = 67.4% | 95/141 = 67.4% |
+| Shot type, labelled serves left out ±0.25 s / ±0.50 s | **78.7%** / **76.7%** | 75.2% / 73.7% | 74.7% / 73.9% | 74.8% / 73.3% |
+| 8-label detail, with serves (±0.50 s) | 65.3% | 64.7% | 66.7% | 65.2% |
+| Labelled serves (31): found / typed `serve` | 24 / 5 | 21 / 5 | 21 / 7 | 25 / **10** |
+| 32 rallies with hits: detected / matched | 40 / 30 | 36 / 27 | 34 / 27 | 39 / 29 |
+| 32: merged / split / missed / extra | 2 / 4 / 1 / 7 | 2 / 3 / 3 / 6 | 2 / 4 / 4 / 4 | 3 / 5 / 1 / 6 |
+| 28 checked: matched; merged / split / missed / extra | 27; 0 / 3 / 1 / 10 | 25; 0 / 3 / 3 / 8 | 24; 0 / 3 / 4 / 7 | 27; 1 / 4 / 1 / 9 |
+| 28 checked: start / end error, median abs | **0.63 s** / 1.58 s | 0.75 s / 1.40 s | 0.73 s / **1.04 s** | 1.07 s / 1.25 s |
+
+- A heavier Lin buys precision and hitter accuracy (0.6 is the most precise) at the cost of
+  recall. None beats the 1/3 tuned model on F1 or on shot type with the serves left out.
+- The best of the three by F1 at ±0.25 s (the tuning's own criterion) is 0.6, so 0.6 is
+  the one used in the combined detector below.
+- Picking the weight this way uses set 1 for a decision, so set 1 is no longer a clean test
+  of that choice. Ding, once labelled, is.
+
+## Default rallies and serves, newer hits (`--rallies-from`, set 1 only)
+
+The combined detector takes the rallies and serve rows from the default five-range model:
+its gap rule, its inferred serve, and its rally bounds. A newer scorer's detected hits fill
+each rally after the serve row:
+- a newer hit within ±0.25 s of the serve row is the serve itself;
+- newer hits outside every default rally are dropped.
+
+The rally rows are therefore the default's for all three: 36 detected, 29 of the 32
+matched, 2 / 2 / 1 / 5, and 25 of the 28 checked.
+
+| | Default (five ranges) | Rallies from the default + nine matches | + nine + Lin 1/3 tuned | + nine + Lin 0.6 tuned |
+|---|---|---|---|---|
+| Hits found ±0.25 s / ±0.50 s (detected) | 65.7% / 74.4% | **75.6%** / **79.7%** | 70.3% / 77.3% | 66.3% / 74.4% |
+| Hits found, detected + inferred serves ±0.25 s / ±0.50 s | 75.6% / 86.6% | **84.9%** / **91.3%** | 79.7% / 89.0% | 76.2% / 86.6% |
+| Precision inside rallies ±0.25 s / ±0.50 s (detected) | 64.2% / 70.3% | 71.4% / 72.9% | 76.1% / 82.1% | **78.1%** / **87.1%** |
+| Hitter right ±0.25 s | 93.8% | 96.2% | 95.0% | **97.4%** |
+| Shot type, with serves ±0.25 s / ±0.50 s | 73.8% / 74.1% | 74.5% / 73.5% | **77.0%** / 75.5% | 76.5% / **75.8%** |
+| Shot type, labelled serves left out ±0.25 s / ±0.50 s | 70.9% / 71.8% | 72.0% / 70.6% | **75.5%** / 73.5% | 75.0% / **73.9%** |
+| 8-label detail, with serves (±0.50 s) | 72.7% | 72.8% | **74.8%** | 74.2% |
+| Labelled serves (31): found / typed `serve` | 23 / 20 | 22 / **20** | 22 / 19 | 21 / 18 |
+| Matched non-serves typed `serve` (±0.25 s / ±0.50 s) | 0 / 2 | 0 / 2 | 0 / 1 | 0 / 1 |
+
+- Every combination keeps the default's serve typing (18 to 20 of the matched serves, where
+  the newer scorers alone type 3 to 10) and adds hits or precision on top.
+- **Nine matches** inside the default rallies finds the most hits. Its merged rallies are
+  gone, because the rallies are the default's.
+- **Nine + Lin 1/3 tuned** has the best shot type with and without serves (77.0% at
+  ±0.25 s with serves), at 76.1% precision.
+- **0.6** is the most precise and has the best hitter, and finds about as many hits as the
+  default.
+- The cost: the rally bounds stay the default's, whose ends are the furthest off (2.90 s
+  median against 1.58 s for the 1/3 tuned scorer alone). The combination doesn't get
+  those back.
+- The ±0.25 s same-hit window was set beforehand, not tuned on set 1.
+
 ## What next
 
 - **Ding** (Chong v Ding), now re-tracked, once labelled by the user would be a second
@@ -196,3 +276,30 @@ done
 The five-range and nine-match hits on set 1 are those of `docs/results/club_labels_set1.md`.
 Every rally row comes from the `label_scores` runs above: the 32-rally rows from the
 `relabel` copy, the 28-checked rows from `relabel_checked`.
+
+The weights and the combined detector (set 1 only):
+
+```
+for w in 0.5 0.6 0.7; do
+  .venv/bin/python -m vision.hit_training data/hit_training/matches.txt --tune $CLUB --club-weight $w \
+    --save data/models/movement_hits_nine_plus_lin_w${w}_tuned.joblib   # about 3 min CPU each, prints the tuned thresholds
+done
+for run in lin_w0.5_tuned:w0.5_tuned:0.55:0.5 lin_w0.6_tuned:w0.6_tuned:0.55:0.5 lin_w0.7_tuned:w0.7_tuned:0.5:0.5; do
+  IFS=: read name w h r <<< "$run"
+  .venv/bin/python -m vision.movement $V --start 0 --end 26234 --model data/models/movement_hits_nine_plus_lin_$w.joblib \
+    --hit-score-min $h --rally-end-score-min $r --hits-dir $D/$name/hits
+done
+for run in combined_nine_matches:movement_hits_ten_matches:0.5:0.7 combined_nine_plus_lin_tuned:movement_hits_nine_plus_lin_w0.33_tuned:0.55:0.5 combined_lin_w0.6_tuned:movement_hits_nine_plus_lin_w0.6_tuned:0.55:0.5; do
+  IFS=: read name model h r <<< "$run"
+  .venv/bin/python -m vision.movement $V --start 0 --end 26234 --rallies-from data/models/movement_hits.joblib \
+    --model data/models/$model.joblib --hit-score-min $h --rally-end-score-min $r --hits-dir $D/$name/hits
+done
+```
+
+Then `vision.features` and `shots.predict` on a copy of `data/scout.duckdb` per run, and
+`vision.label_scores` on both label copies, as above. The weight runs are scored with
+`--run` for `five_ranges nine_matches nine_plus_lin_tuned lin_w0.5_tuned lin_w0.6_tuned lin_w0.7_tuned`,
+and the combined runs with `five_ranges combined_nine_matches combined_nine_plus_lin_tuned combined_lin_w0.6_tuned`.
+The "labelled serves left out" rows are `label_scores`' table of that name: matched with
+the inferred serve rows in, then scored on the labels whose group is not `serve`. The
+reports are `data/club_labels/report_vis028_{weights,combined}{,_checked}.md`.

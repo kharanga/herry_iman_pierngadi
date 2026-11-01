@@ -34,6 +34,9 @@ It prints Markdown:
 - the headline table: recall, hitter, shot type and precision per run and tolerance;
 - recall per label source when the labels have more than one;
 - the labelled serves, found by an inferred serve row or by a detected hit;
+- the labelled serves left out, per run and tolerance: matched with the inferred serve
+  rows in, then scored on the labels whose group isn't `serve`. It gives non-serves
+  matched, shot type agreement, and matched non-serves typed `serve`;
 - recall, hitter and shot type by labelled type and by labelled player;
 - one labelled-vs-predicted shot type table per run;
 - shot detail agreement per run: `type_detail_pred` against the labelled `type_detail`,
@@ -156,7 +159,7 @@ The table cells (`3/4 = 75.0%`), and the signed offset of the nearest detected h
 
 ```
 
-### `headline_table(...)`, `serve_table(...)`, `source_lines(...)`, `breakdown_table(...)`, `type_confusion_table(...)`, `missed_table(...)`, `report_lines(...)`, `read_predictions(database_path, match_id)`, `main(arguments)`
+### `headline_table(...)`, `serve_table(...)`, `non_serve_table(runs, labels, windows, fps)`, `source_lines(...)`, `breakdown_table(...)`, `type_confusion_table(...)`, `missed_table(...)`, `report_lines(...)`, `read_predictions(database_path, match_id)`, `main(arguments)`
 These build the printed tables from the functions above. `read_predictions` reads
 `frame_num, type_pred` of the match's own rows, read-only. A missing database is a
 `FileNotFoundError`.

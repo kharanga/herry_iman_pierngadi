@@ -208,6 +208,18 @@ def serve_table(runs: list[ScoredRun], labels: pd.DataFrame, tolerance: int) -> 
     return lines
 
 
+def non_serve_table(runs: list[ScoredRun], labels: pd.DataFrame, windows: list[tuple[float, int]], fps: float) -> list[str]:
+    lines = ["| Model | Tolerance | Labelled non-serves matched | Shot type agrees | Matched non-serves typed serve |", "|---|---|---|---|---|"]
+    for run in runs:
+        for window, tolerance in windows:
+            outcomes = label_outcomes(run.hits, labels, run.predictions, tolerance, with_serves=True)
+            non_serves = outcomes[outcomes["type"] != "serve"]
+            counts = agreement_counts(non_serves)
+            typed_serve = int((non_serves["detected_frame"].notna() & (non_serves["type_pred"] == "serve")).sum())
+            lines.append(f"| {run.name} | {tolerance_label(window, fps)} | {share(counts['matched'], counts['labelled'])} | {share(counts['type_right'], counts['type_judged'])} | {typed_serve} |")
+    return lines
+
+
 def source_lines(runs: list[ScoredRun], labels: pd.DataFrame, spans: list[tuple[int, int]], windows: list[tuple[float, int]], fps: float) -> list[str]:
     if labels["source"].nunique() < 2:
         return ["", f"## By label source", f"every label is {labels['source'].iloc[0]}; no per-source split"]
@@ -278,6 +290,7 @@ def report_lines(
     lines += ["", "## Headline", *headline_table(runs, labels, spans, windows, fps)]
     lines += source_lines(runs, labels, spans, windows, fps)
     lines += ["", f"## Labelled serves, {breakdown}", *serve_table(runs, labels, breakdown_tolerance)]
+    lines += ["", "## Labelled serves left out, detected + inferred serves", *non_serve_table(runs, labels, windows, fps)]
     for column in ("type", "hitter"):
         lines += ["", f"## By labelled {column}, {breakdown}, detected + inferred serves", *breakdown_table(runs, labels, column, breakdown_tolerance, True)]
     for run in runs:
