@@ -591,17 +591,35 @@ def court_diagram(point_names, current_name: str, placed_names, height_px: int =
     return diagram
 
 
-def points_are_enough(point_pixels: dict) -> bool:
+def clickable_point_names() -> list[str]:
+    catalog = court_point_catalog()
+    corner_positions = {catalog[name] for name in CORNER_NAMES}
+    return list(CORNER_NAMES) + [name for name, position in catalog.items() if name not in CORNER_NAMES and position not in corner_positions]
+
+
+def same_point_pairs(point_names) -> list[tuple[str, str]]:
+    catalog = court_point_catalog()
+    names = list(point_names)
+    return [(first, second) for index, first in enumerate(names) for second in names[index + 1 :] if catalog.get(first) is not None and catalog.get(first) == catalog.get(second)]
+
+
+def points_problem(point_pixels: dict) -> str | None:
+    pairs = same_point_pairs(point_pixels)
+    if pairs:
+        return "same point clicked twice: " + ", ".join(f"{first} / {second}" for first, second in pairs)
     try:
         check_points_fix_a_homography(court_point_meters(list(point_pixels)))
-    except ValueError:
-        return False
-    return True
+    except ValueError as error:
+        return str(error)
+    return None
+
+
+def points_are_enough(point_pixels: dict) -> bool:
+    return points_problem(point_pixels) is None
 
 
 def click_court_points(frame: np.ndarray, window_name: str = "court points") -> dict | None:
-    point_names = [name for name in court_point_catalog() if name not in CORNER_NAMES]
-    point_names = list(CORNER_NAMES) + point_names
+    point_names = clickable_point_names()
     placed: dict[str, tuple[int, int]] = {}
     current = [0]
 
@@ -620,7 +638,8 @@ def click_court_points(frame: np.ndarray, window_name: str = "court points") -> 
                 cv2.putText(shown_frame, name, (point[0] + 8, point[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, CORNER_COLOR_BGR, 1)
             diagram = court_diagram(point_names, point_names[current[0]], placed)
             shown_frame[10 : 10 + diagram.shape[0], 10 : 10 + diagram.shape[1]] = diagram
-            ready = "enter = save" if points_are_enough(placed) else f"need 4+ points not on 2 lines ({len(placed)} placed)"
+            problem = points_problem(placed)
+            ready = "enter = save" if problem is None else f"{len(placed)} placed: {problem}"
             prompt = f"click {point_names[current[0]]}   n/p = next/previous point, d = delete it, {ready}, esc = cancel"
             cv2.putText(shown_frame, prompt, (20, shown_frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, CORNER_COLOR_BGR, 2)
             cv2.imshow(window_name, shown_frame)

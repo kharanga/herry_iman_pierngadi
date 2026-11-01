@@ -77,10 +77,15 @@ calibration does; for a crossing, at the outer edge of the sideline and the midd
 the line across (the lines are about 4 cm wide, so the choice matters by 1-3 px).
 
 **Click window** (`--pick-points`): a small court diagram in the top-left corner shows
-every known point; the current one is yellow, placed ones green. A click places the
-current point and moves to the next; `n`/`p` step to the next or previous point without
-clicking (to skip hidden ones), `d` removes the current point's click, Enter saves once
-the placed points fix a homography, Esc or the close button cancels.
+every known point once. That is 32 points: the 4 corners under their short names, and no
+crossing that sits on a corner (`clickable_point_names`). The current point is yellow,
+placed ones green. A click places the current point and moves to the next; `n`/`p` step
+to the next or previous point without clicking (to skip hidden ones), `d` removes the
+current point's click, Enter saves once the placed points fix a homography, Esc or the
+close button cancels. Until Enter can save, the prompt gives the reason
+(`points_problem`): fewer than 4 points, 3 on one line, or "same point clicked twice"
+with both names (possible with `--points`, or in a file from before this list).
+`--points` still takes either name for a corner.
 
 ## Calibration file
 
@@ -648,13 +653,29 @@ calibration or video, or an unreadable frame.
 
 ```
 
-### `draw_point_markers(frame, calibration, color=CORNER_COLOR_BGR) -> ndarray`, `court_diagram(point_names, current_name, placed_names, height_px=300) -> ndarray`, `points_are_enough(point_pixels) -> bool`, `click_court_points(frame, window_name="court points") -> dict | None`
-The overlay markers of a point calibration; the click window's court diagram; whether the
-placed points fix a homography; the click window itself (returns `{name: (x, y)}` or
-`None` when cancelled; needs a display, so no doctest).
+### `draw_point_markers(frame, calibration, color=CORNER_COLOR_BGR) -> ndarray`, `court_diagram(point_names, current_name, placed_names, height_px=300) -> ndarray`, `clickable_point_names() -> list[str]`, `same_point_pairs(point_names) -> list[(str, str)]`, `points_problem(point_pixels) -> str | None`, `points_are_enough(point_pixels) -> bool`, `click_court_points(frame, window_name="court points") -> dict | None`
+These are:
+- the overlay markers of a point calibration;
+- the click window's court diagram;
+- the click list, with each physical point once;
+- pairs of names given for the same point;
+- why the placed points don't fix a homography yet (`None` when they do), and whether they do;
+- the click window itself. It returns `{name: (x, y)}`, or `None` when cancelled; it needs
+  a display, so it has no doctest.
 
 ```python
->>> from vision.court import court_diagram, points_are_enough
+>>> from vision.court import clickable_point_names, court_diagram, points_are_enough, points_problem, same_point_pairs
+>>> clickable = clickable_point_names()
+>>> len(clickable), clickable[:4], "near_baseline x left_doubles_sideline" in clickable
+(32, ['near_left', 'near_right', 'far_right', 'far_left'], False)
+>>> same_point_pairs(["near_left", "near_baseline x left_doubles_sideline", "far_left"])
+[('near_left', 'near_baseline x left_doubles_sideline')]
+>>> points_problem({"near_left": (1.0, 2.0), "near_baseline x left_doubles_sideline": (1.0, 2.0)})
+'same point clicked twice: near_left / near_baseline x left_doubles_sideline'
+>>> points_problem({"near_left": (1.0, 2.0)})
+'need at least 4 court points, got 1'
+>>> points_problem(dict(zip(names, pixels))) is None
+True
 >>> points_are_enough(dict(zip(names, pixels))), points_are_enough({"near_left": (1.0, 2.0)})
 (True, False)
 >>> court_diagram(list(catalog), "near_left", {"near_right"}).shape
