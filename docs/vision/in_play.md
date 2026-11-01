@@ -62,6 +62,17 @@ Train and measure, held out by match, next to the rule:
   and by the rule, on the same hit scores. It writes `held_out.csv` in `--out` (one row
   per match and method) and prints the totals per method.
 - `--save MODEL`: trains on every listed match and saves the model.
+- `--club VIDEO LABELS HIT_MODEL` (with `--save`, repeatable): adds a club video tracked in
+  full. In play is between the hand-marked bounds of LABELS' rallies file
+  (`<labels stem>_rallies.csv`), every other frame is not in play. If that file has
+  `bounds_checked`, only the checked rallies are in play and the frames inside unchecked
+  ones are left out. Frames where a player row is `doubtful` are left out as well, and
+  those rows are dropped from the tracks, as in `vision.hit_training`. The video's hit
+  scores come from HIT_MODEL, which should be a hit model not trained on that video, just
+  as each pro match is scored by a model trained without it.
+- `--club-weight W` (default 1/3): the club videos together carry W of the sample
+  weight, shared equally; the pro matches share the rest equally
+  (`vision.hit_training.match_weights`).
 - `--gaps`: only prints, per match, the minutes tracked and out of play, the median gap
   between rallies, and the mean share of each gap inside the tracked stretches
   (`gap_coverage`). It loads no tracks and trains nothing.
@@ -69,7 +80,8 @@ Train and measure, held out by match, next to the rule:
   cache is reused only if it was made from the same training matches.
 
 The run exits `0`; `1` with `error: ...` for a missing file or no usable match; `2`
-without `--held-out`, `--save` or `--gaps`.
+without `--held-out`, `--save` or `--gaps`, for `--club` without `--save`, or for a
+`--club-weight` outside [0, 1).
 
 Detect with it:
 
@@ -78,7 +90,9 @@ Detect with it:
 ```
 
 Score the rally bounds against labelled rallies with
-`python -m vision.label_scores ... --fps F` (`docs/vision/label_scores.md`).
+`python -m vision.label_scores ... --fps F` (`docs/vision/label_scores.md`), or against
+the hand-checked bounds only with `python -m vision.rally_bounds`
+(`docs/vision/rally_bounds.md`).
 
 ## Constants
 
@@ -205,7 +219,35 @@ How much out-of-play time tracked stretches hold:
 
 ```
 
-### `fit_in_play_model(feature_matrix, targets)`, `in_play_probability(model, feature_matrix, settings) -> ndarray`, `save_in_play_model(model, model_path, trained_on)`, `load_in_play_model(model_path)`
+### `hand_marked_spans(rallies) -> (checked, unchecked)`, `doubtful_frames(positions) -> ndarray`, `club_sample_mask(frames, unchecked_spans, doubtful, step=2) -> ndarray`
+The club training frames. `hand_marked_spans` splits a rallies table into the checked
+and unchecked spans, reading the column with `vision.label.checked_flags` (only `True` or `1`,
+as text or not, counts as checked); without a `bounds_checked` column every rally is checked.
+`club_sample_mask` keeps every `step`-th frame that is neither inside an unchecked rally
+nor doubtful.
+
+```python
+>>> from vision.in_play import club_sample_mask, doubtful_frames, hand_marked_spans
+>>> rallies = pd.DataFrame({"rally": [1, 2], "start_frame": [10, 40], "end_frame": [20, 50], "bounds_checked": [True, False]})
+>>> hand_marked_spans(rallies)
+([(10, 20)], [(40, 50)])
+>>> hand_marked_spans(rallies.drop(columns="bounds_checked"))
+([(10, 20), (40, 50)], [])
+>>> hand_marked_spans(rallies.assign(bounds_checked=["True", "False"]))
+([(10, 20)], [(40, 50)])
+>>> doubtful_frames(pd.DataFrame({"frame": [3, 3, 5], "player": ["me", "opp", "me"], "doubtful": [True, True, False]})).tolist()
+[3]
+>>> club_sample_mask(np.arange(0, 8), [(4, 5)], np.array([2]), step=2).tolist()
+[True, False, False, False, False, False, True, False]
+
+```
+
+### `club_in_play_rows(club, hit_model, rallies, doubtful, step=2)`, `load_club_rows(video_path, labels_file, hit_model_path)`, `save_with_clubs(play_rows, names, parsed)`
+A club video's training rows (features and in-play targets on the kept frames), loading
+them from files, and the weighted fit that `--save` runs. Without `--club` it fits
+the pro matches with no weights, as before.
+
+### `fit_in_play_model(feature_matrix, targets, sample_weight=None)`, `in_play_probability(model, feature_matrix, settings) -> ndarray`, `save_in_play_model(model, model_path, trained_on)`, `load_in_play_model(model_path)`
 Fit, smoothed probability, and the saved file (`model`, `feature_names`,
 `landing_seconds`, `trained_on`). A missing file is a `FileNotFoundError` naming the
 training command, and a file made with other features is a `ValueError`.

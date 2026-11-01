@@ -116,8 +116,8 @@ def labelled_rally_spans(labels: pd.DataFrame, fps: float, landing_seconds: floa
     return sorted((int(rally["frame"].min()), int(rally["frame"].max()) + landing) for _, rally in labels.groupby(keys))
 
 
-def fit_in_play_model(feature_matrix: np.ndarray, targets: np.ndarray) -> HistGradientBoostingClassifier:
-    return HistGradientBoostingClassifier(**IN_PLAY_MODEL_PARAMETERS).fit(feature_matrix, targets)
+def fit_in_play_model(feature_matrix: np.ndarray, targets: np.ndarray, sample_weight: np.ndarray | None = None) -> HistGradientBoostingClassifier:
+    return HistGradientBoostingClassifier(**IN_PLAY_MODEL_PARAMETERS).fit(feature_matrix, targets, sample_weight=sample_weight)
 
 
 def in_play_probability(model, feature_matrix: np.ndarray, settings: MovementSettings) -> np.ndarray:
@@ -247,6 +247,48 @@ def in_play_training_rows(match, scores: list[dict[str, np.ndarray]], step: int 
     feature_rows = [in_play_feature_matrix(tracks, stretch_scores, match.settings)[::step] for tracks, stretch_scores in zip(match.tracks, scores)]
     target_rows = [in_play_targets(tracks.frames, spans)[::step] for tracks in match.tracks]
     return np.vstack(feature_rows), np.concatenate(target_rows)
+
+
+def hand_marked_spans(rallies: pd.DataFrame) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    from vision.label import checked_flags
+
+    checked = pd.Series(checked_flags(rallies) if "bounds_checked" in rallies.columns else True, index=rallies.index, dtype=bool)
+    as_spans = lambda table: sorted((int(start), int(end)) for start, end in zip(table["start_frame"], table["end_frame"]))
+    return as_spans(rallies[checked]), as_spans(rallies[~checked])
+
+
+def doubtful_frames(positions: pd.DataFrame) -> np.ndarray:
+    if "doubtful" not in positions.columns:
+        return np.zeros(0, dtype=int)
+    return np.unique(positions.loc[positions["doubtful"].astype(bool), "frame"].astype(int))
+
+
+def club_sample_mask(frames: np.ndarray, unchecked_spans: list[tuple[int, int]], doubtful: np.ndarray, step: int = TRAINING_SAMPLE_STEP) -> np.ndarray:
+    sampled = np.zeros(len(frames), dtype=bool)
+    sampled[::step] = True
+    return sampled & ~in_play_targets(frames, unchecked_spans).astype(bool) & ~np.isin(frames, doubtful)
+
+
+def club_in_play_rows(club, hit_model, rallies: pd.DataFrame, doubtful: np.ndarray, step: int = TRAINING_SAMPLE_STEP) -> tuple[np.ndarray, np.ndarray]:
+    from vision.movement import sample_hit_scores
+
+    tracks = club.tracks[0]
+    in_play, unchecked = hand_marked_spans(rallies)
+    features = in_play_feature_matrix(tracks, sample_hit_scores(tracks, hit_model, club.settings), club.settings)
+    keep = club_sample_mask(np.asarray(tracks.frames, dtype=int), unchecked, doubtful, step)
+    return features[keep], in_play_targets(tracks.frames, in_play)[keep]
+
+
+def load_club_rows(video_path: Path, labels_file: Path, hit_model_path: Path) -> tuple[str, tuple[np.ndarray, np.ndarray]]:
+    from vision.hit_training import load_club
+    from vision.label_scores import rallies_file_for
+    from vision.movement import load_hit_model, players_files
+    from vision.players import video_last_frame
+
+    club = load_club(Path(video_path), Path(labels_file))
+    positions_file, _ = players_files(Path(video_path), 0, video_last_frame(Path(video_path)))
+    rallies = pd.read_csv(rallies_file_for(Path(labels_file)))
+    return club.name, club_in_play_rows(club, load_hit_model(hit_model_path), rallies, doubtful_frames(pd.read_csv(positions_file)))
 
 
 def video_spans(spans: list[tuple[int, int]], tracks: PlayerTracks) -> list[tuple[int, int]]:
@@ -397,9 +439,22 @@ def run(parsed: argparse.Namespace) -> int:
         for line in summary_lines(table):
             print(line)
     if parsed.save:
-        model = fit_in_play_model(np.vstack([play_rows[name][0] for name in names]), np.concatenate([play_rows[name][1] for name in names]))
-        print(f"saved {save_in_play_model(model, parsed.save, names)} (trained on {len(names)} matches)")
+        print(f"saved {save_with_clubs(play_rows, names, parsed)}")
     return 0
+
+
+def save_with_clubs(play_rows: dict, names: list[str], parsed: argparse.Namespace) -> str:
+    from vision.hit_training import match_weights
+
+    clubs = dict(load_club_rows(video, labels, hit_model) for video, labels, hit_model in parsed.club)
+    for name, (_, targets) in clubs.items():
+        print(f"{name}: {len(targets)} sampled frames, {int(targets.sum())} in play, weight share {parsed.club_weight / len(clubs):.3f}")
+    rows = {**play_rows, **clubs}
+    sources = names + sorted(clubs)
+    weights = match_weights(sources, rows, sorted(clubs), parsed.club_weight) if clubs else None
+    model = fit_in_play_model(np.vstack([rows[name][0] for name in sources]), np.concatenate([rows[name][1] for name in sources]), weights)
+    club_text = f" and {len(clubs)} club videos, club weight {parsed.club_weight:.3f}" if clubs else ""
+    return f"{save_in_play_model(model, parsed.save, sources)} (trained on {len(names)} matches{club_text})"
 
 
 def parse_arguments(arguments: list[str]) -> argparse.Namespace:
@@ -411,6 +466,8 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--held-out", action="store_true", help="score each match with an in-play model trained on the others, next to the rally rule")
     parser.add_argument("--save", type=Path, metavar="MODEL", help="train on every listed match and save the in-play model")
     parser.add_argument("--gaps", action="store_true", help="only print how much out-of-play time the tracked stretches hold, per match, and exit")
+    parser.add_argument("--club", nargs=3, action="append", default=[], metavar=("VIDEO", "LABELS", "HIT_MODEL"), help="with --save: add a club video; in play is between the hand-marked bounds of LABELS' rallies file (only bounds_checked rallies when it has that column; frames inside unchecked ones are left out), doubtful frames are left out, and its hit scores come from HIT_MODEL (one not trained on this video); repeatable")
+    parser.add_argument("--club-weight", type=float, default=1 / 3, help="with --club: share of the total sample weight carried by the club videos together (default 1/3)")
     parser.add_argument("--out", type=Path, default=RESULTS_DIR, help="folder for the tables and the cached hit scores (default data/in_play)")
     return parser.parse_args(arguments)
 
@@ -419,6 +476,12 @@ def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
     if not parsed.held_out and not parsed.save and not parsed.gaps:
         print("error: give --held-out, --save MODEL, --gaps or a mix", file=sys.stderr)
+        return 2
+    if parsed.club and not parsed.save:
+        print("error: --club needs --save", file=sys.stderr)
+        return 2
+    if not 0 <= parsed.club_weight < 1:
+        print(f"error: --club-weight must be in [0, 1), got {parsed.club_weight}", file=sys.stderr)
         return 2
     try:
         if parsed.gaps:

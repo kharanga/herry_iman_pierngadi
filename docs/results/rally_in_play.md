@@ -178,13 +178,98 @@ Notes on the set-1 numbers:
 - **The in-play model is shipped as an option** (`--in-play-model`). The default stays
   the old five-range scorer with the rule, until the user decides.
 
+## Refit with the user's club rallies (set 1 only)
+
+The in-play model is refitted on the nine matches plus Lin v Yeung's 67 hand-marked
+rallies. For Lin, the whole video counts: in play between the user's start and end,
+everything else not in play. Two kinds of frames are left out:
+- frames where a player is flagged doubtful;
+- every other frame, as for the pro matches.
+
+That leaves 13,157 Lin frames, 6,588 of them in play. Lin carries 1/3 of the sample
+weight, fixed in advance.
+
+Lin's hit scores come from the nine-match hit model, which wasn't trained on Lin, just as
+each pro match is scored by a model trained without it. Nothing was tuned: the
+probability threshold and the minimum lengths are the existing constants.
+
+The model is `data/models/in_play_nine_plus_lin.joblib`. A second one,
+`data/models/in_play_nine_plus_lin_set1.joblib`, adds set 1's 28 checked rallies at a
+share of 1/6, the same as Lin's, with set 1's hit scores from the 1/3 nine + Lin scorer.
+It is saved for the clean test on Ding once the user has labelled it, and is not scored
+here.
+
+### Rally bounds against set 1's 28 checked rallies
+
+These come from `vision.rally_bounds`. The 6 unchecked rallies are left out: their
+frames are not judged, and a detected rally touching only them is not extra.
+
+| Method (hit scorer, thresholds) | Frames right | Found | Matched of 28 | Merged / split / missed / extra | Start / end error, median abs | Start / end error, mean |
+|---|---|---|---|---|---|---|
+| Gap rule, default five-range scorer (0.5 / 0.7) | 62.5% | 36 | 25 | 2 / 1 / 1 / 5 | 1.15 s / 2.90 s | +0.00 s / +2.70 s |
+| Gap rule, nine + Lin 1/3 tuned (0.55 / 0.5) | 71.2% | 40 | **27** | 0 / 3 / 1 / 7 | 0.63 s / 1.58 s | +0.10 s / +1.50 s |
+| Current in-play, nine + Lin 1/3 tuned | 78.1% | 26 | 22 | 0 / 0 / 6 / **0** | 1.36 s / 0.82 s | +1.61 s / -0.34 s |
+| **Refit in-play, nine + Lin 1/3 tuned** | 78.7% | 26 | 22 | 0 / 0 / 6 / **0** | 1.72 s / 0.73 s | +1.78 s / -0.63 s |
+| Current in-play, nine-match scorer (0.5 / 0.7) | 74.8% | 33 | **27** | 0 / 0 / 1 / 4 | 0.73 s / 0.68 s | -0.08 s / +1.39 s |
+| **Refit in-play, nine-match scorer (0.5 / 0.7)** | **84.2%** | 28 | 25 | 0 / 0 / 3 / 1 | **0.53 s / 0.47 s** | +0.59 s / +0.07 s |
+
+- **With the nine-match scorer**, the refit is the best rally finder on set 1:
+  - the most frames right (84.2%);
+  - the closest starts and ends (about half a second each), with 1 extra rally.
+  - The current model with that scorer starts on time on average, but ends late
+    (+1.39 s).
+- **With the nine + Lin 1/3 tuned scorer**, which the spec pairs it with, the refit
+  changes almost nothing. Both in-play models miss 6 of the 28 rallies and start
+  rallies late (about +1.7 s mean). The tuned scorer at the default 0.5 threshold does
+  the same (79.6% frames right, 22 matched, 6 missed), so the cause is that scorer's
+  scores, not its threshold.
+- The in-play model reads the hit scores as features, and it was trained on scores from
+  pro-only hit models. A scorer trained with Lin gives scores it hasn't seen.
+
+### The pipeline, next to the combined detector
+
+These come from `vision.label_scores` against the relabel (172 hits). The combined
+columns are the default's rallies and serves with the newer hits
+(`docs/results/hits_club.md`). Detected hits at ±0.25 s, unless the row says otherwise:
+
+| | Combined + nine matches | Combined + 1/3 tuned | Refit in-play + 1/3 tuned | Refit in-play + nine matches |
+|---|---|---|---|---|
+| Hits found ±0.25 s / ±0.50 s | 75.6% / 79.7% | 70.3% / 77.3% | 64.5% / 71.5% | **80.8% / 87.8%** |
+| Precision inside rallies ±0.25 s / ±0.50 s | 71.4% / 72.9% | **76.1%** / 82.1% | 75.5% / **83.1%** | 70.2% / 74.0% |
+| Hitter right | **96.2%** | 95.0% | 92.8% | 94.2% |
+| Shot type, with serves (detected + inferred serves) ±0.25 s / ±0.50 s | 74.5% / 73.5% | **77.0% / 75.5%** | 64.7% / 63.2% | 65.9% / 64.8% |
+| Shot type, labelled serves left out ±0.25 s / ±0.50 s | 72.0% / 70.6% | **75.5% / 73.5%** | 64.6% / 62.6% | 70.6% / 70.4% |
+| 8-label detail, with serves (±0.50 s) | 72.8% | **74.8%** | 63.7% | 64.6% |
+| Labelled serves (31): found / typed `serve` | 22 / **20** | 22 / 19 | 7 / 5 | 20 / 6 |
+| Matched non-serves typed `serve` ±0.25 s / ±0.50 s | 0 / 2 | 0 / 1 | 12 / 15 | 5 / 5 |
+| 32 rallies: matched; merged / split / missed / extra | 29; 2 / 2 / 1 / 5 | 29; 2 / 2 / 1 / 5 | 25; 2 / 1 / 6 / 0 | 27; 2 / 0 / 3 / 1 |
+| 32 rallies: start / end error, median abs | 1.00 s / 2.90 s | 1.00 s / 2.90 s | 1.82 s / 0.75 s | **0.53 s / 0.60 s** |
+
+- **Refit in-play + nine matches** finds the most hits and has the best rally bounds.
+  But its rallies rarely start on an inferred serve row: only 9 of 28 have one, because
+  a detected hit lies within 0.3 s of the stretch start. Only 6 of its 20 matched
+  serves are typed `serve`, and 5 non-serves are typed `serve`. So its shot types trail
+  the combined detector's by 1 to 11 points.
+- **Refit in-play + 1/3 tuned** is worse on hits, serves and shot type than both
+  combined detectors.
+- **The combined detector stays the best for shot type and serves.** The refit in-play
+  model with the nine-match scorer is the best for rally bounds and hit recall. Getting
+  both would need the in-play rally starts to carry the serve, which is the serve rule's
+  problem, not the refit's.
+- Set 1 was only scored here, never trained on (the saved second model aside). The
+  nine-match pairing was added after the tuned pairing failed on set 1, so it is a
+  set-1 finding for Ding to confirm.
+
 ## What next
 
-- **Refit on club rally bounds.** The user is labelling Chong v Ding and Lin v Yeung in
-  full, with rally starts at the serve contact and ends at the landing
-  (`docs/results/club_games.md`). Those give whole between-point gaps on club footage,
-  which is the data the starts are missing. Their tracks need the stand-in and swap
-  cleanup first.
+- **Next: serve rows on in-play rallies.** With the nine-match scorer, the refit's rallies
+  rarely start on an inferred serve, so serves are seldom typed `serve`. Fixing the
+  serve rule for in-play stretches would combine its rally bounds with the combined
+  detector's serve typing.
+- **Test the refit on Ding** once the user has labelled it: the refit model (Lin only)
+  and `in_play_nine_plus_lin_set1.joblib`, each with the nine-match scorer and the 1/3
+  tuned one. That confirms or rejects the set-1 finding that the in-play model needs a
+  pro-only scorer.
 - **Wider padding on the broadcast matches** (for example 8 s after the last hit, about
   2.5 h on the GPU) would add some between-point frames. But broadcast gaps are partly
   cut to replays, so the club labels are the better fix.
@@ -204,8 +289,7 @@ done
 .venv/bin/python -m vision.label_scores --labels data/labels/stand_in_set1.csv --match-id stand_in_set1 --fps 60 \
   --run five_ranges $D/five_ranges/hits/stand_in_set1/hits_0_26234.csv $D/five_ranges/scout.duckdb \
   --run nine_matches $D/nine_matches/hits/stand_in_set1/hits_0_26234.csv $D/nine_matches/scout.duckdb \
-  --run nine_in_play $D/nine_in_play/hits/stand_in_set1/hits_0_26234.csv $D/nine_in_play/scout.duckdb \
-  --tolerance 5 --tolerance 10 --tolerance 20
+  --run nine_in_play $D/nine_in_play/hits/stand_in_set1/hits_0_26234.csv $D/nine_in_play/scout.duckdb
 ```
 
 The five_ranges and nine_matches hits are made as in `docs/results/club_labels_set1.md`.
@@ -213,3 +297,29 @@ The held-out run takes about 2 minutes on the CPU (with the hit scores cached in
 `data/in_play/scores/`). The serve-rule comparison was run with a scratch script that
 changes only `SERVE_WINDOW_SECONDS` and `infer_serves` on the same held-out
 probabilities.
+
+The refit (set 1 only):
+
+```
+LIN="--club data/recordings/club/q3pfhnvKPig.mp4 data/labels/club_q3pfhnvKPig.csv data/models/movement_hits_ten_matches.joblib"
+.venv/bin/python -m vision.in_play data/hit_training/matches.txt --save data/models/in_play_nine_plus_lin.joblib $LIN   # about 25 s CPU
+.venv/bin/python -m vision.in_play data/hit_training/matches.txt --save data/models/in_play_nine_plus_lin_set1.joblib $LIN \
+  --club data/recordings/stand_in/set1.mp4 data/club_labels/set1_labels_relabel/stand_in_set1.csv data/models/movement_hits_nine_plus_lin_w0.33_tuned.joblib
+V=data/recordings/stand_in/set1.mp4; D=data/club_labels
+T=data/models/movement_hits_nine_plus_lin_w0.33_tuned.joblib; N=data/models/movement_hits_ten_matches.joblib
+.venv/bin/python -m vision.rally_bounds $V --rallies $D/set1_labels_relabel/stand_in_set1_rallies.csv \
+  --method default_gap_rule data/models/movement_hits.joblib 0.5 0.7 rule --method tuned_gap_rule $T 0.55 0.5 rule \
+  --method tuned_in_play_current $T 0.55 0.5 data/models/in_play_nine_matches.joblib --method tuned_in_play_refit $T 0.55 0.5 data/models/in_play_nine_plus_lin.joblib \
+  --method nine_in_play_current $N 0.5 0.7 data/models/in_play_nine_matches.joblib --method nine_in_play_refit $N 0.5 0.7 data/models/in_play_nine_plus_lin.joblib \
+  --method tuned_at_0.5_in_play_refit $T 0.5 0.5 data/models/in_play_nine_plus_lin.joblib
+for run in in_play_refit_tuned:$T:0.55:0.5 in_play_refit_nine:$N:0.5:0.7; do
+  IFS=: read name model h r <<< "$run"
+  .venv/bin/python -m vision.movement $V --start 0 --end 26234 --model $model --in-play-model data/models/in_play_nine_plus_lin.joblib \
+    --hit-score-min $h --rally-end-score-min $r --hits-dir $D/$name/hits
+done
+```
+
+Then `vision.features` and `shots.predict` on a copy of `data/scout.duckdb` per run, and
+`vision.label_scores` on the relabel with `--run` for
+`five_ranges combined_nine_matches combined_nine_plus_lin_tuned combined_lin_w0.6_tuned in_play_refit_tuned in_play_refit_nine`
+(reports `data/club_labels/report_vis029_pipeline{,_checked}.md`).
