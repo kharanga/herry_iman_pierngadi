@@ -599,6 +599,10 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
         help="track one labeled rally: its first to last hit frame, plus --padding frames each side",
     )
     parser.add_argument("--stretches", type=Path, metavar="CSV", help="track every start_frame-end_frame row of this file with one loaded model, skipping rows already tracked (python -m vision.label_offset --stretches writes it)")
+    parser.add_argument("--merge", action="store_true", help="with --stretches: also join the stretches' files into positions_0_<last>.csv and boxes_0_<last>.csv for the whole video (what vision.hits --start 0 and vision.label_ui read)")
+    parser.add_argument("--plan-stretches", type=Path, metavar="CSV", help="write a stretches file for this video and exit: back-to-back stretches of --stretch-seconds, or --stretch-count of them spread evenly")
+    parser.add_argument("--stretch-seconds", type=float, default=180.0, help="with --plan-stretches: length of each stretch (default 180)")
+    parser.add_argument("--stretch-count", type=int, help="with --plan-stretches: this many stretches, one centred in each equal slice of the video")
     parser.add_argument("--padding", type=int, default=30, help="frames tracked before and after a ShuttleSet rally")
     parser.add_argument("--calibration", type=Path, help="court.json (default: data/calibration/<video stem>/court.json)")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL_PATH, help="YOLO weights under data/models/")
@@ -621,19 +625,90 @@ def frames_to_track(parsed: argparse.Namespace) -> tuple[int, int, list[int]]:
     return parsed.start, parsed.end, list(range(parsed.start, parsed.end + 1))
 
 
+def even_stretches(frame_count: int, stretch_frames: int, stretch_count: int | None = None) -> list[tuple[int, int]]:
+    if frame_count < 1 or stretch_frames < 1:
+        raise ValueError(f"need a positive frame count and stretch length, got {frame_count} and {stretch_frames}")
+    if stretch_count is None:
+        return [(start, min(start + stretch_frames, frame_count) - 1) for start in range(0, frame_count, stretch_frames)]
+    if stretch_count < 1 or stretch_count * stretch_frames > frame_count:
+        raise ValueError(f"{stretch_count} stretches of {stretch_frames} frames don't fit in {frame_count} frames")
+    slot_frames = frame_count / stretch_count
+    starts = [int(round(slot * slot_frames + (slot_frames - stretch_frames) / 2)) for slot in range(stretch_count)]
+    return [(start, start + stretch_frames - 1) for start in starts]
+
+
+def write_stretches(stretches: list[tuple[int, int]], stretches_file: Path) -> Path:
+    stretches_file = Path(stretches_file)
+    stretches_file.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(stretches, columns=["start_frame", "end_frame"]).to_csv(stretches_file, index=False)
+    return stretches_file
+
+
+def video_last_frame(video_path: Path) -> int:
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        return int(capture.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
+    finally:
+        capture.release()
+
+
+def merged_tables(tables: list[pd.DataFrame]) -> pd.DataFrame:
+    merged = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+    if merged.empty:
+        return merged
+    return merged.drop_duplicates(subset=["frame", "player"], keep="first").sort_values(["frame", "player"], kind="stable").reset_index(drop=True)
+
+
+def merge_stretch_tracks(video_path: Path, stretches: list[tuple[int, int]], last_frame: int, players_dir: Path = PLAYERS_DIR) -> tuple[Path, Path]:
+    missing = [(start, end) for start, end in stretches if not stretch_is_tracked(video_path, start, end, players_dir)]
+    if missing:
+        raise ValueError(f"{len(missing)} stretches are not tracked yet, first {missing[0][0]}-{missing[0][1]}")
+    records = [read_tracking_record(positions_path(video_path, start, end, players_dir)) for start, end in stretches]
+    rates = sorted({(int(record.get("frame_stride", 1)), record.get("effective_fps")) for record in records}, key=str)
+    if len(rates) > 1:
+        raise ValueError(f"the stretches were tracked at different frame strides / effective fps {rates}; retrack the odd ones before merging")
+    positions = merged_tables([pd.read_csv(positions_path(video_path, start, end, players_dir)) for start, end in stretches])
+    boxes = merged_tables([pd.read_csv(boxes_path(video_path, start, end, players_dir)) for start, end in stretches])
+    merged_positions = save_positions(positions, positions_path(video_path, 0, last_frame, players_dir))
+    merged_boxes = save_positions(boxes, boxes_path(video_path, 0, last_frame, players_dir))
+    write_tracking_record(merged_positions, {**records[0], "stretches": [[int(start), int(end)] for start, end in stretches]})
+    return merged_positions, merged_boxes
+
+
 def stretches_command(parsed: argparse.Namespace) -> int:
     try:
         stretches = read_stretches(parsed.stretches)
         tracked, skipped, frames = track_stretches(parsed.video, stretches, parsed.calibration, parsed.model, parsed.device, parsed.batch_frames, parsed.players_dir)
+        print(f"{len(stretches)} stretches: {tracked} tracked ({frames} frames), {skipped} already tracked")
+        if parsed.merge:
+            for saved in merge_stretch_tracks(parsed.video, stretches, video_last_frame(parsed.video), parsed.players_dir):
+                print(f"saved {saved}")
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    print(f"{len(stretches)} stretches: {tracked} tracked ({frames} frames), {skipped} already tracked")
+    return 0
+
+
+def plan_command(parsed: argparse.Namespace) -> int:
+    try:
+        require_video_file(parsed.video)
+        fps, _ = video_fps_and_width(parsed.video)
+        stretch_frames = int(round(parsed.stretch_seconds * fps))
+        stretches = even_stretches(video_last_frame(parsed.video) + 1, stretch_frames, parsed.stretch_count)
+        print(f"saved {write_stretches(stretches, parsed.plan_stretches)} ({len(stretches)} stretches of up to {stretch_frames} frames)")
+    except (FileNotFoundError, OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     return 0
 
 
 def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
+    if parsed.merge and not parsed.stretches:
+        print("error: --merge only works with --stretches CSV", file=sys.stderr)
+        return 2
+    if parsed.plan_stretches:
+        return plan_command(parsed)
     if parsed.stretches:
         return stretches_command(parsed)
     try:

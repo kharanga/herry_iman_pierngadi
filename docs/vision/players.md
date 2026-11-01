@@ -88,7 +88,8 @@ needs `lap`, which is in `requirements.txt`. Ultralytics is AGPL-3.0.
 ## Command
 
 ```
-.venv/bin/python -m vision.players <video> (--start N --end N | --shuttleset-rally MATCH SET RALLY | --stretches CSV) [options]
+.venv/bin/python -m vision.players <video> (--start N --end N | --shuttleset-rally MATCH SET RALLY | --stretches CSV [--merge]) [options]
+.venv/bin/python -m vision.players <video> --plan-stretches CSV [--stretch-seconds 180] [--stretch-count N]
 ```
 
 | Argument | Meaning |
@@ -97,6 +98,8 @@ needs `lap`, which is in `requirements.txt`. Ultralytics is AGPL-3.0.
 | `--start`, `--end` | first and last frame to track (inclusive) |
 | `--shuttleset-rally` | track one labelled rally: ShuttleSet match folder, set number, rally number. Tracks from the rally's first hit frame to its last, plus `--padding` frames each side |
 | `--stretches CSV` | track every `start_frame, end_frame` row of the file (`python -m vision.label_offset <video> --stretches` writes one) with one loaded model, each into its own `positions_<start>_<end>.csv` / `boxes_` pair and record. Rows that already have both files are skipped, so a stopped run resumes where it stopped (a stretch's files are written only once it is complete). Prints `N stretches: T tracked (F frames), S already tracked` |
+| `--merge` | with `--stretches`: after tracking, join every stretch's files into `positions_0_<last>.csv` and `boxes_0_<last>.csv` (last = the video's frame count - 1), the files `vision.hits --start 0 --end <last>` and `vision.label_ui` read. Frames outside the stretches have no rows; the movement detector treats them like frames off the main view. The merged tracking record is the first stretch's, plus the list of `stretches`. Every stretch must be tracked first |
+| `--plan-stretches CSV` | write a stretches file for the video and exit. Without `--stretch-count`: back-to-back stretches of `--stretch-seconds` (default 180) covering the whole video, so a long video tracks in resumable pieces. With `--stretch-count N`: N stretches of that length, one centred in each of N equal slices of the video, for tracking a spread sample of a long video |
 | `--padding` | frames before and after a ShuttleSet rally (default 30); the start is clamped to frame 0 |
 | `--calibration` | `court.json` to use (default `data/calibration/<video id>/court.json`) |
 | `--model` | YOLO weights (default `data/models/yolo11s.pt`) |
@@ -675,6 +678,43 @@ Traceback (most recent call last):
 ValueError: .../bad.csv needs start_frame and end_frame columns
 >>> stretch_is_tracked(Path("data/never.mp4"), 0, 99, folder)
 False
+
+```
+
+### `even_stretches(frame_count, stretch_frames, stretch_count=None) -> list[(int, int)]`, `write_stretches(stretches, stretches_file) -> Path`, `video_last_frame(video_path) -> int`
+The `--plan-stretches` mode. Back-to-back stretches cover every frame, and the last one
+is shorter. Spread stretches are centred in equal slices; they must fit, or it's a
+`ValueError`. `video_last_frame` is OpenCV's frame count minus 1.
+
+```python
+>>> from vision.players import even_stretches
+>>> even_stretches(1000, 300)
+[(0, 299), (300, 599), (600, 899), (900, 999)]
+>>> even_stretches(1000, 100, stretch_count=4)
+[(75, 174), (325, 424), (575, 674), (825, 924)]
+>>> even_stretches(1000, 300, stretch_count=4)
+Traceback (most recent call last):
+ValueError: 4 stretches of 300 frames don't fit in 1000 frames
+
+```
+
+### `merged_tables(tables) -> DataFrame`, `merge_stretch_tracks(video_path, stretches, last_frame, players_dir=PLAYERS_DIR) -> (Path, Path)`
+The `--merge` step. `merged_tables` stacks the stretches' tables, keeps the first row of
+a frame and player that two overlapping stretches both hold, and sorts by frame and
+player. `merge_stretch_tracks` writes the merged positions, boxes and record for frames
+0 to `last_frame`. A stretch that is not tracked yet is a `ValueError`, and so are
+stretches whose tracking records disagree on `frame_stride` or `effective_fps`; nothing
+is written then. A resume with another `--frame-stride` would otherwise mix rates in one
+file. `--merge` without `--stretches` exits 2 with an error.
+
+```python
+>>> from vision.players import merged_tables
+>>> first = pd.DataFrame({"frame": [0, 1, 1], "player": ["me", "me", "opp"], "x_m": [1.0, 1.1, 3.0]})
+>>> second = pd.DataFrame({"frame": [1, 5], "player": ["me", "me"], "x_m": [9.9, 1.5]})
+>>> merged_tables([second, first])[["frame", "player", "x_m"]].values.tolist()
+[[0, 'me', 1.0], [1, 'me', 9.9], [1, 'opp', 3.0], [5, 'me', 1.5]]
+>>> merged_tables([]).empty
+True
 
 ```
 

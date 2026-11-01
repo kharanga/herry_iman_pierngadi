@@ -1,0 +1,147 @@
+# Two club games, tracked for labelling by hand
+
+Two club singles videos from YouTube were tracked in full, so the user can label every
+rally and hit by hand in the browser tool's blank mode. The rally bounds the user marks
+there (start = serve contact, end = landing) are the club training and test data for
+the in-play model (`docs/vision/in_play.md`), and the hits and shot types score the hit
+detector and the classifier on club footage. Nothing from these videos is committed:
+the footage, the check images and the labels stay under `data/`.
+
+A third video, `IyJwoiSfYBw` (59 min at 60 fps, a club with players on the courts next
+to it in view), was downloaded but dropped by the user before tracking. It stays in
+`data/recordings/club/`.
+
+## Videos
+
+Downloaded with `yt-dlp` at 1280x720 (video only, no sign-in, no cookies) into
+`data/recordings/club/<id>.mp4`:
+
+| Video | Match | Length | fps | Frames | Codec | Camera |
+|---|---|---|---|---|---|---|
+| `E6SRRmvJ6dI` | Kelvin Chong (SJSU) v Leyang Ding (UC Davis), NorCal Collegiate | 22:05 | 24 | 31,800 | VP9 | one fixed view, low, from beside the court at a corner; players on the next courts in view |
+| `q3pfhnvKPig` | Ella Lin v Jasmine Yeung, Open WS final, 2025 Bay Badminton Championships | 20:38 | 24 | 29,711 | AV1 | one fixed view, low, from beside the court at a corner; umpire, line judges and spectators in view |
+
+Eight frames spread over each video (`data/checks/club/<id>_views.jpg`) show the camera
+never moves, so each video has one calibration.
+
+## Calibration
+
+Both calibrations were clicked by the user with
+`python -m vision.court <video> --frame N --pick-points`, because court corners are
+outside the frame or hidden. The court was projected from the clicked reference points:
+
+| Video | Frame | Points clicked | Overlay |
+|---|---|---|---|
+| `E6SRRmvJ6dI` | 9494 | 21 | `data/calibration/club_E6SRRmvJ6dI/court_overlay.jpg` |
+| `q3pfhnvKPig` | 8870 | 16 | `data/calibration/club_q3pfhnvKPig/court_overlay.jpg` |
+
+On both overlays the drawn court lies on the painted lines. Most points are within 1-4
+px of the fit, and the largest is 6.4 px (a short-service-line point on Lin v Yeung). The
+far half is compressed in both views, so far-court positions are less precise than
+near-court ones.
+
+**Near and far.** "Near" is the half closer to the camera. In both videos the players
+switch ends between games. As in the rest of the pipeline, `me` is always the near
+player and `opp` the far one, so in these videos `me` and `opp` mean **near and far**,
+not two fixed people. In Lin v Yeung, the black-shirted player is near in the first
+game and the red-shirted one after the change of ends.
+
+## Tracking
+
+Every frame of both videos, YOLO11s on the Mac's GPU (`mps`), 4 frames per call, in
+back-to-back 3-minute stretches that are joined into one file per video. It ran alone on
+the GPU with the swap guard on.
+
+| Video | Tracking time | Frames with `me` | Frames with `opp` | Frames with both | "NMS time limit" warnings |
+|---|---|---|---|---|---|
+| `E6SRRmvJ6dI` | 39 min (2,341 s) | 29,895 (94.0%) | 28,454 (89.5%) | 27,756 (87.3%) | 1 |
+| `q3pfhnvKPig` | 34 min (2,041 s) | 29,699 (100.0%) | 29,699 (100.0%) | 29,699 (100.0%) | 0 |
+
+A first run on `E6SRRmvJ6dI` was stopped by the swap guard after 3 minutes, while two
+full test runs from other sessions shared the machine. Nothing was written, and the
+rerun started once nothing heavy was running. The single "NMS time limit" warning means
+one batch may have lost a frame to the time limit under load.
+
+**Are `me` and `opp` the two players?** Checked by eye on 12 frames spread over each
+video: rallies, between-point gaps, the change of ends and the game break. The check
+sheets are `data/checks/club/<id>_tracking_check.jpg`. For the whole video, the table
+counts rows on the wrong half and rows off the court.
+
+| Video | Frames right by eye | `me` on the far half | `opp` on the near half | Frames with the two swapped | Rows off the court |
+|---|---|---|---|---|---|
+| `E6SRRmvJ6dI` | 9 of 12 | 7.3% of `me` rows | 7.2% of `opp` rows | 1,223 (0.8 min) | 0.9% |
+| `q3pfhnvKPig` | 11 of 12 (the 12th is the game break) | 0.4% | 0.9% | 0 | 14.3% |
+
+- **Lin v Yeung:** "100% of frames with both players" is too good to be true. The
+  players are right in rallies and at the change of ends, but when a player is out of
+  view the tracker labels someone else on that side, standing in a fixed spot:
+  - 15% of the `opp` rows (14.8%) are right of the court (x > 6.6 m), with a median
+    position of (6.7, 12.8) m, outside the far right corner;
+  - 11% of the `me` rows (11.0%) are left of the court (x < -0.5 m), with a median
+    position of (-0.8, 4.9) m, beside the near left sideline;
+  - in the game-break frame (16000), `me` is the red player standing off court.
+
+  These fixed spots point to a line judge or someone courtside. They come and go
+  through the whole video, which fits between-point gaps.
+- **Chong v Ding:** the near and far players are right in rallies, with three kinds of
+  error:
+  - frame 14300: a person crossing close to the camera takes `me`, and the near player
+    becomes `opp`;
+  - frame 17000: in a break, someone off court becomes `opp`;
+  - frame 19700: `me` and `opp` are swapped, which happens on 1,223 frames in all.
+
+  Players on the neighbouring courts are not picked up as `me`/`opp` in the sample.
+
+For labelling by hand this only means a wrong box now and then, because the user sees
+the video. For any use of these tracks as features (the in-play model, the hit
+detector) the swapped and stand-in rows have to be dealt with first. The user's rally
+bounds will show how much of the stand-in time is between points.
+
+## Detection
+
+- `E6SRRmvJ6dI`: hits and rallies with the default (five-range) scorer, before the user
+  chose blank labelling: 87 rallies, 697 detected hits plus 87 inferred serves, in
+  `data/hits/club_E6SRRmvJ6dI/`. Blank mode doesn't read or show them; they're kept to
+  score the detector against the labels later.
+- `q3pfhnvKPig`: tracking only; the hits run was skipped (user's decision).
+
+## Labelling
+
+```
+.venv/bin/python -m vision.label_ui data/recordings/club/E6SRRmvJ6dI.mp4 --match-id club_E6SRRmvJ6dI --blank --port 8766
+.venv/bin/python -m vision.label_ui data/recordings/club/q3pfhnvKPig.mp4 --match-id club_q3pfhnvKPig --blank --port 8767
+```
+
+**Blank mode** (`docs/vision/label_ui.md`, "Blank mode"):
+
+- nothing from the detector is shown; the tracking boxes stay;
+- the video is cut into 60 s segments (23 for Ding, 21 for Lin), with `[` / `]` between
+  them;
+- `b` starts a rally at the current frame and `e` ends it.
+
+The labels go to `data/labels/club_<id>.csv` and `data/labels/club_<id>_rallies.csv`,
+with the usual columns and video frame numbers.
+
+The rules for the rally bounds (`docs/vision/label.md`, "Rally bounds"):
+
+- **start** = the frame where the serve's racket meets the shuttle;
+- **end** = the frame where the shuttle lands (on the floor, or the net for a net error);
+- a gap counts as not in play only when the rallies on both sides are labelled, which
+  they are when the whole video is labelled;
+- mark a rally's start before its hits, because a hit's rally is the user's rally that
+  holds it.
+
+## How to reproduce
+
+```
+for id in E6SRRmvJ6dI q3pfhnvKPig; do
+  .venv/bin/yt-dlp --no-playlist -f "bv*[height<=720][ext=mp4]/bv*[height<=720]" --remux-video mp4 -o "data/recordings/club/%(id)s.%(ext)s" "https://www.youtube.com/watch?v=$id"
+done
+.venv/bin/python -m vision.court data/recordings/club/E6SRRmvJ6dI.mp4 --frame 9494 --pick-points
+.venv/bin/python -m vision.court data/recordings/club/q3pfhnvKPig.mp4 --frame 8870 --pick-points
+for id in E6SRRmvJ6dI q3pfhnvKPig; do
+  .venv/bin/python -m vision.players data/recordings/club/$id.mp4 --plan-stretches data/club_games/${id}_stretches.csv
+  .venv/bin/python -m vision.players data/recordings/club/$id.mp4 --stretches data/club_games/${id}_stretches.csv --merge --batch-frames 4
+done
+.venv/bin/python -m vision.hits data/recordings/club/E6SRRmvJ6dI.mp4 --start 0 --end 31799
+```
