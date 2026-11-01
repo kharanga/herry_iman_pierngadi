@@ -18,6 +18,8 @@ pipeline tracks the players (not the shuttle) and nobody labels shot types.
   feature-set table in the results doc).
 - `shots/compare_hit_points.py`: the `contact` and `feet` feature sets side by side on the same
   match folds, with the jitter table.
+- `shots/fine_types.py`: the same feet model and match folds trained on the 18 ShuttleSet types and on
+  the 7 groups with one type split off at a time (a measurement only; the shipped model keeps the groups).
 - `shots/results_tables.py`: prints the results-doc tables from the saved JSON, so the doc and
   the code can't drift.
 
@@ -31,6 +33,7 @@ Measured accuracy and the per-group breakdown are in `docs/results/classifier_fe
 .venv/bin/python -m shots.predict [database_path] [model_path]
 .venv/bin/python -m shots.compare_features [database_path] [comparison_path]
 .venv/bin/python -m shots.compare_hit_points [database_path] [comparison_path]
+.venv/bin/python -m shots.fine_types [database_path] [comparison_path]
 .venv/bin/python -m shots.results_tables [model_path] [comparison_path] [database_path] [hit_point_comparison_path]
 ```
 
@@ -257,7 +260,8 @@ prediction. Matched by `rowid`, in one transaction; no other column changes.
 - Returns the number of rows that got a prediction (`int`).
 - Errors: `FileNotFoundError` if the model file is missing; `ModelFeatureMismatchError` if the model
   was trained on a different `FEATURE_NAMES` or a different feature set than `SHIPPED_FEATURE_SET`
-  (retrain); `duckdb.IOException` / `CatalogException` for a missing database or table. On any error
+  (retrain); `FileNotFoundError` for a missing database (checked before opening it, so a mistyped path
+  creates no file; the command prints it and exits 1); `CatalogException` for a missing table. On any error
   the transaction rolls back.
 
 ### Helpers
@@ -320,6 +324,42 @@ evaluation, fold by fold).
 | Median distance | no shots |
 | 90th percentile | no shots |
 | Mean | no shots |
+
+```
+
+## `shots/fine_types.py`
+
+`compare_fine_types(database_path=DATABASE_PATH, comparison_path=COMPARISON_PATH)` takes the same labelled
+ShuttleSet rows as training (the 7 groups, `unknown` left out, hitter and landing point present), the shipped
+`feet` features, the same classifier and `GroupKFold(5)` by match, and cross-validates these label sets:
+
+- `groups`: the 7 groups (the shipped labels, as a reference).
+- `fine_types`: the 18 `type_en` values (`FINE_TYPES`).
+- `splits`: for each entry of `CANDIDATE_SPLITS`, the 7 groups with only those types split off
+  (`labels_with_splits(type_en, split_off_types)`; `short vs long service` splits `serve` into both).
+- `middle`: the 7 groups with every split that holds up taken off at once.
+
+Each label set reports `accuracy_mean`/`accuracy_std` over the folds, `out_of_fold_accuracy`, `group_accuracy`
+(predictions and labels both mapped back to the 7 groups, so a finer model can be compared with the shipped one),
+`per_label` precision/recall/F1/support and `confusion` (rows true, columns predicted, in `labels` order).
+Each split also has `pair`: among shots whose true and predicted labels are both in the split group, the
+accuracy of telling the sides apart (`pair_accuracy`) against always picking that group's commonest side
+(`pair_majority`). A split **holds up** (`split_holds_up`) when every side of it reaches F1 >= `SPLIT_MIN_F1`
+(0.5) and `pair_accuracy` beats `pair_majority` by at least `SPLIT_MIN_PAIR_GAIN` (5 points). Both thresholds
+were set before the run.
+
+- Writes the comparison as JSON to `comparison_path` (default `data/models/fine_type_comparison.json`); opens the
+  database read-only and never touches `data/models/shot_type_classifier.joblib`.
+
+```python
+>>> import pandas as pd
+>>> from shots.fine_types import labels_with_splits, FINE_TYPES
+>>> len(FINE_TYPES), "unknown" in FINE_TYPES
+(18, False)
+>>> labels_with_splits(pd.Series(["push", "drive", "rush", "short service"]), ("push",)).tolist()
+['push', 'drive', 'net', 'serve']
+>>> labels_with_splits(pd.Series(["short service", "long service", "lob"]), ("short service", "long service")).tolist()
+['short service', 'long service', 'lift']
 
 ```
 
