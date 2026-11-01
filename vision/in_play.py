@@ -9,7 +9,7 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 
 from vision.court import NET_Y_M
-from vision.hits import MATCH_TOLERANCE_FRAMES, match_hits
+from vision.hits import MATCH_TOLERANCE_SECONDS, match_hits, match_tolerances, tolerance_frames
 from vision.movement import (
     HIT_MODEL_PARAMETERS,
     PLAYERS,
@@ -230,7 +230,7 @@ def compare_spans(labelled: list[tuple[int, int]], found: list[tuple[int, int]],
     )
 
 
-def first_row_on_serve(hits: pd.DataFrame, rallies: pd.DataFrame, labels: pd.DataFrame, tolerance: int = 2 * MATCH_TOLERANCE_FRAMES) -> tuple[int, int]:
+def first_row_on_serve(hits: pd.DataFrame, rallies: pd.DataFrame, labels: pd.DataFrame, tolerance: int) -> tuple[int, int]:
     keys = [column for column in ("set_no", "rally") if column in labels.columns]
     serves = [int(rally["frame"].min()) for _, rally in labels.groupby(keys)]
     firsts = [int(rally_hits["frame"].min()) for _, rally_hits in hits.groupby("rally")] if len(hits) else []
@@ -255,7 +255,7 @@ def video_spans(spans: list[tuple[int, int]], tracks: PlayerTracks) -> list[tupl
 
 def method_row(match, method: str, comparisons: list[SpanComparison], hits: pd.DataFrame, rallies: pd.DataFrame, frame_hits: int, frame_total: int) -> dict:
     detected = hits[hits["score"].notna()] if len(hits) else hits
-    serve_first, serves = first_row_on_serve(hits, rallies, match.labels)
+    serve_first, serves = first_row_on_serve(hits, rallies, match.labels, tolerance_frames(MATCH_TOLERANCE_SECONDS[-1], match.fps))
     starts = [error for comparison in comparisons for error in comparison.start_errors]
     ends = [error for comparison in comparisons for error in comparison.end_errors]
     row = {"match": match.name, "fps": match.fps, "method": method}
@@ -271,9 +271,9 @@ def method_row(match, method: str, comparisons: list[SpanComparison], hits: pd.D
         first_row_on_serve=serve_first,
         serves=serves,
     )
-    for tolerance in (MATCH_TOLERANCE_FRAMES, 2 * MATCH_TOLERANCE_FRAMES):
+    for window, tolerance in match_tolerances(match.fps):
         summary = evaluation_summary(detected, match.labels, tolerance)
-        row.update({f"{key}_{tolerance}": summary[key] for key in ("labelled", "detected", "matched")})
+        row.update({f"{key}_{window:g}s": summary[key] for key in ("labelled", "detected", "matched")})
     return row
 
 
@@ -369,8 +369,8 @@ def summary_lines(table: pd.DataFrame) -> list[str]:
             f"{method}: rallies labelled {int(totals['rallies_labelled'])}, found {int(totals['rallies_found'])}, matched {int(totals['rallies_matched'])}, "
             f"merged {int(totals['rallies_merged'])}, split {int(totals['rallies_split'])}, missed {int(totals['rallies_missed'])}, extra {int(totals['rallies_extra'])}; "
             f"frames right {totals['frames_right'] / totals['frames']:.1%}; first row on the serve {int(totals['first_row_on_serve'])}/{int(totals['serves'])}; "
-            f"hits recall ±5 {totals['matched_5'] / totals['labelled_5']:.1%}, ±10 {totals['matched_10'] / totals['labelled_10']:.1%}, "
-            f"precision ±10 {totals['matched_10'] / max(totals['detected_10'], 1):.1%}"
+            f"hits recall ±0.25 s {totals['matched_0.25s'] / totals['labelled_0.25s']:.1%}, ±0.5 s {totals['matched_0.5s'] / totals['labelled_0.5s']:.1%}, "
+            f"precision ±0.5 s {totals['matched_0.5s'] / max(totals['detected_0.5s'], 1):.1%}"
         )
     return lines
 

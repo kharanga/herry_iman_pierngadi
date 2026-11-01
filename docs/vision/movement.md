@@ -57,9 +57,9 @@ pure: arrays and tables in, tables out. Only `load_player_tracks`, `load_hit_mod
 |---|---|
 | `--start`, `--end` | the tracked range (inclusive); needs `python -m vision.players <video> --start N --end N` to have run |
 | `--model` | the hit model file (default `data/models/movement_hits.joblib`) |
-| `--evaluate` | compare with ShuttleSet's hit frames for this match folder and set, at ±5 and ±10 frames (`--tolerance N`, repeatable, changes that); then one line per miss (with the labelled shot type) and per false positive (inside or outside the labelled rallies) |
+| `--evaluate` | compare with ShuttleSet's hit frames for this match folder and set, within ±0.25 s and ±0.50 s (`vision.hits.MATCH_TOLERANCE_SECONDS`), as frames at the video's own fps, each line headed "±0.25 s (±N frames at F fps)" (`--tolerance S`, repeatable, changes the windows); then one line per miss (with the labelled shot type) and per false positive (inside or outside the labelled rallies) |
 | `--evaluate-labels CSV` | the same comparison against hand labels from `python -m vision.label` (`rally, frame_num, player, type_group, source`; rows in the range); with `--database` and `--match-id` also the shot-type agreement: among matched detected hits that have a `type_pred` in the own rows of that match and a labelled group other than `unknown`, how many agree |
-| `--tolerance N` | matching tolerance in frames for `--evaluate` and `--cross-validate`; repeatable |
+| `--tolerance S` | a matching window in seconds for `--evaluate`, `--evaluate-labels` and `--cross-validate`, turned into frames at the video's fps; repeatable (default 0.25 and 0.5) |
 | `--hits-dir` | root of the output files (default `data/hits`) |
 | `--players-dir` | root of the player tracking files (default `data/players`); the tracking record next to the positions file gives the frame stride, and the settings are scaled to the effective rate `video fps / stride` |
 | `--spot-check N` | draw N random detected hits (seed 1; inferred serves excluded), each as the frame 6 frames before (12 at 60 fps), the hit frame and 6 after, cropped around the hitter's box, both boxes drawn (`me` blue, `opp` red), to `data/checks/hits/<video id>_movement_spot_check_<start>_<end>.jpg` |
@@ -461,12 +461,12 @@ over ranges and the printed line.
 >>> summary = evaluation_summary(detected, labels, 5)
 >>> summary
 {'labelled': 3, 'detected': 3, 'matched': 2, 'hitter_correct': 1, 'hitter_judged': 2}
->>> summary_line("example", add_totals({}, summary), 5)
-'example ±5: labelled 3, detected 3, matched 2, precision 66.7%, recall 66.7%, hitter correct 1/2'
+>>> summary_line("example", add_totals({}, summary), "±0.25 s (±8 frames at 30 fps)")
+'example ±0.25 s (±8 frames at 30 fps): labelled 3, detected 3, matched 2, precision 66.7%, recall 66.7%, hitter correct 1/2'
 
 ```
 
-### `cross_validation_lines(labelled_ranges, settings, tolerances=(5, 10)) -> list[str]`
+### `cross_validation_lines(labelled_ranges, settings, seconds=MATCH_TOLERANCE_SECONDS) -> list[str]`
 Holds out each range in turn, trains on the others, detects on the held-out one and
 reports a line per range and tolerance plus the totals.
 

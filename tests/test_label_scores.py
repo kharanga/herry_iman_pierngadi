@@ -108,20 +108,20 @@ def test_serve_table_splits_serves_by_inferred_row_and_detected_hit():
 
 def test_headline_and_missed_tables():
     run = ScoredRun("model", hits_table(), predictions_table())
-    headline = headline_table([run], labels_table(), [(100, 190), (500, 540)], (5,))
-    assert headline[2] == "| model | ±5 | detected hits | 3/6 = 50.0% | 2/3 = 66.7% | 1/2 = 50.0% | 3/4 = 75.0% |"
-    assert headline[3] == "| model | ±5 | detected + inferred serves | 4/6 = 66.7% | 3/4 = 75.0% | 2/3 = 66.7% | 4/5 = 80.0% |"
+    headline = headline_table([run], labels_table(), [(100, 190), (500, 540)], [(0.25, 5)], 20.0)
+    assert headline[2] == "| model | ±0.25 s (±5 frames at 20 fps) | detected hits | 3/6 = 50.0% | 2/3 = 66.7% | 1/2 = 50.0% | 3/4 = 75.0% |"
+    assert headline[3] == "| model | ±0.25 s (±5 frames at 20 fps) | detected + inferred serves | 4/6 = 66.7% | 3/4 = 75.0% | 2/3 = 66.7% | 4/5 = 80.0% |"
     missed = missed_table([run], labels_table(), 5, True)
     assert missed[2:] == ["| 190 | 1 | nan | unknown | missed (nearest -15) |", "| 500 | 2 | me | serve | missed (nearest +45) |"]
 
 
 def test_source_split_only_when_there_are_two_sources():
     run = ScoredRun("model", hits_table(), predictions_table())
-    assert source_lines([run], labels_table(), [(100, 190)], (5,))[-1] == "every label is hand; no per-source split"
+    assert source_lines([run], labels_table(), [(100, 190)], [(0.25, 5)], 20.0)[-1] == "every label is hand; no per-source split"
     mixed = labels_table().assign(source=["hand", "accepted", "hand", "hand", "accepted", "hand"])
-    lines = source_lines([run], mixed, [(100, 190)], (5,))
+    lines = source_lines([run], mixed, [(100, 190)], [(0.25, 5)], 20.0)
     assert "## Recall of accepted labels" in lines and "## Recall of hand labels" in lines
-    assert lines[lines.index("## Recall of accepted labels") + 3] == "| model | ±5 | detected hits | 1/2 = 50.0% | 0/1 = 0.0% | 1/1 = 100.0% | 1/3 = 33.3% |"
+    assert lines[lines.index("## Recall of accepted labels") + 3] == "| model | ±0.25 s (±5 frames at 20 fps) | detected hits | 1/2 = 50.0% | 0/1 = 0.0% | 1/1 = 100.0% | 1/3 = 33.3% |"
 
 
 def write_inputs(tmp_path):
@@ -150,24 +150,24 @@ def test_predictions_are_the_own_rows_of_the_match_only(tmp_path):
 
 def test_main_prints_the_report_even_with_a_label_of_no_known_player(tmp_path, capsys):
     labels_file, hits_file, database = write_inputs(tmp_path)
-    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(database), "--tolerance", "5", "--breakdown-tolerance", "5"]) == 0
+    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(database), "--tolerance", "0.25", "--breakdown-tolerance", "0.25", "--fps", "20"]) == 0
     out = capsys.readouterr().out
     assert out.splitlines()[0] == "labels: 6 in 2 rallies; sources: hand 6"
-    assert "| model | ±5 | detected hits | 3/6 = 50.0% | 2/3 = 66.7% | 1/2 = 50.0% | 3/4 = 75.0% |" in out
-    assert "## Labelled serves, ±5" in out and "| 500 | 2 | me | serve | missed (nearest +45) |" in out
+    assert "| model | ±0.25 s (±5 frames at 20 fps) | detected hits | 3/6 = 50.0% | 2/3 = 66.7% | 1/2 = 50.0% | 3/4 = 75.0% |" in out
+    assert "## Labelled serves, ±0.25 s (±5 frames at 20 fps)" in out and "| 500 | 2 | me | serve | missed (nearest +45) |" in out
 
 
 def test_a_missing_database_is_an_error_and_is_not_created(tmp_path, capsys):
     labels_file, hits_file, _ = write_inputs(tmp_path)
     missing = tmp_path / "nowhere.duckdb"
-    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(missing)]) == 1
+    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(missing), "--fps", "20"]) == 1
     assert "database not found" in capsys.readouterr().err and not missing.exists()
-    assert main(["--labels", str(tmp_path / "none.csv"), "--match-id", "club_1", "--run", "model", str(hits_file), str(missing)]) == 1
+    assert main(["--labels", str(tmp_path / "none.csv"), "--match-id", "club_1", "--run", "model", str(hits_file), str(missing), "--fps", "20"]) == 1
 
 
 def test_main_needs_a_run():
     with pytest.raises(SystemExit):
-        main(["--labels", "x.csv", "--match-id", "club_1"])
+        main(["--labels", "x.csv", "--match-id", "club_1", "--fps", "20"])
 
 
 def test_labels_with_no_type_get_their_own_breakdown_row(tmp_path, capsys):
@@ -175,7 +175,7 @@ def test_labels_with_no_type_get_their_own_breakdown_row(tmp_path, capsys):
     labels = pd.read_csv(labels_file)
     labels.loc[labels["frame_num"] == 160, "type_group"] = np.nan
     labels.to_csv(labels_file, index=False)
-    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(database), "--breakdown-tolerance", "5"]) == 0
+    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(database), "--breakdown-tolerance", "0.25", "--fps", "20"]) == 0
     out = capsys.readouterr().out
     assert "| no type | 1 | 1/1 = 100.0% | 1/1 = 100.0% | 0/0 |" in out and "| unknown hitter | 1 |" in out
 
@@ -217,7 +217,7 @@ def test_label_files_and_databases_with_details_are_read(tmp_path, capsys):
     connection.close()
     predictions = read_predictions(database, "club_1")
     assert "type_detail_pred" in predictions.columns
-    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(database), "--breakdown-tolerance", "5"]) == 0
+    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(database), "--breakdown-tolerance", "0.25", "--fps", "20"]) == 0
     assert "| model | 5 | 2 | 1/2 = 50.0% |" in capsys.readouterr().out
 
 
@@ -226,15 +226,18 @@ def test_rally_bounds_compare_each_runs_rallies_file_with_the_labelled_rallies(t
     named_hits = tmp_path / "hits_0_600.csv"
     hits_file.rename(named_hits)
     pd.DataFrame({"rally": [1, 2, 3], "start_frame": [110, 480, 900], "end_frame": [200, 560, 950], "hits": [3, 2, 1]}).to_csv(tmp_path / "rallies_0_600.csv", index=False)
-    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(named_hits), str(database), "--tolerance", "5", "--breakdown-tolerance", "5", "--fps", "10"]) == 0
+    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(named_hits), str(database), "--tolerance", "0.5", "--breakdown-tolerance", "0.5", "--fps", "10"]) == 0
     out = capsys.readouterr().out
     assert "## Rally bounds against the labelled rallies" in out
     assert "| model | 2 | 3 | 2 | 0 | 0 | 0 | 1 | 1.50 | 1.50 | -0.50 | +1.50 |" in out
-    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(named_hits), str(database), "--tolerance", "5", "--breakdown-tolerance", "5"]) == 0
-    assert "Rally bounds" not in capsys.readouterr().out
 
 
 def test_a_run_without_a_rallies_file_says_so_and_a_hits_file_is_never_read_as_its_own_rallies(tmp_path, capsys):
     labels_file, hits_file, database = write_inputs(tmp_path)
-    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(database), "--tolerance", "5", "--breakdown-tolerance", "5", "--fps", "10"]) == 0
+    assert main(["--labels", str(labels_file), "--match-id", "club_1", "--run", "model", str(hits_file), str(database), "--tolerance", "0.5", "--breakdown-tolerance", "0.5", "--fps", "10"]) == 0
     assert "| model | 2 | no rallies file | | | | | | | | | |" in capsys.readouterr().out
+
+
+def test_fps_is_required():
+    with pytest.raises(SystemExit):
+        main(["--labels", "x.csv", "--match-id", "club_1", "--run", "model", "hits.csv", "db.duckdb"])

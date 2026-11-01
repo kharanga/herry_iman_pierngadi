@@ -82,7 +82,7 @@ hitter's position to a side).
 | Argument | Meaning |
 |---|---|
 | `--start`, `--end` | the tracked range (inclusive) |
-| `--evaluate` | compare with ShuttleSet's hit frames for this match folder and set: precision and recall within ±5 frames, hitter accuracy, frame offset |
+| `--evaluate` | compare with ShuttleSet's hit frames for this match folder and set: precision and recall within ±0.25 s and ±0.50 s (frames at the video's fps), hitter accuracy, frame offset |
 
 Output under `data/hits/<video id>/`:
 - `hits_<start>_<end>.csv` (`HIT_COLUMNS`): `rally` (1-based within the range),
@@ -111,7 +111,7 @@ calibration or set CSV, or a bad range; `2` for invalid arguments.
 | `RALLY_GAP_FRAMES` | `120` | hits further apart than this (4 s at 30 fps) are in different rallies |
 | `REST_RADIUS_PX`, `REST_FRAME_COUNT` | `8.0`, `20` | the rest definition |
 | `REFERENCE_FPS`, `REFERENCE_FRAME_WIDTH_PX` | `30.0`, `1280` | the frame rate and width all the frame and pixel constants above were tuned at |
-| `MATCH_TOLERANCE_FRAMES` | `5` | a detection within this many frames of a labelled hit counts as that hit |
+| `MATCH_TOLERANCE_SECONDS` | `(0.25, 0.50)` | the scoring windows: a detection within this many seconds of a labelled hit counts as that hit. Turned into frames at each video's own fps (`tolerance_frames`), so every frame rate is scored on the same time window |
 | `HITS_DIR` | `Path("data/hits")` | output folder |
 | `HIT_COLUMNS`, `RALLY_COLUMNS` | see above | output columns |
 
@@ -336,13 +336,26 @@ rally ends at the last frame.
 
 ## Evaluation against ShuttleSet
 
-### `match_hits(detected_frames, labelled_frames, tolerance=5) -> list[(int, int)]`
+### `tolerance_frames(seconds, fps) -> int`, `match_tolerances(fps, seconds=MATCH_TOLERANCE_SECONDS) -> list[(float, int)]`, `tolerance_label(seconds, fps) -> str`
+A window in seconds as frames at a frame rate, rounded half up (12.5 frames are 13) and
+at least 1; the windows with their frames; and the header text every table uses.
+
+```python
+>>> from vision.hits import match_tolerances, tolerance_frames, tolerance_label
+>>> [tolerance_frames(0.25, fps) for fps in (24, 25, 30, 60)], [tolerance_frames(0.5, fps) for fps in (24, 25, 30, 60)]
+([6, 6, 8, 15], [12, 13, 15, 30])
+>>> match_tolerances(30.0), tolerance_label(0.25, 60.0)
+([(0.25, 8), (0.5, 15)], '±0.25 s (±15 frames at 60 fps)')
+
+```
+
+### `match_hits(detected_frames, labelled_frames, tolerance) -> list[(int, int)]`
 One-to-one matching, closest pairs first, within `tolerance` frames; sorted by the
-labelled frame.
+labelled frame. Every caller passes the frames of its window (`tolerance_frames`).
 
 ```python
 >>> from vision.hits import match_hits, precision_recall
->>> match_hits([100, 131, 200], [103, 128, 300])
+>>> match_hits([100, 131, 200], [103, 128, 300], 5)
 [(100, 103), (131, 128)]
 >>> precision_recall(2, 3, 3)
 (0.6666666666666666, 0.6666666666666666)
@@ -379,7 +392,7 @@ when the location is missing, as for some serves), `type`.
 
 ```
 
-### `evaluation_lines(hits, labels, tolerance=5) -> list[str]`
+### `evaluation_lines(hits, labels, tolerance) -> list[str]`
 The four printed lines: counts and matches, precision and recall, hitter accuracy
 over matched hits whose label has a hitter (a matched hit with a missing labelled
 hitter, as for most serves, is not judged), and the mean and median of detected
@@ -389,7 +402,7 @@ minus labelled frame.
 >>> from vision.hits import evaluation_lines
 >>> detected = pd.DataFrame({"frame": [20, 101], "hitter": ["opp", "me"], "score": 0.9, "reach": 0.0})
 >>> labels = pd.DataFrame({"rally": [1, 1], "frame": [21, 100], "hitter": ["opp", None], "type": ["lob", "serve"]})
->>> for line in evaluation_lines(detected, labels):
+>>> for line in evaluation_lines(detected, labels, 5):
 ...     print(line)
 labelled hits: 2, detected: 2, matched within ±5 frames: 2
 precision 100.0%, recall 100.0%

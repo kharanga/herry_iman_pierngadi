@@ -462,8 +462,8 @@ def test_evaluation_summary_matches_one_to_one_and_judges_hitters_only_with_a_la
     assert evaluation_summary(detected.iloc[:0], labels, 5) == {"labelled": 3, "detected": 0, "matched": 0, "hitter_correct": 0, "hitter_judged": 0}
     totals = add_totals(add_totals({}, summary), summary)
     assert totals["matched"] == 4
-    assert summary_line("x", summary, 5) == "x ±5: labelled 3, detected 3, matched 2, precision 66.7%, recall 66.7%, hitter correct 1/2"
-    assert "precision 0.0%, recall 0.0%" in summary_line("none", {"labelled": 0, "detected": 0, "matched": 0, "hitter_correct": 0, "hitter_judged": 0}, 5)
+    assert summary_line("x", summary, "±0.25 s (±8 frames at 30 fps)") == "x ±0.25 s (±8 frames at 30 fps): labelled 3, detected 3, matched 2, precision 66.7%, recall 66.7%, hitter correct 1/2"
+    assert "precision 0.0%, recall 0.0%" in summary_line("none", {"labelled": 0, "detected": 0, "matched": 0, "hitter_correct": 0, "hitter_judged": 0}, "±0.25 s (±8 frames at 30 fps)")
     lines = miss_lines(detected, labels, 5)
     assert lines == ["miss at 160: lift", "false positive at 200 (me): outside the labelled rallies"]
     assert miss_lines(pd.DataFrame({"frame": [103, 150], "hitter": ["me", "opp"], "score": [0.9, 0.9]}), labels, 5) == ["miss at 131: net", "miss at 160: lift", "false positive at 150 (opp): within a labelled rally"]
@@ -489,9 +489,10 @@ def test_cross_validation_holds_out_each_range_and_never_loads_the_shipped_model
     monkeypatch.setattr(vision.movement, "labelled_range_data", fake_range_data)
     monkeypatch.setattr(vision.movement, "fit_hit_model", fake_fit)
     monkeypatch.setattr(vision.movement, "load_hit_model", lambda *arguments: (_ for _ in ()).throw(AssertionError("shipped model loaded")))
-    lines = cross_validation_lines(ranges, MovementSettings(), tolerances=(5,))
+    monkeypatch.setattr(vision.movement, "video_fps_and_width", lambda video_path: (20.0, 1280.0))
+    lines = cross_validation_lines(ranges, MovementSettings(), seconds=(0.25,))
     assert trained_on == [[100, 200], [0, 200], [0, 100]]
-    assert len(lines) == 4 and lines[-1].startswith("all ranges, each held out ±5: labelled 6, detected 0")
+    assert len(lines) == 4 and lines[-1].startswith("all ranges, each held out ±0.25 s (±5 frames at 20 fps): labelled 6, detected 0")
 
 
 def test_spot_check_helpers_sample_deterministically_and_crop_inside_the_frame():

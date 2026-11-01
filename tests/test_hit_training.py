@@ -31,7 +31,7 @@ def fake_match(name):
 def recorded_fits(monkeypatch):
     fits = []
 
-    def fit_on(names, rows_by_match):
+    def fit_on(names, rows_by_match, club_names=(), club_weight=0.0):
         fits.append(tuple(sorted(names)))
         return tuple(sorted(names))
 
@@ -106,7 +106,7 @@ def test_held_out_rows_by_player_train_without_any_match_sharing_a_player(record
 def test_learning_curve_subsets_come_from_the_other_matches_and_end_with_all_of_them(recorded_fits):
     matches = {name: fake_match(name) for name in NAMES}
     rows = learning_curve_rows(matches, {}, sizes=(1, 2), seed=7, progress=lambda line: None)
-    assert [row["training_matches"] for row in rows if row["tolerance"] == 5] == [1, 2, 3] * len(NAMES)
+    assert [row["training_matches"] for row in rows if row["tolerance_s"] == 0.25] == [1, 2, 3] * len(NAMES)
     for held_out, fits in zip(sorted(NAMES), [recorded_fits[index:index + 3] for index in range(0, len(recorded_fits), 3)]):
         assert all(held_out not in fit for fit in fits)
         assert fits[-1] == tuple(sorted(set(NAMES) - {held_out}))
@@ -125,3 +125,20 @@ def test_main_reports_an_error_for_a_list_without_usable_matches(tmp_path, capsy
     assert hit_training.main([str(listing), "--held-out", "--out", str(tmp_path / "out")]) == 1
     assert capsys.readouterr().err.startswith("error: ")
     assert not (tmp_path / "out").exists()
+
+
+def test_tuning_with_a_club_scores_every_training_source_with_a_model_trained_without_it(recorded_fits, monkeypatch):
+    seen_by_tuning = []
+    monkeypatch.setattr(hit_training, "best_thresholds", lambda sources, scores: seen_by_tuning.append(({name: scores[name][0]["model"] for name in scores}, set(sources))) or (0.5, 0.7))
+    matches = {name: fake_match(name) for name in NAMES}
+    clubs = {"club_lin": fake_match("club_lin")}
+    held_out_rows(matches, {}, tune=True, progress=lambda line: None, club_names=["club_lin"], club_weight=0.33, clubs=clubs)
+    assert len(seen_by_tuning) == len(NAMES)
+    for held_out, (inner, sources) in zip(sorted(NAMES), seen_by_tuning):
+        assert "club_lin" in inner and held_out not in inner
+        assert set(inner) == (set(NAMES) - {held_out}) | {"club_lin"}
+        for inner_source, model in inner.items():
+            assert inner_source not in model and held_out not in model
+        assert "club_lin" in sources
+    outer_fits = [fit for fit in recorded_fits if "club_lin" in fit and len(fit) == len(NAMES)]
+    assert len(outer_fits) == len(NAMES)

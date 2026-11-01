@@ -82,24 +82,24 @@ first-hit-to-landing spans inside the tracked stretches.
 | Start error, mean (s); median per match of the median abs error | -0.01; 0.25 | +0.06; 0.16 |
 | End error, mean (s); median per match of the median abs error | +1.11; 1.20 | +0.14; 0.24 |
 | Frames called rightly in or out of play | 86.6% | **94.8%** |
-| Rally's first row on the labelled serve (±10 frames) | 483 of 876 = 55.1% | **648 of 876 = 74.0%** |
-| Hit recall ±5 / ±10 | 81.9% / 87.1% | 84.7% / **90.5%** |
-| Hit precision ±10 | 87.8% | 87.9% |
+| Rally's first row on the labelled serve (±0.50 s) | 545 of 876 = 62.2% | **724 of 876 = 82.6%** |
+| Hit recall ±0.25 s / ±0.50 s | 84.6% / 89.2% | 87.7% / **92.6%** |
+| Hit precision ±0.50 s | 89.8% | 89.9% |
 
 Merging can't show up here, because each tracked stretch holds about one rally. The
 club video below is the test of merging.
 
-| Match | fps | Rallies | Rule: found / merged / split | In-play: found / merged / split | Frames right, rule / in-play | First row on the serve, rule / in-play | Hit recall ±10, rule / in-play |
+| Match | fps | Rallies | Rule: found / merged / split | In-play: found / merged / split | Frames right, rule / in-play | First row on the serve, rule / in-play | Hit recall ±0.50 s, rule / in-play |
 |---|---|---|---|---|---|---|---|
-| Anders Antonsen Sameer Verma TOYOTA THAILAND OPE | 30 | 116 | 109 / 0 / 2 | 108 / 0 / 0 | 85.2% / 94.5% | 81 / 88 of 116 | 81.2% / 84.1% |
-| Anders Antonsen Viktor Axelsen HSBC BWF WORLD TO | 30 | 101 | 94 / 0 / 0 | 93 / 0 / 0 | 80.7% / 92.3% | 51 / 74 of 101 | 81.7% / 87.8% |
-| Carolina Marin Neslihan Yigit TOYOTA THAILAND OP | 30 | 63 | 61 / 0 / 1 | 62 / 0 / 0 | 87.1% / 95.4% | 43 / 55 of 63 | 84.6% / 93.4% |
-| Carolina Marin Supanida Katethong YONEX Thailand | 30 | 74 | 72 / 0 / 0 | 72 / 0 / 0 | 88.5% / 95.0% | 52 / 55 of 74 | 87.3% / 90.3% |
-| Kento MOMOTA CHOU Tien Chen Denmark Open 2018 Fi | 25 | 112 | 110 / 0 / 3 | 106 / 0 / 0 | 88.0% / 95.5% | 15 / 86 of 112 | 93.7% / 94.6% |
-| Kento MOMOTA CHOU Tien Chen Fuzhou Open 2019 Fin | 25 | 113 | 117 / 0 / 7 | 112 / 0 / 2 | 89.0% / 95.7% | 27 / 80 of 113 | 91.2% / 93.9% |
-| Kento MOMOTA CHOU Tien Chen KOREA OPEN 2019 Fina | 25 | 78 | 77 / 0 / 0 | 76 / 0 / 0 | 88.7% / 95.9% | 65 / 66 of 78 | 89.3% / 91.7% |
-| Ng Ka Long Angus Kidambi Srikanth HSBC BWF WORLD | 30 | 112 | 110 / 0 / 1 | 107 / 0 / 0 | 89.4% / 95.4% | 89 / 84 of 112 | 88.7% / 92.0% |
-| Viktor Axelsen Anthony Sinisuka Ginting YONEX Th | 30 | 107 | 99 / 0 / 1 | 102 / 0 / 0 | 82.7% / 93.2% | 60 / 60 of 107 | 81.8% / 85.5% |
+| Anders Antonsen Sameer Verma TOYOTA THAILAND OPE | 30 | 116 | 109 / 0 / 2 | 108 / 0 / 0 | 85.2% / 94.5% | 92 / 96 of 116 | 84.5% / 87.5% |
+| Anders Antonsen Viktor Axelsen HSBC BWF WORLD TO | 30 | 101 | 94 / 0 / 0 | 93 / 0 / 0 | 80.7% / 92.3% | 62 / 83 of 101 | 84.0% / 90.6% |
+| Carolina Marin Neslihan Yigit TOYOTA THAILAND OP | 30 | 63 | 61 / 0 / 1 | 62 / 0 / 0 | 87.1% / 95.4% | 47 / 57 of 63 | 86.7% / 94.8% |
+| Carolina Marin Supanida Katethong YONEX Thailand | 30 | 74 | 72 / 0 / 0 | 72 / 0 / 0 | 88.5% / 95.0% | 60 / 64 of 74 | 89.7% / 92.7% |
+| Kento MOMOTA CHOU Tien Chen Denmark Open 2018 Fi | 25 | 112 | 110 / 0 / 3 | 106 / 0 / 0 | 88.0% / 95.5% | 18 / 91 of 112 | 95.6% / 96.6% |
+| Kento MOMOTA CHOU Tien Chen Fuzhou Open 2019 Fin | 25 | 113 | 117 / 0 / 7 | 112 / 0 / 2 | 89.0% / 95.7% | 29 / 92 of 113 | 92.7% / 95.4% |
+| Kento MOMOTA CHOU Tien Chen KOREA OPEN 2019 Fina | 25 | 78 | 77 / 0 / 0 | 76 / 0 / 0 | 88.7% / 95.9% | 68 / 69 of 78 | 91.8% / 94.2% |
+| Ng Ka Long Angus Kidambi Srikanth HSBC BWF WORLD | 30 | 112 | 110 / 0 / 1 | 107 / 0 / 0 | 89.4% / 95.4% | 98 / 97 of 112 | 90.0% / 93.7% |
+| Viktor Axelsen Anthony Sinisuka Ginting YONEX Th | 30 | 107 | 99 / 0 / 1 | 102 / 0 / 0 | 82.7% / 93.2% | 71 / 75 of 107 | 83.3% / 87.2% |
 
 **Choosing the serve rule, held out.** The rule picks between taking the first
 detected hit of a stretch as the serve and adding an inferred serve row at the start.
@@ -107,17 +107,20 @@ It was chosen on these held-out matches, never on the club video:
 
 | Serve rule | First row on the serve | Inferred serve rows |
 |---|---|---|
-| **first hit within 0.3 s of the start is the serve (shipped)** | **648 / 876 = 74.0%** | 279 |
-| within 0.5 s | 638 = 72.8% | 213 |
-| within 1.0 s | 554 = 63.2% | 28 |
-| within 1.5 s | 543 = 62.0% | 3 |
-| within 2.0 s | 542 = 61.9% | 0 |
-| no inferred serve row | 542 = 61.9% | 0 |
+| **first hit within 0.3 s of the start is the serve (shipped)** | **724 / 876 = 82.6%** | 279 |
+| within 0.5 s | 709 = 80.9% | 213 |
+| within 1.0 s | 613 = 70.0% | 28 |
+| within 1.5 s | 597 = 68.2% | 3 |
+| within 2.0 s | 596 = 68.0% | 0 |
+| no inferred serve row | 596 = 68.0% | 0 |
+
+The rule was chosen when serves were matched within ±10 frames; rescored at ±0.50 s the
+ranking is the same.
 
 ## Stand-in set 1 (club, 60 fps), against the user's 153 labels and 25 rallies
 
 All three runs score the same labels. Their rows are built and predicted in copies of
-the database, with the classifier trained on the ten shot labels. The hit models are:
+the database, with the classifier trained on the eight shot labels. The hit models are:
 
 - **old (five ranges):** the shipped default hit scorer, with the rule;
 - **nine matches:** the nine-match hit scorer, with the rule;
@@ -130,13 +133,13 @@ the database, with the classifier trained on the ten shot labels. The hit models
 | Extra (rallies outside the labelled ones) | 11 | 6 | 8 |
 | Start error, median abs; mean (s) | 0.00; -0.08 | 2.97; -3.98 | 0.57; -0.72 |
 | End error, median abs; mean (s) | 1.12; +1.91 | 3.13; +5.59 | 1.25; +1.73 |
-| Hit recall ±10, detected hits (floor: 79.1%) | 64.1% | 79.1% | **79.7%** |
-| Hit recall ±10, with inferred serves | 72.5% | 80.4% | 80.4% |
-| Hitter right on matched hits | 96.4% | 96.7% | 95.1% |
-| Shot type agrees (group), ±10 with serves | 78 / 104 = 75.0% | 86 / 115 = 74.8% | 86 / 118 = 72.9% |
-| **Labelled serves typed `serve`, ±10** (target: 15 of 18 or better) | **13 of 15** | 2 of 9 | **4 of 10** |
-| Labelled serves found by an inferred row / a detected hit / missed | 13 / 2 / 9 | 2 / 7 / 15 | 1 / 9 / 14 |
-| `ball_round` 1 rows predicted (detail) | serve_short 24, serve_long 8, push 2, net 1, lift 1 | serve_short 20, serve_long 3, 4 others | serve_short 31, serve_long 2 |
+| Hit recall ±0.25 s, detected hits | 68.6% | 88.2% | **88.9%** |
+| Hit recall ±0.50 s, detected hits | 78.4% | 94.8% | **96.1%** |
+| Hitter right on matched hits (±0.25 s) | 96.2% | 97.0% | 95.6% |
+| Precision inside the labelled rallies (±0.25 s, lower bound) | 61.4% | 69.2% | 70.5% |
+| **Labelled serves typed `serve`, ±0.50 s** (target: about 15 of 18 or better) | **16 of 19** | 2 of 20 | **11 of 22** |
+| Labelled serves found by an inferred row / a detected hit / missed | 16 / 3 / 5 | 2 / 18 / 4 | 2 / 20 / 2 |
+| `ball_round` 1 rows predicted (detail) | serve_short 24, serve_long 10, lift 1, net 1 | serve_short 18, serve_long 7, smash 1, net 1 | serve_short 30, serve_long 3 |
 
 Notes on the set-1 numbers:
 
@@ -145,24 +148,27 @@ Notes on the set-1 numbers:
 - **Detail level:** set 1 was labelled before the ten shot labels existed, so its labels
   have no `type_detail` and detail agreement can't be scored. The last row shows only
   the predicted detail of each rally's first row.
-- **Noise:** set 1 has 24 labelled serves, of which each run matches 9-15 (18 for the
-  old model at ±20), so a difference of one or two is noise. 4 of 10 against 13 of 15
-  is not.
+- **Noise:** set 1 has 24 labelled serves, of which each run matches 19-22 at ±0.50 s,
+  so a difference of one or two is noise. 11 of 22 against 16 of 19 is not.
+- **Superseded labels:** these rows use set 1's first 153 labels (copy in
+  `data/club_labels/set1_labels_153/`). The user has since relabelled set 1; the hit
+  models are scored against the relabel in `docs/results/hits_club.md`. The frame-based
+  figures (±5 / ±10 / ±20 frames) of earlier versions are in the git history.
 
 ## What it says
 
 - **On ShuttleSet** the in-play model is better than the rule on every count:
   - 94.8% of frames rightly in or out of play, against 86.6%;
   - rally ends 0.24 s off, against 1.2 s;
-  - the first row on the serve in 74% of rallies, against 55%;
+  - the first row on the serve in 83% of rallies, against 62%;
   - 3 points more hit recall at the same precision.
 - **On the club video** it fixes most of the rule's merging: 2 merged and 2 split
-  rallies, against 8 and 4. Starts are 0.57 s off, against 2.97 s. Hit recall stays at
-  the floor: 79.7% against 79.1%.
-- **Serve typing misses its target: 4 of 10, against the old model's 13 of 15.** The
+  rallies, against 8 and 4. Starts are 0.57 s off, against 2.97 s. Hit recall holds:
+  88.9% against 88.2% at ±0.25 s.
+- **Serve typing misses its target: 11 of 22, against the old model's 16 of 19.** The
   in-play starts on the club video come 0.72 s early on average (on ShuttleSet, +0.06
   s). So every rally's first row is an inferred serve 0.7 s before the real one, and it
-  is predicted a serve (31 serve_short, 2 serve_long). But the real serve, which the
+  is predicted a serve (30 serve_short, 3 serve_long). But the real serve, which the
   nine-match scorer usually detects as a hit, then follows as a second row at
   `ball_round` 2 and is typed as a return. The serve window that would absorb this
   (1 s or more) is the worst choice on ShuttleSet, so the rule can't fix it.

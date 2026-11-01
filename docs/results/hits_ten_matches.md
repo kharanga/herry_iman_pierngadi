@@ -7,35 +7,46 @@ frames among 581,694 player-frames) and measures it with each match held out in 
 The new model is a separate file, `data/models/movement_hits_ten_matches.joblib`; the
 default `data/models/movement_hits.joblib` is unchanged.
 
-## Headline (each match held out, ±5 frames, same thresholds as the shipped model)
+**Scoring windows.** A detection matches a labelled hit within **±0.25 s** (also
+reported: ±0.50 s). The window is turned into frames at each match's own fps: ±6 / ±13
+frames at 25 fps, ±8 / ±15 at 30 fps (`vision.hits.MATCH_TOLERANCE_SECONDS`). The
+earlier figures on this page, scored at ±5 / ±10 frames whatever the fps, are in the
+git history.
+
+## Headline (each match held out, ±0.25 s, same thresholds as the shipped model)
 
 | Model | Scored on | Labelled | Detected | Matched | Precision | Recall | Hitter |
 |---|---|---|---|---|---|---|---|
-| Shipped (5 ranges of Axelsen-Ginting) | the 8 other matches | 8,329 | 7,332 | 5,909 | 80.6% | 70.9% | 97.2% |
-| Trained on the other 8 matches | the same 8 matches, each held out | 8,329 | 8,332 | 6,866 | **82.4%** | **82.4%** | **98.7%** |
-| Trained on the other 8 matches | all 9 matches, each held out | 9,424 | 9,354 | 7,717 | 82.5% | 81.9% | 98.8% |
-| Trained on the other 8 matches, ±10 | all 9 matches, each held out | 9,424 | 9,354 | 8,212 | 87.8% | 87.1% | 98.4% |
+| Shipped (5 ranges of Axelsen-Ginting) | the 8 other matches | 8,329 | 7,332 | 6,144 | 83.8% | 73.8% | 96.7% |
+| Trained on the other 8 matches | the same 8 matches, each held out | 8,329 | 8,332 | 7,091 | **85.1%** | **85.1%** | **98.4%** |
+| Trained on the other 8 matches | all 9 matches, each held out | 9,424 | 9,354 | 7,970 | 85.2% | 84.6% | 98.5% |
+| Trained on the other 8 matches, ±0.50 s | all 9 matches, each held out | 9,424 | 9,354 | 8,403 | 89.8% | 89.2% | 98.2% |
 
-More training data mostly adds recall: +11.5 points on matches neither model saw, for
-+1.8 points of precision. Hitter accuracy is over matched hits whose label has a
+More training data mostly adds recall: +11.3 points on matches neither model saw, for
++1.3 points of precision. Hitter accuracy is over matched hits whose label has a
 player position.
 
 **Not memorising the players.** Folds are by match, but players recur: Momota - Chou is
 three of the nine matches, Marin and Antonsen play in two each, and Axelsen plays in
 Antonsen - Axelsen too. Leaving out of the training *every* match that shares a player
 with the held-out one (`--by-player`; 6 to 8 training matches) gives
-**81.7% / 80.9%** at ±5 over all nine (87.5% / 86.6% at ±10, hitter 98.4%), against
-82.5% / 81.9%. About 1 point comes from having seen the same players; the gain over the
-shipped model stays at about 10 points of recall. Axelsen - Ginting alone:
-82.1% / 77.7% (vs 83.3% / 77.7%).
+**84.6% / 83.8%** at ±0.25 s over all nine (89.4% / 88.5% at ±0.50 s, hitter 98.1%),
+against 85.2% / 84.6%. Under 1 point comes from having seen the same players; the gain
+over the shipped model stays at about 10 points of recall. Axelsen - Ginting alone:
+84.9% / 80.4% (against 86.0% / 80.3%).
 
 **On the original five ranges** (the 128 hits of `hits_movement.md`), the model trained
-on the eight matches *without* Axelsen-Ginting scores 122 detected, 113 matched:
-**92.6% precision, 88.3% recall** at ±5 (94.3% / 89.8% at ±10), hitter 113/113, against
-85.8% / 80.5% for the five-range model with each range held out, and 90.5% / 89.1% for
-the old shuttle-based detector. Per range at ±5: 80.8% / 80.8%, 96.2% / 92.6%,
-92.3% / 88.9%, 100% / 94.4%, 96.3% / 86.7%. The nine-match model (which has seen these
-hits) gets 88.9% / 87.5%; that is in-sample and not an estimate.
+on the eight matches *without* Axelsen-Ginting scores 122 detected, 114 matched:
+**93.4% precision, 89.1% recall** at ±0.25 s (95.9% / 91.4% at ±0.50 s), hitter
+114/114.
+
+- **Five-range model, each range held out** (`--cross-validate`): 88.3% / 82.8%.
+- **Old shuttle-based detector:** 90.5% / 89.1%. That figure was scored at ±5 frames and
+  isn't re-run here: the shuttle tracker is out of the pipeline.
+- **Per range at ±0.25 s:** 80.8% / 80.8%, 100% / 96.3%, 92.3% / 88.9%, 100% / 94.4%,
+  96.3% / 86.7%.
+- **The nine-match model, which has seen these hits:** 91.3% / 89.8%. That is in-sample
+  and not an estimate.
 
 ## Data
 
@@ -92,70 +103,73 @@ hits) gets 88.9% / 87.5%; that is in-sample and not an estimate.
 - **Training targets.** As for the shipped model: frames within ±2 of a hit of that
   player, on frames where at least one player was detected.
 - **Each match held out.** The scorer is trained on the other eight matches and scores
-  the held-out one. Matching is one to one, closest first, within ±5 frames (±10 also
-  reported).
+  the held-out one. Matching is one to one, closest first, within ±0.25 s (±0.50 s also
+  reported), in frames at the match's fps.
 - **Thresholds.** The headline uses the shipped thresholds (hit score 0.5, rally-end
   score 0.7). I also tuned them for each held-out match (`--tune`). The grid is hit
-  score 0.35-0.65 x rally-end score 0.5-0.8, picked by best F1 at ±5 over the eight
-  training matches. Each training match is scored by a model trained on the other seven,
-  so the held-out match plays no part in the choice. Tuning gives 83.9% / 81.2%
-  (89.1% / 86.2% at ±10): +1.4 points of precision for -0.7 of recall. The chosen
-  hit score is 0.55 for seven matches and 0.65 for the two with Antonsen (rally-end
-  0.5-0.7), always a little above the shipped 0.5. The thresholds stay where they are.
+  score 0.35-0.65 x rally-end score 0.5-0.8, picked by best F1 at ±0.25 s over the
+  eight training matches. Each training match is scored by a model trained on the other
+  seven, so the held-out match plays no part in the choice. Tuning gives 85.0% / 85.0%
+  (89.6% / 89.6% at ±0.50 s): -0.2 points of precision for +0.4 of recall. The chosen
+  hit score is 0.55 for all nine matches (rally-end 0.5-0.7), a little above the
+  shipped 0.5. The thresholds stay where they are. `--save --tune` gives 0.55 / 0.6 for
+  the shipped nine-match model, tuned on all nine.
 - **Settings by fps.** As shipped: `settings_for_video` scales the frame windows and
   gaps by fps, so the 25 fps matches use the 30 fps settings converted to time.
 
-## Held out, per match (±5 / ±10, shipped thresholds)
+## Held out, per match (±0.25 s / ±0.50 s, shipped thresholds)
 
-| Match | fps | Labelled | Detected | Precision ±5 | Recall ±5 | Precision ±10 | Recall ±10 | Hitter ±5 | Shipped model ±5 |
+| Match | fps | Labelled | Detected | Precision ±0.25 s | Recall ±0.25 s | Precision ±0.50 s | Recall ±0.50 s | Hitter ±0.25 s | Shipped model ±0.25 s |
 |---|---|---|---|---|---|---|---|---|---|
-| Axelsen - Ginting | 30 | 1,095 | 1,022 | 83.3% | 77.7% | 87.7% | 81.8% | 845/850 | 82.9% / 73.7% (partly in-sample) |
-| Momota - Chou, Fuzhou | 25 | 1,644 | 1,668 | 83.8% | 85.0% | 89.9% | 91.2% | 1373/1397 | 82.3% / 72.5% |
-| Momota - Chou, Korea | 25 | 928 | 954 | 81.2% | 83.5% | 86.9% | 89.3% | 760/774 | 78.0% / 70.5% |
-| Momota - Chou, Denmark | 25 | 1,311 | 1,388 | 82.4% | 87.3% | 88.5% | 93.7% | 1129/1144 | 78.1% / 70.6% |
-| Marin - Katethong | 30 | 629 | 622 | 82.2% | 81.2% | 88.3% | 87.3% | 510/511 | 82.8% / 71.1% |
-| Antonsen - Verma | 30 | 1,204 | 1,144 | 79.4% | 75.4% | 85.5% | 81.2% | 885/903 | 80.4% / 67.6% |
-| Marin - Yigit | 30 | 518 | 505 | 83.2% | 81.1% | 86.7% | 84.6% | 417/419 | 79.9% / 69.7% |
-| Ng - Srikanth | 30 | 1,200 | 1,170 | 87.5% | 85.3% | 90.9% | 88.7% | 1016/1022 | 86.0% / 75.7% |
-| Antonsen - Axelsen | 30 | 895 | 881 | 78.0% | 76.8% | 83.0% | 81.7% | 676/687 | 75.8% / 67.9% |
+| Axelsen - Ginting | 30 | 1,095 | 1,022 | 86.0% | 80.3% | 89.2% | 83.3% | 871/878 | 86.6% / 77.0% (partly in-sample) |
+| Momota - Chou, Fuzhou | 25 | 1,644 | 1,668 | 85.4% | 86.7% | 91.4% | 92.7% | 1399/1425 | 84.3% / 74.3% |
+| Momota - Chou, Korea | 25 | 928 | 954 | 83.1% | 85.5% | 89.3% | 91.8% | 776/792 | 80.1% / 72.3% |
+| Momota - Chou, Denmark | 25 | 1,311 | 1,388 | 84.4% | 89.3% | 90.3% | 95.6% | 1154/1171 | 81.7% / 73.8% |
+| Marin - Katethong | 30 | 629 | 622 | 86.3% | 85.4% | 90.7% | 89.7% | 533/537 | 85.7% / 73.6% |
+| Antonsen - Verma | 30 | 1,204 | 1,144 | 84.0% | 79.8% | 88.9% | 84.5% | 933/956 | 83.8% / 70.4% |
+| Marin - Yigit | 30 | 518 | 505 | 85.3% | 83.2% | 88.9% | 86.7% | 427/430 | 83.2% / 72.6% |
+| Ng - Srikanth | 30 | 1,200 | 1,170 | 90.1% | 87.8% | 92.3% | 90.0% | 1039/1052 | 90.3% / 79.5% |
+| Antonsen - Axelsen | 30 | 895 | 881 | 81.6% | 80.3% | 85.4% | 84.0% | 706/719 | 80.3% / 72.0% |
 
-## 25 vs 30 fps (each match held out, ±5)
+## 25 vs 30 fps (each match held out)
 
-| fps | Matches | Labelled | Precision | Recall | ±10 precision / recall | Hitter |
+| fps | Matches | Labelled | Precision ±0.25 s | Recall ±0.25 s | ±0.50 s precision / recall | Hitter |
 |---|---|---|---|---|---|---|
-| 25 | 3 (all Momota - Chou) | 3,883 | 82.7% | 85.4% | 88.7% / 91.6% | 98.4% |
-| 30 | 6 | 5,541 | 82.4% | 79.4% | 87.1% / 84.0% | 99.0% |
+| 25 (±6 / ±13 frames) | 3 (all Momota - Chou) | 3,883 | 84.5% | 87.3% | 90.5% / 93.5% | 98.3% |
+| 30 (±8 / ±15 frames) | 6 | 5,541 | 85.7% | 82.7% | 89.3% / 86.2% | 98.6% |
 
-The fps scaling works: 25 fps is not worse. Recall is 6 points *higher* at 25 fps, but
-all three 25 fps matches are the same two players, so this is as likely Momota and
-Chou's style (long, regular rallies) as the frame rate; with these matches the two
-can't be told apart. Among the 30 fps matches the spread is 75-85% recall, and the two
-matches with Antonsen are the lowest.
+The fps scaling works: 25 fps is not worse. At the same time window, recall is 4.6
+points *higher* at 25 fps. But all three 25 fps matches are the same two players, so
+this is as likely Momota and Chou's style (long, regular rallies) as the frame rate;
+with these matches the two can't be told apart. Among the 30 fps matches the spread is
+80-88% recall, and the two matches with Antonsen are the lowest.
 
-## Learning curve (each match held out, ±5, shipped thresholds)
+## Learning curve (each match held out, ±0.25 s, shipped thresholds)
 
 For each held-out match the scorer is trained on 1, 3, 5 or all 8 of the other matches
 (a random subset, seed 2026), then all nine held-out results are added up.
 
-| Training matches | Detected | Precision | Recall | ±10 precision / recall | Hitter |
+| Training matches | Detected | Precision ±0.25 s | Recall ±0.25 s | ±0.50 s precision / recall | Hitter |
 |---|---|---|---|---|---|
-| 1 | 8,818 | 83.2% | 77.8% | 88.8% / 83.1% | 98.5% |
-| 3 | 9,333 | 81.7% | 80.9% | 87.5% / 86.7% | 98.5% |
-| 5 | 9,295 | 82.3% | 81.2% | 88.2% / 87.0% | 98.7% |
-| 8 | 9,354 | 82.5% | 81.9% | 87.8% / 87.1% | 98.8% |
+| 1 | 8,818 | 86.3% | 80.8% | 91.1% / 85.3% | 98.3% |
+| 3 | 9,333 | 84.7% | 83.8% | 89.3% / 88.4% | 98.3% |
+| 5 | 9,295 | 85.5% | 84.3% | 89.9% / 88.7% | 98.3% |
+| 8 | 9,354 | 85.2% | 84.6% | 89.8% / 89.2% | 98.5% |
 
 Most of the gain is from one whole match (about 1,000 hits) over five ranges (128 hits):
-recall 70.9% to 77.8% on unseen matches. Three matches add 3 more points, and five
+recall 73.8% to 80.8% on unseen matches. Three matches add 3 more points, and five
 to eight add under 1. The scorer is near its ceiling with these 20 movement features;
 more ShuttleSet matches won't move it much. What's left is the rhythm step's misses and
 the features themselves.
 
-**What the sample bears.** 9,424 hits from nine matches and seven pairs of players:
-about ±0.8 points at 95% confidence on the totals if hits were independent; they are
-not (hits in a rally share a tracking quality), so match-to-match spread (75-87% recall)
-is the honest error bar for a new broadcast match. None of this is my club footage:
-the camera angle there is different, and these numbers don't transfer to it without
-labelled club hits.
+**What the sample bears:**
+
+- 9,424 hits from nine matches and seven pairs of players. If hits were independent,
+  the totals would be good to about ±0.8 points at 95% confidence. They aren't (hits
+  in a rally share a tracking quality), so the match-to-match spread (80-89% recall) is
+  the honest error bar for a new broadcast match.
+- None of this is club footage: the camera angle there is different, and these numbers
+  don't transfer to it without labelled club hits (`docs/results/hits_club.md`).
 
 ## How to run
 
@@ -175,14 +189,18 @@ ten lines are the nine matches above plus Chou - Christie, which the command lea
 for its coarse clarity):
 ```
 .venv/bin/python -m vision.hit_training data/hit_training/matches.txt --held-out --tune --by-player --learning-curve \
-    --baseline data/models/movement_hits.joblib --save data/models/movement_hits_ten_matches.joblib       # 17 min, CPU
+    --baseline data/models/movement_hits.joblib --save data/models/movement_hits_ten_matches.joblib       # 20 min, CPU
 .venv/bin/python -m vision.hit_training data/hit_training/matches.txt --save data/hit_training/model_without_axelsen_ginting.joblib \
     --exclude Viktor_Axelsen_Anthony_Sinisuka_Ginting_YONEX_Thailand_Open_2021_SemiFinals
 .venv/bin/python -m vision.movement data/match.mp4 --start 14201 --end 14947 \
     --evaluate Viktor_Axelsen_Anthony_Sinisuka_Ginting_YONEX_Thailand_Open_2021_SemiFinals 1 \
     --model data/hit_training/model_without_axelsen_ginting.joblib --no-serves --hits-dir /tmp/ten_matches   # and the other four ranges
+.venv/bin/python -m vision.movement data/match.mp4 --cross-validate --match Viktor_Axelsen_Anthony_Sinisuka_Ginting_YONEX_Thailand_Open_2021_SemiFinals \
+    --range 14201 14947 1 --range 16551 17343 1 --range 81360 82116 2 --range 107560 108103 3 --range 114673 116641 3
 ```
-Every number on this page comes out of these commands. Their tables are in
+The in-sample five-range figure is the same `--evaluate` with
+`--model data/models/movement_hits_ten_matches.joblib`. Every number on this page comes
+out of these commands. Their tables are in
 `data/hit_training/` (`held_out.csv`, `held_out_by_player.csv`, `learning_curve.csv`,
 `baseline.csv`). The shipped-model rows of the headline are `baseline.csv` without
 Axelsen - Ginting. Run from the repo, all nine fine offsets and clarities, the stretch

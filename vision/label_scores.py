@@ -6,10 +6,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from vision.hits import match_hits
+from vision.hits import MATCH_TOLERANCE_SECONDS, match_hits, match_tolerances, tolerance_frames, tolerance_label
 from vision.movement import PLAYERS, detected_hits_only
 
-DEFAULT_TOLERANCES = (5, 10)
 UNKNOWN_TYPE = "unknown"
 MISSING_GROUP_NAMES = {"hitter": "unknown hitter", "type": "no type"}
 OWN_PREDICTIONS_SQL = """
@@ -136,20 +135,20 @@ def read_predictions(database_path: Path, match_id: str) -> pd.DataFrame:
         connection.close()
 
 
-def headline_table(runs: list[ScoredRun], labels: pd.DataFrame, spans: list[tuple[int, int]], tolerances: tuple[int, ...]) -> list[str]:
+def headline_table(runs: list[ScoredRun], labels: pd.DataFrame, spans: list[tuple[int, int]], windows: list[tuple[float, int]], fps: float) -> list[str]:
     lines = [
         "| Model | Tolerance | Rows scored | Recall | Hitter right | Shot type agrees | Precision in labelled rallies (lower bound) |",
         "|---|---|---|---|---|---|---|",
     ]
     for run in runs:
         for with_serves in (False, True):
-            for tolerance in tolerances:
+            for window, tolerance in windows:
                 outcomes = label_outcomes(run.hits, labels, run.predictions, tolerance, with_serves)
                 counts = agreement_counts(outcomes)
                 precise, inside = precision_in_labelled_rallies(run.hits, outcomes, spans, tolerance, with_serves)
                 rows_name = "detected + inferred serves" if with_serves else "detected hits"
                 lines.append(
-                    f"| {run.name} | ±{tolerance} | {rows_name} | {share(counts['matched'], counts['labelled'])} | {share(counts['hitter_right'], counts['hitter_judged'])} "
+                    f"| {run.name} | {tolerance_label(window, fps)} | {rows_name} | {share(counts['matched'], counts['labelled'])} | {share(counts['hitter_right'], counts['hitter_judged'])} "
                     f"| {share(counts['type_right'], counts['type_judged'])} | {share(precise, inside)} |"
                 )
     return lines
@@ -209,12 +208,12 @@ def serve_table(runs: list[ScoredRun], labels: pd.DataFrame, tolerance: int) -> 
     return lines
 
 
-def source_lines(runs: list[ScoredRun], labels: pd.DataFrame, spans: list[tuple[int, int]], tolerances: tuple[int, ...]) -> list[str]:
+def source_lines(runs: list[ScoredRun], labels: pd.DataFrame, spans: list[tuple[int, int]], windows: list[tuple[float, int]], fps: float) -> list[str]:
     if labels["source"].nunique() < 2:
         return ["", f"## By label source", f"every label is {labels['source'].iloc[0]}; no per-source split"]
     lines = []
     for source, source_labels in labels.groupby("source"):
-        lines += ["", f"## Recall of {source} labels", *headline_table(runs, source_labels.reset_index(drop=True), spans, tolerances)]
+        lines += ["", f"## Recall of {source} labels", *headline_table(runs, source_labels.reset_index(drop=True), spans, windows, fps)]
     return lines
 
 
@@ -264,19 +263,28 @@ def rally_bound_lines(runs: list[ScoredRun], spans: list[tuple[int, int]], fps: 
     return lines
 
 
-def report_lines(runs: list[ScoredRun], labels: pd.DataFrame, spans: list[tuple[int, int]], tolerances: tuple[int, ...], breakdown_tolerance: int, fps: float | None = None) -> list[str]:
+def report_lines(
+    runs: list[ScoredRun],
+    labels: pd.DataFrame,
+    spans: list[tuple[int, int]],
+    fps: float,
+    seconds: tuple[float, ...] = MATCH_TOLERANCE_SECONDS,
+    breakdown_seconds: float = MATCH_TOLERANCE_SECONDS[-1],
+) -> list[str]:
+    windows = match_tolerances(fps, seconds)
+    breakdown_tolerance = tolerance_frames(breakdown_seconds, fps)
+    breakdown = tolerance_label(breakdown_seconds, fps)
     lines = [f"labels: {len(labels)} in {labels['rally'].nunique()} rallies; sources: " + ", ".join(f"{source} {count}" for source, count in labels["source"].value_counts().items())]
-    lines += ["", "## Headline", *headline_table(runs, labels, spans, tolerances)]
-    lines += source_lines(runs, labels, spans, tolerances)
-    lines += ["", f"## Labelled serves, ±{breakdown_tolerance}", *serve_table(runs, labels, breakdown_tolerance)]
+    lines += ["", "## Headline", *headline_table(runs, labels, spans, windows, fps)]
+    lines += source_lines(runs, labels, spans, windows, fps)
+    lines += ["", f"## Labelled serves, {breakdown}", *serve_table(runs, labels, breakdown_tolerance)]
     for column in ("type", "hitter"):
-        lines += ["", f"## By labelled {column}, ±{breakdown_tolerance}, detected + inferred serves", *breakdown_table(runs, labels, column, breakdown_tolerance, True)]
+        lines += ["", f"## By labelled {column}, {breakdown}, detected + inferred serves", *breakdown_table(runs, labels, column, breakdown_tolerance, True)]
     for run in runs:
-        lines += ["", f"## Shot types on matched hits, {run.name}, ±{breakdown_tolerance}, detected + inferred serves", *type_confusion_table(run, labels, breakdown_tolerance, True)]
-    lines += ["", f"## Shot detail on matched hits, ±{breakdown_tolerance}, detected + inferred serves", *detail_lines(runs, labels, breakdown_tolerance)]
-    if fps:
-        lines += ["", "## Rally bounds against the labelled rallies", *rally_bound_lines(runs, spans, fps)]
-    lines += ["", f"## Labelled hits missed by either model, ±{breakdown_tolerance}, detected + inferred serves", *missed_table(runs, labels, breakdown_tolerance, True)]
+        lines += ["", f"## Shot types on matched hits, {run.name}, {breakdown}, detected + inferred serves", *type_confusion_table(run, labels, breakdown_tolerance, True)]
+    lines += ["", f"## Shot detail on matched hits, {breakdown}, detected + inferred serves", *detail_lines(runs, labels, breakdown_tolerance)]
+    lines += ["", "## Rally bounds against the labelled rallies", *rally_bound_lines(runs, spans, fps)]
+    lines += ["", f"## Labelled hits missed by either model, {breakdown}, detected + inferred serves", *missed_table(runs, labels, breakdown_tolerance, True)]
     return lines
 
 
@@ -289,9 +297,9 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--rallies", type=Path, help="its rallies CSV (default: <labels stem>_rallies.csv next to it)")
     parser.add_argument("--run", nargs=3, action="append", default=[], metavar=("NAME", "HITS_CSV", "DATABASE"), help="a model's hits file and the shots database holding its predicted rows; repeatable")
     parser.add_argument("--match-id", required=True, help="the own rows' match id in each DATABASE")
-    parser.add_argument("--tolerance", type=int, action="append", default=[], help="matching tolerance in video frames for the headline (default 5 and 10); repeatable")
-    parser.add_argument("--fps", type=float, help="the video's frame rate; with it, each run's rallies file (rallies_*.csv next to its hits file) is compared with the labelled rallies, in seconds")
-    parser.add_argument("--breakdown-tolerance", type=int, default=DEFAULT_TOLERANCES[-1], help="tolerance of the breakdowns, the serve table and the missed list (default 10)")
+    parser.add_argument("--tolerance", type=float, action="append", default=[], help="matching window in seconds for the headline, turned into frames at --fps (default 0.25 and 0.5); repeatable")
+    parser.add_argument("--fps", type=float, required=True, help="the video's frame rate: turns the matching windows into frames, and times the comparison of each run's rallies file (rallies_*.csv next to its hits file) with the labelled rallies")
+    parser.add_argument("--breakdown-tolerance", type=float, default=MATCH_TOLERANCE_SECONDS[-1], help="window in seconds of the breakdowns, the serve table and the missed list (default 0.5)")
     parsed = parser.parse_args(arguments)
     if not parsed.run:
         parser.error("give at least one --run NAME HITS_CSV DATABASE")
@@ -314,7 +322,7 @@ def main(arguments: list[str]) -> int:
     except (FileNotFoundError, OSError, ValueError, KeyError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
-    for line in report_lines(runs, labels, spans, tuple(parsed.tolerance) or DEFAULT_TOLERANCES, parsed.breakdown_tolerance, parsed.fps):
+    for line in report_lines(runs, labels, spans, parsed.fps, tuple(parsed.tolerance) or MATCH_TOLERANCE_SECONDS, parsed.breakdown_tolerance):
         print(line)
     return 0
 

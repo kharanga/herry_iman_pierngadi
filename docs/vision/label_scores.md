@@ -16,7 +16,7 @@ rows (`score` NaN, `docs/vision/movement.md`) counted as detections.
 
 ```
 .venv/bin/python -m vision.label_scores --labels data/labels/<video id>.csv --match-id <id> \
-    --run NAME HITS_CSV DATABASE [--run ...] [--rallies CSV] [--tolerance N ...] [--breakdown-tolerance 10]
+    --run NAME HITS_CSV DATABASE [--run ...] --fps F [--rallies CSV] [--tolerance S ...] [--breakdown-tolerance 0.5]
 ```
 
 | Option | What it does |
@@ -25,9 +25,9 @@ rows (`score` NaN, `docs/vision/movement.md`) counted as detections.
 | `--rallies` | the labels' rallies CSV (`rally, start_frame, end_frame`); default `<labels stem>_rallies.csv` next to the labels |
 | `--run NAME HITS_CSV DATABASE` | one model: its hits file and the shots database holding the rows built from it and predicted (`vision.features`, then `shots.predict`); repeatable, one column group per run |
 | `--match-id` | the own rows' match id in each database |
-| `--tolerance N` | matching tolerance in video frames for the headline table; repeatable (default 5 and 10) |
-| `--fps F` | the video's frame rate. With it, each run's rallies file (`rallies_*.csv` next to its hits file) is compared with the labelled rallies, in seconds |
-| `--breakdown-tolerance N` | tolerance of the serve table, the breakdowns and the missed list (default 10) |
+| `--fps F` | the video's frame rate, required. It turns the matching windows into frames, and times the comparison of each run's rallies file (`rallies_*.csv` next to its hits file) with the labelled rallies |
+| `--tolerance S` | a matching window in seconds for the headline table, as frames at `--fps` (`vision.hits.MATCH_TOLERANCE_SECONDS`, default 0.25 and 0.5); repeatable. Headers read "±0.25 s (±15 frames at 60 fps)" |
+| `--breakdown-tolerance S` | the window in seconds of the serve table, the breakdowns and the missed list (default 0.5) |
 
 It prints Markdown:
 
@@ -40,7 +40,7 @@ It prints Markdown:
   on matched hits where both exist and the label isn't `unknown`. It prints "no label
   has a type_detail" for older label files, and "no detail predictions" for a database
   without `type_detail_pred`;
-- with `--fps`, the rally bounds against the labelled rallies: rallies matched, merged
+- the rally bounds against the labelled rallies: rallies matched, merged
   (one detected rally over two labelled ones), split, missed and extra, and the start
   and end errors in seconds;
 - every labelled hit that any run missed, with the offset of that run's nearest detected

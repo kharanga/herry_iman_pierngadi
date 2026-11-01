@@ -210,7 +210,10 @@ Fit, smoothed probability, and the saved file (`model`, `feature_names`,
 `landing_seconds`, `trained_on`). A missing file is a `FileNotFoundError` naming the
 training command, and a file made with other features is a `ValueError`.
 
-### `first_row_on_serve(hits, rallies, labels, tolerance=10) -> (int, int)`, `stretch_truth`, `in_play_training_rows`, `video_spans`, `frame_agreement`, `method_row`, `held_out_match_rows`, `cached_scores`, `summary_lines`, `run`, `main`
+### `first_row_on_serve(hits, rallies, labels, tolerance) -> (int, int)`, `stretch_truth`, `in_play_training_rows`, `video_spans`, `frame_agreement`, `method_row`, `held_out_match_rows`, `cached_scores`, `summary_lines`, `run`, `main`
 The training and held-out run. `first_row_on_serve` counts the labelled serves (first
 hit of each labelled rally) that a detected rally's first row matches within the
-tolerance. It's the condition for the classifier to see the serve at `ball_round` 1.
+tolerance (the held-out run uses ±0.50 s, in frames at the match's fps). It's the
+condition for the classifier to see the serve at `ball_round` 1. The held-out table
+records hit recall and precision per window as `labelled_0.25s`, `matched_0.5s`, and
+so on.

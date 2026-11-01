@@ -14,7 +14,7 @@ from vision.court import calibration_path, load_calibration, video_id
 from vision.hits import (
     HIT_COLUMNS,
     HITS_DIR,
-    MATCH_TOLERANCE_FRAMES,
+    MATCH_TOLERANCE_SECONDS,
     RALLY_COLUMNS,
     REFERENCE_FPS,
     REFERENCE_FRAME_WIDTH_PX,
@@ -22,6 +22,8 @@ from vision.hits import (
     frames_for_fps,
     labelled_hits,
     match_hits,
+    match_tolerances,
+    tolerance_label,
     output_paths,
     require_track_file,
     video_fps_and_width,
@@ -203,8 +205,8 @@ def hit_frame_labels(frames: np.ndarray, hit_frames, tolerance: int) -> np.ndarr
     return labels
 
 
-def fit_hit_model(feature_matrix: np.ndarray, labels: np.ndarray) -> HistGradientBoostingClassifier:
-    return HistGradientBoostingClassifier(**HIT_MODEL_PARAMETERS).fit(feature_matrix, labels)
+def fit_hit_model(feature_matrix: np.ndarray, labels: np.ndarray, sample_weight: np.ndarray | None = None) -> HistGradientBoostingClassifier:
+    return HistGradientBoostingClassifier(**HIT_MODEL_PARAMETERS).fit(feature_matrix, labels, sample_weight=sample_weight)
 
 
 def hit_scores(model, feature_matrix: np.ndarray, settings: MovementSettings) -> np.ndarray:
@@ -495,29 +497,31 @@ def evaluation_summary(hits: pd.DataFrame, labels: pd.DataFrame, tolerance: int)
     }
 
 
-def summary_line(name: str, totals: dict, tolerance: int) -> str:
+def summary_line(name: str, totals: dict, window: str) -> str:
     precision = totals["matched"] / totals["detected"] if totals["detected"] else 0.0
     recall = totals["matched"] / totals["labelled"] if totals["labelled"] else 0.0
     hitter = f"{totals['hitter_correct']}/{totals['hitter_judged']}"
-    return f"{name} ±{tolerance}: labelled {totals['labelled']}, detected {totals['detected']}, matched {totals['matched']}, precision {precision:.1%}, recall {recall:.1%}, hitter correct {hitter}"
+    return f"{name} {window}: labelled {totals['labelled']}, detected {totals['detected']}, matched {totals['matched']}, precision {precision:.1%}, recall {recall:.1%}, hitter correct {hitter}"
 
 
 def add_totals(totals: dict, summary: dict) -> dict:
     return {key: totals.get(key, 0) + value for key, value in summary.items()}
 
 
-def cross_validation_lines(labelled_ranges: list[LabelledRange], settings: MovementSettings, tolerances: tuple[int, ...] = (5, 10)) -> list[str]:
+def cross_validation_lines(labelled_ranges: list[LabelledRange], settings: MovementSettings, seconds: tuple[float, ...] = MATCH_TOLERANCE_SECONDS) -> list[str]:
     range_data = [labelled_range_data(labelled_range, settings) for labelled_range in labelled_ranges]
-    lines, totals = [], {tolerance: {} for tolerance in tolerances}
+    video_fps = video_fps_and_width(labelled_ranges[0].video_path)[0] if labelled_ranges else settings.fps
+    windows = match_tolerances(video_fps, seconds)
+    lines, totals = [], {window: {} for window, _ in windows}
     for held_out, (tracks, labels, _, _) in zip(labelled_ranges, range_data):
         features, targets = stacked_training_data([data for data, other in zip(range_data, labelled_ranges) if other is not held_out])
         hits, _ = detect_hits(tracks, fit_hit_model(features, targets), settings)
-        for tolerance in tolerances:
-            summary = evaluation_summary(hits, labels, tolerance)
-            totals[tolerance] = add_totals(totals[tolerance], summary)
-            lines.append(summary_line(f"held out {held_out.name}", summary, tolerance))
-    for tolerance in tolerances:
-        lines.append(summary_line("all ranges, each held out", totals[tolerance], tolerance))
+        for window, frames in windows:
+            summary = evaluation_summary(hits, labels, frames)
+            totals[window] = add_totals(totals[window], summary)
+            lines.append(summary_line(f"held out {held_out.name}", summary, tolerance_label(window, video_fps)))
+    for window, _ in windows:
+        lines.append(summary_line("all ranges, each held out", totals[window], tolerance_label(window, video_fps)))
     return lines
 
 
@@ -672,7 +676,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--evaluate-labels", type=Path, metavar="CSV", help="compare with hand labels (python -m vision.label): rally, frame_num, player, type_group")
     parser.add_argument("--database", type=Path, help="with --evaluate-labels and --match-id: shots database for the type_pred vs type_group agreement")
     parser.add_argument("--match-id", help="with --evaluate-labels: the own rows' match id in --database")
-    parser.add_argument("--tolerance", type=int, action="append", default=[], help="matching tolerance in frames for --evaluate (default 5 and 10); repeatable")
+    parser.add_argument("--tolerance", type=float, action="append", default=[], help="matching window in seconds for --evaluate / --evaluate-labels / --cross-validate, turned into frames at the video's own fps (default 0.25 and 0.5); repeatable")
     parser.add_argument("--train", action="store_true", help="fit the model on the labelled --range ranges of this video and save it to --model")
     parser.add_argument("--cross-validate", action="store_true", help="hold out each --range in turn and report precision and recall")
     parser.add_argument("--range", nargs=3, type=int, action="append", default=[], metavar=("START", "END", "SET_NO"), help="a labelled range for --train or --cross-validate; repeatable")
@@ -681,6 +685,8 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--players-dir", type=Path, default=PLAYERS_DIR, help="root of the player tracking files (default data/players)")
     parser.add_argument("--spot-check", type=int, metavar="N", help="draw N random detected hits (before, at, after) to data/checks/hits/")
     parser.add_argument("--in-play-model", type=Path, metavar="MODEL", help="rallies are the stretches this in-play model finds (python -m vision.in_play), instead of the gap rule; the inferred serve sits at each stretch's start")
+    parser.add_argument("--hit-score-min", type=float, default=MovementSettings().hit_score_min, help="hit score a candidate needs (default 0.5)")
+    parser.add_argument("--rally-end-score-min", type=float, default=MovementSettings().rally_end_score_min, help="score a rally's first and last hit need (default 0.7)")
     parser.add_argument("--no-serves", action="store_true", help="don't add an inferred serve row at the start of each rally")
     return parser.parse_args(arguments)
 
@@ -727,18 +733,20 @@ def detect_command(parsed: argparse.Namespace, settings: MovementSettings) -> in
     rallies.to_csv(rallies_file, index=False)
     print(f"rallies: {len(rallies)}, hits: {len(detected_hits_only(hits))}, inferred serves: {len(inferred_serves_only(hits))}")
     if labels is not None:
-        for tolerance in parsed.tolerance or [MATCH_TOLERANCE_FRAMES, 2 * MATCH_TOLERANCE_FRAMES]:
-            for line in evaluation_lines(detected_hits_only(hits), labels, tolerance):
-                print(f"±{tolerance}: {line}")
+        video_fps = video_fps_and_width(parsed.video)[0]
+        windows = match_tolerances(video_fps, tuple(parsed.tolerance) or MATCH_TOLERANCE_SECONDS)
+        for window, frames in windows:
+            for line in evaluation_lines(detected_hits_only(hits), labels, frames):
+                print(f"{tolerance_label(window, video_fps)}: {line}")
             if settings.infer_serves:
-                print(f"±{tolerance}: {serve_evaluation_line(hits, labels, tolerance)}")
-        for line in miss_lines(hits, labels, parsed.tolerance[0] if parsed.tolerance else MATCH_TOLERANCE_FRAMES):
+                print(f"{tolerance_label(window, video_fps)}: {serve_evaluation_line(hits, labels, frames)}")
+        for line in miss_lines(hits, labels, windows[0][1]):
             print(line)
         if parsed.evaluate_labels and parsed.database and parsed.match_id:
             predictions = own_predictions(parsed.database, parsed.match_id)
-            for tolerance in parsed.tolerance or [MATCH_TOLERANCE_FRAMES, 2 * MATCH_TOLERANCE_FRAMES]:
-                print(f"±{tolerance}: {type_agreement_line(hits, labels, predictions, tolerance)}")
-                print(f"±{tolerance}: {detail_agreement_line(hits, labels, predictions, tolerance)}")
+            for window, frames in windows:
+                print(f"{tolerance_label(window, video_fps)}: {type_agreement_line(hits, labels, predictions, frames)}")
+                print(f"{tolerance_label(window, video_fps)}: {detail_agreement_line(hits, labels, predictions, frames)}")
     print(f"saved {hits_file}")
     print(f"saved {rallies_file}")
     if parsed.spot_check:
@@ -752,7 +760,7 @@ def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
     try:
         require_video_file(parsed.video)
-        settings = replace(MovementSettings(), infer_serves=not parsed.no_serves)
+        settings = replace(MovementSettings(), infer_serves=not parsed.no_serves, hit_score_min=parsed.hit_score_min, rally_end_score_min=parsed.rally_end_score_min)
         if parsed.cross_validate or parsed.train:
             labelled_ranges = labelled_ranges_of(parsed)
             strides = {track_frame_stride(r.video_path, r.start_frame, r.end_frame, r.players_dir) for r in labelled_ranges}
@@ -760,7 +768,7 @@ def main(arguments: list[str]) -> int:
                 raise ValueError(f"the --range tracks have different frame strides: {sorted(strides)}")
             settings = settings_for_tracks(parsed.video, strides.pop(), settings)
         if parsed.cross_validate:
-            for line in cross_validation_lines(labelled_ranges_of(parsed), settings, tuple(parsed.tolerance) or (5, 10)):
+            for line in cross_validation_lines(labelled_ranges_of(parsed), settings, tuple(parsed.tolerance) or MATCH_TOLERANCE_SECONDS):
                 print(line)
             return 0
         if parsed.train:

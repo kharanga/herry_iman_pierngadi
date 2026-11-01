@@ -21,7 +21,7 @@ MIN_HIT_GAP_FRAMES = 8
 RALLY_GAP_FRAMES = 120
 REST_RADIUS_PX = 8.0
 REST_FRAME_COUNT = 20
-MATCH_TOLERANCE_FRAMES = 5
+MATCH_TOLERANCE_SECONDS = (0.25, 0.50)
 REFERENCE_FPS = 30.0
 REFERENCE_FRAME_WIDTH_PX = 1280
 HITS_DIR = Path("data/hits")
@@ -238,7 +238,19 @@ def segment_rallies(
     return numbered, pd.DataFrame(rallies, columns=RALLY_COLUMNS)
 
 
-def match_hits(detected_frames, labelled_frames, tolerance: int = MATCH_TOLERANCE_FRAMES) -> list[tuple[int, int]]:
+def tolerance_frames(seconds: float, fps: float) -> int:
+    return max(1, int(np.floor(seconds * fps + 0.5)))
+
+
+def match_tolerances(fps: float, seconds: tuple[float, ...] = MATCH_TOLERANCE_SECONDS) -> list[tuple[float, int]]:
+    return [(float(window), tolerance_frames(window, fps)) for window in seconds]
+
+
+def tolerance_label(seconds: float, fps: float) -> str:
+    return f"±{seconds:g} s (±{tolerance_frames(seconds, fps)} frames at {fps:g} fps)"
+
+
+def match_hits(detected_frames, labelled_frames, tolerance: int) -> list[tuple[int, int]]:
     pairs = sorted(
         (abs(detected - labelled), detected, labelled)
         for detected in detected_frames
@@ -317,7 +329,7 @@ def output_paths(video_path: Path, start_frame: int, end_frame: int, hits_dir: P
     return folder / f"hits_{start_frame}_{end_frame}.csv", folder / f"rallies_{start_frame}_{end_frame}.csv"
 
 
-def evaluation_lines(hits: pd.DataFrame, labels: pd.DataFrame, tolerance: int = MATCH_TOLERANCE_FRAMES) -> list[str]:
+def evaluation_lines(hits: pd.DataFrame, labels: pd.DataFrame, tolerance: int) -> list[str]:
     matched = match_hits(hits["frame"].tolist(), labels["frame"].tolist(), tolerance)
     precision, recall = precision_recall(len(matched), len(hits), len(labels))
     detected_hitter = dict(zip(hits["frame"], hits["hitter"]))
@@ -390,8 +402,9 @@ def error_breakdown(
     labels: pd.DataFrame,
     tracks: FrameTracks,
     settings: HitDetectionSettings = HitDetectionSettings(),
-    tolerance: int = MATCH_TOLERANCE_FRAMES,
+    tolerance: int | None = None,
 ) -> pd.DataFrame:
+    tolerance = tolerance_frames(MATCH_TOLERANCE_SECONDS[0], REFERENCE_FPS) if tolerance is None else tolerance
     matched = match_hits(hits["frame"].tolist(), labels["frame"].tolist(), tolerance)
     matched_detected = {detected for detected, _ in matched}
     matched_labelled = {labelled for _, labelled in matched}

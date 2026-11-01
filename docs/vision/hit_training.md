@@ -23,7 +23,7 @@ no fine offset yet, is left out with a printed reason (`exclusion_reason`).
 ## Command
 
 ```
-.venv/bin/python -m vision.hit_training <match list> [--held-out [--tune] [--by-player]] [--learning-curve] [--baseline MODEL] [--save MODEL [--exclude FOLDER ...]] [--out data/hit_training]
+.venv/bin/python -m vision.hit_training <match list> [--held-out [--tune] [--by-player]] [--learning-curve] [--baseline MODEL] [--save MODEL [--exclude FOLDER ...]] [--club VIDEO LABELS ...] [--club-weight 0.333] [--out data/hit_training]
 ```
 
 The match list is a text file with one match per line: the ShuttleSet match folder and the
@@ -32,13 +32,16 @@ video path, separated by a space (`#` lines are skipped).
 | Option | What it does | Table in `--out` |
 |---|---|---|
 | `--held-out` | each match scored by a model trained on all the others, at the shipped thresholds | `held_out.csv` |
-| `--tune` | also tunes the hit score and rally-end score thresholds for each held-out match. A grid of 5 x 4 values, best F1 at ±5 over the training matches, each scored by a model trained without it, so the held-out match plays no part | rows with `thresholds` = `tuned` |
+| `--tune` | also tunes the hit score and rally-end score thresholds for each held-out match. A grid of 5 x 4 values, best F1 at ±0.25 s (`TUNING_TOLERANCE_SECONDS`, in frames at each source's fps) over the training sources, each scored by a model trained without it, so the held-out match plays no part | rows with `thresholds` = `tuned` |
 | `--by-player` | again, but also leaving out every training match that shares a player with the held-out one (players from ShuttleSet's `match.csv`) | `held_out_by_player.csv` |
 | `--learning-curve` | each match scored by models trained on 1, 3, 5 and all other matches (random subsets, seed 2026) | `learning_curve.csv` |
 | `--baseline MODEL` | every match scored by an existing model | `baseline.csv` |
-| `--save MODEL` | trains on every listed match except `--exclude` ones and saves the model | |
+| `--save MODEL` | trains on every listed match except `--exclude` ones (and the club videos) and saves the model | |
+| `--club VIDEO LABELS` | adds a fully hand-labelled club video as training data; repeatable. It is never scored. Its tracks are the whole-video files (`positions_0_<last>.csv`), minus the rows flagged `doubtful` (`docs/vision/players.md`). Its hits are the labels file's (`vision.label_ui`); every other tracked frame is a negative, because the video is labelled in full. Settings scale to its frame rate (`settings_for_video`) | |
+| `--club-weight W` | the share of the total sample weight the club videos carry together (default 1/3, `DEFAULT_CLUB_WEIGHT`); the ShuttleSet matches share the rest equally, each match's share spread evenly over its rows. Used by `--held-out` (every held-out match's model also trains on the clubs) and `--save` | |
 
-Every table has one row per match and tolerance (±5 and ±10 frames): `labelled`,
+Every table has one row per match and scoring window (`MATCH_TOLERANCE_SECONDS`, ±0.25 s
+and ±0.50 s, as frames at the match's own fps: `tolerance_s`, `tolerance_frames`): `labelled`,
 `detected`, `matched`, `hitter_correct`, `hitter_judged` (the counts of
 `vision.movement.evaluation_summary`). The command prints the totals; `--held-out`
 also prints them by fps. Labels are every shot of every set at
@@ -56,7 +59,8 @@ fit; `--held-out --tune --by-player --learning-curve` together take about 20 min
 | Name | Value | Meaning |
 |---|---|---|
 | `RESULTS_DIR` | `data/hit_training` | default `--out` |
-| `TOLERANCES`, `TUNING_TOLERANCE` | `(5, 10)`, `5` | match tolerances reported, the one tuned on |
+| `DEFAULT_CLUB_WEIGHT` | `1/3` | default `--club-weight` |
+| `TUNING_TOLERANCE_SECONDS` | `0.25` | the window the thresholds are tuned on (the reported windows are `vision.hits.MATCH_TOLERANCE_SECONDS`) |
 | `HIT_SCORE_GRID`, `RALLY_END_GRID` | `(0.35, 0.45, 0.5, 0.55, 0.65)`, `(0.5, 0.6, 0.7, 0.8)` | thresholds tried by `--tune` |
 | `LEARNING_CURVE_SIZES`, `LEARNING_CURVE_SEED` | `(1, 3, 5)`, `2026` | subset sizes (plus all others), the subset seed |
 
@@ -102,19 +106,19 @@ that share no player with it.
 
 ```
 
-### `f1_of(totals) -> float`, `totals_line(name, rows) -> str`, `summary_lines(title, rows, group_columns=()) -> list[str]`
+### `f1_of(totals) -> float`, `totals_line(name, rows) -> str`, `window_text(seconds, rows) -> str`, `summary_lines(title, rows, group_columns=()) -> list[str]`
 
 ```python
 >>> import pandas as pd
 >>> from vision.hit_training import f1_of, summary_lines
 >>> round(f1_of({"labelled": 100, "detected": 80, "matched": 60}), 3)
 0.667
->>> rows = pd.DataFrame({"match": ["A", "B", "A", "B"], "fps": [25.0, 30.0, 25.0, 30.0], "tolerance": [5, 5, 10, 10], "labelled": [10, 20, 10, 20], "detected": [10, 18, 10, 18], "matched": [8, 15, 9, 17], "hitter_correct": [8, 15, 9, 16], "hitter_judged": [8, 15, 9, 17]})
+>>> rows = pd.DataFrame({"match": ["A", "B", "A", "B"], "fps": [25.0, 30.0, 25.0, 30.0], "tolerance_s": [0.25, 0.25, 0.5, 0.5], "tolerance_frames": [6, 8, 13, 15], "labelled": [10, 20, 10, 20], "detected": [10, 18, 10, 18], "matched": [8, 15, 9, 17], "hitter_correct": [8, 15, 9, 16], "hitter_judged": [8, 15, 9, 17]})
 >>> print("\n".join(summary_lines("held out", rows)))
-held out, tolerance 5: labelled 30, detected 28, matched 23, precision 82.1%, recall 76.7%, hitter 23/23 = 100.0%
-held out, tolerance 10: labelled 30, detected 28, matched 26, precision 92.9%, recall 86.7%, hitter 25/26 = 96.2%
+held out, ±0.25 s (±6 frames at 25 fps, ±8 frames at 30 fps): labelled 30, detected 28, matched 23, precision 82.1%, recall 76.7%, hitter 23/23 = 100.0%
+held out, ±0.5 s (±13 frames at 25 fps, ±15 frames at 30 fps): labelled 30, detected 28, matched 26, precision 92.9%, recall 86.7%, hitter 25/26 = 96.2%
 >>> summary_lines("held out", rows, ("fps",))[0]
-'held out, fps 25.0, tolerance 5: labelled 10, detected 10, matched 8, precision 80.0%, recall 80.0%, hitter 8/8 = 100.0%'
+'held out, fps 25.0, ±0.25 s (±6 frames at 25 fps): labelled 10, detected 10, matched 8, precision 80.0%, recall 80.0%, hitter 8/8 = 100.0%'
 
 ```
 
@@ -128,5 +132,28 @@ the named matches (rows stacked in the given order), per-stretch scores, the hit
 detected from scores (`vision.movement.hits_from_scores`, no inferred serves), and the
 threshold grid search.
 
-### `held_out_rows(matches, rows_by_match, tune=False, players=None)`, `learning_curve_rows(matches, rows_by_match, sizes=(1, 3, 5), seed=2026)`, `baseline_rows(matches, model)`, `count_rows(match, hits, **columns)`, `write_table(rows, output_path)`, `main(arguments)`
+### `club_labels(labels_file)`, `without_doubtful(positions, boxes)`, `load_club(video_path, labels_file, players_dir=PLAYERS_DIR) -> MatchData`, `match_weights(names, rows_by_match, club_names, club_weight) -> ndarray`
+A club video as a training source: its labels as `rally, frame, hitter, type`, its
+tracks without the doubtful rows, one `PlayerTracks` over the whole video, named
+`club:<video stem>`. `match_weights` gives each row its sample weight so the clubs
+carry `club_weight` of the total and every ShuttleSet match an equal share of the rest.
+The weights are scaled to a mean of 1. `fit_on(names, rows_by_match, club_names,
+club_weight)` uses them when a club is among `names`; without a club it fits
+unweighted, as before.
+
+```python
+>>> import numpy as np, pandas as pd
+>>> from vision.hit_training import match_weights, without_doubtful
+>>> rows = {"a": (None, np.zeros(100)), "b": (None, np.zeros(300)), "club": (None, np.zeros(1000))}
+>>> weights = match_weights(["a", "b", "club"], rows, ["club"], 1 / 3)
+>>> [round(float(part.sum() / weights.sum()), 3) for part in (weights[:100], weights[100:400], weights[400:])], round(float(weights.mean()), 3)
+([0.333, 0.333, 0.333], 1.0)
+>>> positions = pd.DataFrame({"frame": [1, 1, 2], "player": ["me", "opp", "me"], "doubtful": [False, True, False]})
+>>> kept, _ = without_doubtful(positions, positions[["frame", "player"]])
+>>> kept[["frame", "player"]].values.tolist()
+[[1, 'me'], [2, 'me']]
+
+```
+
+### `held_out_rows(matches, rows_by_match, tune=False, players=None, club_names=(), club_weight=0.0)`, `learning_curve_rows(matches, rows_by_match, sizes=(1, 3, 5), seed=2026)`, `baseline_rows(matches, model)`, `count_rows(match, hits, **columns)`, `write_table(rows, output_path)`, `main(arguments)`
 The tables of the command, one row per match and tolerance.

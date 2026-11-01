@@ -228,7 +228,7 @@ def test_matching_is_one_to_one_closest_first_and_never_double_counts():
 def test_evaluation_lines_count_hitters_only_on_labelled_hitters():
     hits = pd.DataFrame({"frame": [9, 20, 40], "hitter": ["me", "opp", "me"]})
     labels = pd.DataFrame({"frame": [10, 21, 30], "hitter": ["me", "me", None]})
-    lines = evaluation_lines(hits, labels)
+    lines = evaluation_lines(hits, labels, 5)
     assert lines[0].endswith("matched within ±5 frames: 2") and lines[1] == "precision 66.7%, recall 66.7%"
     assert lines[2] == "hitter correct: 1/2 = 50.0%" and "median -1.0" in lines[3]
 
@@ -252,7 +252,7 @@ def test_matched_label_without_a_hitter_position_is_not_judged():
     shots = pd.DataFrame({"rally": [1, 1], "frame_num": [100.0, 120.0], "player_location_x": [640.0, np.nan], "player_location_y": [600.0, np.nan], "type": ["smash", "short service"]})
     labels = labelled_hits(shots, MATCH_HOMOGRAPHY, 0, 200)
     hits = pd.DataFrame({"frame": [99, 119], "hitter": ["me", "me"]})
-    assert evaluation_lines(hits, labels)[2] == "hitter correct: 1/1 = 100.0%"
+    assert evaluation_lines(hits, labels, 5)[2] == "hitter correct: 1/1 = 100.0%"
 
 
 def test_frame_tracks_masks_cutaway_frames_and_missing_boxes():
@@ -315,9 +315,9 @@ def test_saved_tracks_of_rally_four_reproduce_the_documented_numbers():
     hits, rallies = segment_rallies(detect_hits(tracks), tracks)
     homography = load_calibration(calibration_path(MATCH_VIDEO_PATH))["pixel_to_court_homography"]
     labels = labelled_hits(load_set_shots(SHUTTLESET_SET_DIR, "Viktor_Axelsen_Anthony_Sinisuka_Ginting_YONEX_Thailand_Open_2021_SemiFinals", 1), homography, 14201, 14947)
-    matched = match_hits(hits["frame"].tolist(), labels["frame"].tolist())
+    matched = match_hits(hits["frame"].tolist(), labels["frame"].tolist(), 5)
     assert (len(labels), len(hits), len(matched)) == (26, 25, 24)
-    assert evaluation_lines(hits, labels)[2] == "hitter correct: 24/24 = 100.0%"
+    assert evaluation_lines(hits, labels, 5)[2] == "hitter correct: 24/24 = 100.0%"
     assert np.median([detected - labelled for detected, labelled in matched]) == -1
     assert len(rallies) == 1 and rallies["hits"].iloc[0] == 25
     saved_hits = pd.read_csv(PROJECT_ROOT / "data" / "hits" / "match" / "hits_14201_14947.csv")
