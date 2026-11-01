@@ -15,6 +15,7 @@ from analytics.court import COURT_LENGTH_M, COURT_WIDTH_M
 from shots.features import FEATURE_NAMES, FEATURE_SET_NAMES, SHIPPED_FEATURE_SET, has_hitter_and_landing_point, load_shot_feature_rows, shot_features
 from shots.jitter import JITTER_OFFSETS_FRAMES, jitter_label
 from shots.predict import ModelFeatureMismatchError, load_model, predict_shot_types
+from analytics.shot_types import TYPE_GROUP_BY_TYPE_DETAIL
 from shots.train import TRAINED_GROUPS, grouped_cross_validation, train_classifier
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +32,9 @@ GROUP_SHOT_PATTERNS = {
     "lift": ((3.0, 5.5), (3.0, 12.6), 3, 45),
     "drive": ((1.0, 4.0), (1.2, 10.0), 3, 18),
 }
+
+
+SYNTHETIC_DETAIL_OF_GROUP = {"serve": "serve_short", "clear": "clear", "drop": "drop", "smash": "smash", "net": "return_net", "lift": "lift", "drive": "push"}
 
 
 def synthetic_shot_rows(match_count: int, shots_per_group: int, random_seed: int = 0) -> list[dict]:
@@ -52,6 +56,7 @@ def synthetic_shot_rows(match_count: int, shots_per_group: int, random_seed: int
                         "fps": 25.0,
                         "player": "A",
                         "type_en": group,
+                        "type_detail": SYNTHETIC_DETAIL_OF_GROUP[group],
                         "type_group": group,
                         "hit_x": hit[0] + jitter[0],
                         "hit_y": hit[1] + jitter[1],
@@ -66,9 +71,9 @@ def synthetic_shot_rows(match_count: int, shots_per_group: int, random_seed: int
                 )
                 previous_hitter = (landing[0], COURT_LENGTH_M - landing[1])
                 reply_hitter = (COURT_WIDTH_M - labelled_shot["landing_x"], COURT_LENGTH_M - labelled_shot["landing_y"])
-                rows.append({**labelled_shot, "ball_round": ball_round - 1 if ball_round > 1 else 0, "frame_num": 60, "hit_x": previous_hitter[0], "hit_y": previous_hitter[1], "player_x": previous_hitter[0], "player_y": previous_hitter[1], "type_group": "unknown", "type_en": "unknown"})
+                rows.append({**labelled_shot, "ball_round": ball_round - 1 if ball_round > 1 else 0, "frame_num": 60, "hit_x": previous_hitter[0], "hit_y": previous_hitter[1], "player_x": previous_hitter[0], "player_y": previous_hitter[1], "type_detail": "unknown", "type_group": "unknown", "type_en": "unknown"})
                 rows.append(labelled_shot)
-                rows.append({**labelled_shot, "ball_round": ball_round + 1, "frame_num": 100 + flight_frames, "player_x": reply_hitter[0], "player_y": reply_hitter[1], "type_group": "unknown", "type_en": "unknown"})
+                rows.append({**labelled_shot, "ball_round": ball_round + 1, "frame_num": 100 + flight_frames, "player_x": reply_hitter[0], "player_y": reply_hitter[1], "type_detail": "unknown", "type_group": "unknown", "type_en": "unknown"})
     return rows
 
 
@@ -302,7 +307,7 @@ def test_predict_fills_only_type_pred_and_type_conf_for_every_source(trained_syn
     connection.execute("CREATE TABLE before_predict AS SELECT * FROM shots")
     connection.close()
     assert predict_shot_types(database_path, model_path) == predictable_synthetic_shots(5, 12) + 2
-    other_columns = "* EXCLUDE (type_pred, type_conf)"
+    other_columns = "* EXCLUDE (type_detail_pred, type_pred, type_conf)"
     for first_table, second_table in (("shots", "before_predict"), ("before_predict", "shots")):
         assert all_rows(database_path, f"SELECT COUNT(*) FROM (SELECT {other_columns} FROM {first_table} EXCEPT ALL SELECT {other_columns} FROM {second_table})") == [(0,)]
     assert all_rows(database_path, "SELECT COUNT(*) FROM shots WHERE (shots.type_pred IS NULL) <> (shots.type_conf IS NULL)") == [(0,)]
@@ -522,6 +527,78 @@ def test_every_generated_results_table_appears_verbatim_in_the_results_doc():
     results_text = RESULTS_PATH.read_text()
     sections = results_doc_sections(tables)
     hit_point_sections = results_doc_sections(hit_point_tables)
-    assert len(sections) == 8 and len(hit_point_sections) == 6
+    assert len(sections) == 10 and len(hit_point_sections) == 6
+    assert {"Per label", "Confusion matrix, labels"} <= {title.strip() for title, _ in sections}
     for title, table in sections + hit_point_sections:
         assert table.strip() in results_text, title
+
+
+def test_training_learns_the_labels_and_scores_folds_as_groups(trained_synthetic_model):
+    _, model_path, report = trained_synthetic_model
+    model = joblib.load(model_path)
+    assert model["trained_label"] == "type_detail" and report["trained_label"] == "type_detail"
+    assert set(model["labels"]) == set(SYNTHETIC_DETAIL_OF_GROUP.values())
+    assert set(model["groups"]) == set(SYNTHETIC_DETAIL_OF_GROUP)
+    assert report["detail_counts"]["serve_short"] == 5 * 12 and report["detail_counts"]["serve_long"] == 0 and report["detail_counts"]["net"] == 0
+    assert sum(report["detail_counts"].values()) == report["training_shots"]
+    assert set(report["per_group"]) == set(TRAINED_GROUPS)
+    assert set(report["detail"]["per_detail"]) == set(report["detail"]["labels"])
+    assert sum(sum(row) for row in report["detail"]["confusion_matrix"]["rows_true_columns_predicted"]) == report["training_shots"]
+    assert report["detail"]["accuracy_mean"] <= report["accuracy_mean"] + 1e-12
+
+
+def test_a_split_group_is_learned_per_label_and_its_mistakes_inside_the_group_still_count_as_right(tmp_path):
+    rows = synthetic_shot_rows(5, 12)
+    serve_index = 0
+    for row in rows:
+        if row["type_group"] == "serve":
+            row["type_detail"] = "serve_short" if serve_index % 2 == 0 else "serve_long"
+            serve_index += 1
+    database_path = write_shots_database(tmp_path / "split.duckdb", rows)
+    report = train_classifier(database_path, tmp_path / "split.joblib", fold_count=5, permutation_repeats=0)
+    assert report["detail_counts"]["serve_short"] == report["detail_counts"]["serve_long"] == 30
+    detail_labels = report["detail"]["confusion_matrix"]["labels"]
+    detail_matrix = np.array(report["detail"]["confusion_matrix"]["rows_true_columns_predicted"])
+    group_matrix = np.array(report["confusion_matrix"]["rows_true_columns_predicted"])
+    group_labels = report["confusion_matrix"]["labels"]
+    serve_rows = [detail_labels.index("serve_short"), detail_labels.index("serve_long")]
+    serve_group = group_labels.index("serve")
+    assert group_matrix[serve_group, serve_group] == detail_matrix[np.ix_(serve_rows, serve_rows)].sum()
+
+
+def test_predict_fills_a_label_and_its_group_from_the_same_choice(trained_synthetic_model, tmp_path):
+    source_database, model_path, _ = trained_synthetic_model
+    database_path = tmp_path / "details.duckdb"
+    database_path.write_bytes(source_database.read_bytes())
+    predict_shot_types(database_path, model_path)
+    pairs = all_rows(database_path, "SELECT DISTINCT shots.type_detail_pred, shots.type_pred FROM shots WHERE shots.type_pred IS NOT NULL")
+    assert pairs and all(TYPE_GROUP_BY_TYPE_DETAIL[detail] == group for detail, group in pairs)
+    assert all_rows(database_path, "SELECT COUNT(*) FROM shots WHERE (shots.type_detail_pred IS NULL) <> (shots.type_pred IS NULL)") == [(0,)]
+
+
+def test_predict_refuses_a_group_trained_model_and_main_prints_one_line(trained_synthetic_model, tmp_path, capsys):
+    from shots.predict import ModelLabelMismatchError, main
+    source_database, model_path, _ = trained_synthetic_model
+    database_path = tmp_path / "old_model.duckdb"
+    database_path.write_bytes(source_database.read_bytes())
+    old_model = {key: value for key, value in joblib.load(model_path).items() if key != "trained_label"}
+    old_model_path = tmp_path / "old.joblib"
+    joblib.dump(old_model, old_model_path)
+    before = all_rows(database_path, "SELECT * FROM shots ORDER BY shots.match_id, shots.rally, shots.ball_round")
+    with pytest.raises(ModelLabelMismatchError):
+        predict_shot_types(database_path, old_model_path)
+    assert main([str(database_path), str(old_model_path)]) == 1
+    error_text = capsys.readouterr().err
+    assert error_text.startswith("error: ") and error_text.count("\n") == 1 and "retrain" in error_text
+    assert all_rows(database_path, "SELECT * FROM shots ORDER BY shots.match_id, shots.rally, shots.ball_round") == before
+
+
+def test_predict_refuses_a_missing_database_and_creates_nothing(trained_synthetic_model, tmp_path, capsys):
+    from shots.predict import main
+    _, model_path, _ = trained_synthetic_model
+    missing = tmp_path / "scot.duckdb"
+    with pytest.raises(FileNotFoundError, match="database not found"):
+        predict_shot_types(missing, model_path)
+    assert main([str(missing), str(model_path)]) == 1
+    assert "database not found" in capsys.readouterr().err
+    assert not missing.exists() and not missing.with_suffix(".duckdb.wal").exists()

@@ -13,13 +13,15 @@ from sklearn.inspection import permutation_importance
 from sklearn.metrics import accuracy_score, confusion_matrix, precision_recall_fscore_support
 from sklearn.model_selection import GroupKFold
 
-from analytics.shot_types import SHOT_TYPE_GROUPS
+from analytics.shot_types import SHOT_TYPE_DETAILS, SHOT_TYPE_GROUPS, TYPE_GROUP_BY_TYPE_DETAIL
 from shots.features import FEATURE_NAMES, SHIPPED_FEATURE_SET, has_hitter_and_landing_point, load_shot_feature_rows, shot_features
 from shots.jitter import JITTER_OFFSETS_FRAMES, JITTER_SEED, jitter_hit_frames, jitter_label
 
 DATABASE_PATH = Path("data/scout.duckdb")
 MODEL_PATH = Path("data/models/shot_type_classifier.joblib")
 TRAINED_GROUPS = tuple(group for group in SHOT_TYPE_GROUPS if group != "unknown")
+TRAINED_DETAILS = tuple(detail for detail in SHOT_TYPE_DETAILS if detail != "unknown")
+TRAINED_LABEL_COLUMN = "type_detail"
 FOLD_COUNT = 5
 RANDOM_SEED = 0
 PERMUTATION_REPEATS = 3
@@ -33,6 +35,10 @@ def labelled_rows_of(shot_rows: pd.DataFrame, feature_set: str = SHIPPED_FEATURE
     is_labelled = (shot_rows["source"] == "shuttleset") & shot_rows["type_group"].isin(TRAINED_GROUPS)
     is_predictable = has_hitter_and_landing_point(shot_features(shot_rows, feature_set))
     return shot_rows[is_labelled & is_predictable].reset_index(drop=True)
+
+
+def rows_with_a_trained_detail(labelled_rows: pd.DataFrame) -> pd.DataFrame:
+    return labelled_rows[labelled_rows[TRAINED_LABEL_COLUMN].isin(TRAINED_DETAILS)].reset_index(drop=True)
 
 
 def labelled_shuttleset_rows(connection: duckdb.DuckDBPyConnection, feature_set: str = SHIPPED_FEATURE_SET) -> pd.DataFrame:
@@ -61,14 +67,24 @@ def majority_group(labels: pd.Series) -> str:
     return labels.value_counts().sort_index().idxmax()
 
 
-def per_group_scores(true_groups: pd.Series, predicted_groups: np.ndarray) -> dict:
+def per_label_scores(true_labels, predicted_labels, label_names: tuple[str, ...]) -> dict:
     precision, recall, f1, support = precision_recall_fscore_support(
-        true_groups, predicted_groups, labels=list(TRAINED_GROUPS), zero_division=0
+        true_labels, predicted_labels, labels=list(label_names), zero_division=0
     )
     return {
-        group: {"precision": float(precision[index]), "recall": float(recall[index]), "f1": float(f1[index]), "support": int(support[index])}
-        for index, group in enumerate(TRAINED_GROUPS)
+        label: {"precision": float(precision[index]), "recall": float(recall[index]), "f1": float(f1[index]), "support": int(support[index])}
+        for index, label in enumerate(label_names)
     }
+
+
+def per_group_scores(true_groups: pd.Series, predicted_groups: np.ndarray) -> dict:
+    return per_label_scores(true_groups, predicted_groups, TRAINED_GROUPS)
+
+
+def as_groups(labels, group_of_label: dict[str, str] | None) -> np.ndarray:
+    if group_of_label is None:
+        return np.asarray(labels, dtype=object)
+    return np.array([group_of_label[label] for label in labels], dtype=object)
 
 
 def variant_scores(labels: pd.Series, out_of_fold_predictions: np.ndarray, fold_accuracies: list[float]) -> dict:
@@ -77,6 +93,20 @@ def variant_scores(labels: pd.Series, out_of_fold_predictions: np.ndarray, fold_
         "accuracy_std": float(np.std(fold_accuracies)),
         "out_of_fold_accuracy": float(accuracy_score(labels, out_of_fold_predictions)),
         "per_group": per_group_scores(labels, out_of_fold_predictions),
+    }
+
+
+def detail_scores(labels: pd.Series, out_of_fold_predictions: np.ndarray, fold_accuracies: list[float]) -> dict:
+    return {
+        "labels": list(TRAINED_DETAILS),
+        "accuracy_mean": float(np.mean(fold_accuracies)),
+        "accuracy_std": float(np.std(fold_accuracies)),
+        "out_of_fold_accuracy": float(accuracy_score(labels, out_of_fold_predictions)),
+        "per_detail": per_label_scores(labels, out_of_fold_predictions, TRAINED_DETAILS),
+        "confusion_matrix": {
+            "labels": list(TRAINED_DETAILS),
+            "rows_true_columns_predicted": confusion_matrix(labels, out_of_fold_predictions, labels=list(TRAINED_DETAILS)).tolist(),
+        },
     }
 
 
@@ -89,11 +119,14 @@ def grouped_cross_validation(
     permutation_repeats: int = PERMUTATION_REPEATS,
     breakdown_rows: pd.DataFrame | None = None,
     scoring_variants: dict[str, pd.DataFrame] | None = None,
+    group_of_label: dict[str, str] | None = None,
 ) -> dict:
     scoring_variants = scoring_variants or {}
+    group_labels = pd.Series(as_groups(labels, group_of_label), index=labels.index)
     out_of_fold_predictions = np.empty(len(labels), dtype=object)
     variant_predictions = {name: np.empty(len(labels), dtype=object) for name in scoring_variants}
     variant_fold_accuracies = {name: [] for name in scoring_variants}
+    detail_fold_accuracies = []
     folds = []
     importance_per_fold = []
     for fold_index, (train_index, test_index) in enumerate(GroupKFold(n_splits=fold_count).split(features, labels, match_ids)):
@@ -104,21 +137,22 @@ def grouped_cross_validation(
         classifier = new_classifier(random_seed).fit(features.iloc[train_index], labels.iloc[train_index])
         predictions = classifier.predict(features.iloc[test_index])
         out_of_fold_predictions[test_index] = predictions
-        baseline_group = majority_group(labels.iloc[train_index])
+        detail_fold_accuracies.append(float(accuracy_score(labels.iloc[test_index], predictions)))
+        baseline_group = majority_group(group_labels.iloc[train_index])
         folds.append(
             {
                 "fold": fold_index,
                 "test_matches": len(test_matches),
                 "test_shots": len(test_index),
-                "accuracy": float(accuracy_score(labels.iloc[test_index], predictions)),
+                "accuracy": float(accuracy_score(group_labels.iloc[test_index], as_groups(predictions, group_of_label))),
                 "majority_group": baseline_group,
-                "majority_accuracy": float((labels.iloc[test_index] == baseline_group).mean()),
+                "majority_accuracy": float((group_labels.iloc[test_index] == baseline_group).mean()),
             }
         )
         for name, variant_features in scoring_variants.items():
-            variant_fold_predictions = classifier.predict(variant_features.iloc[test_index])
+            variant_fold_predictions = as_groups(classifier.predict(variant_features.iloc[test_index]), group_of_label)
             variant_predictions[name][test_index] = variant_fold_predictions
-            variant_fold_accuracies[name].append(float(accuracy_score(labels.iloc[test_index], variant_fold_predictions)))
+            variant_fold_accuracies[name].append(float(accuracy_score(group_labels.iloc[test_index], variant_fold_predictions)))
         if permutation_repeats > 0:
             importance = permutation_importance(
                 classifier,
@@ -129,19 +163,22 @@ def grouped_cross_validation(
                 scoring="accuracy",
             )
             importance_per_fold.append(importance.importances_mean)
+    group_predictions = as_groups(out_of_fold_predictions, group_of_label)
     mean_importance = np.mean(importance_per_fold, axis=0) if importance_per_fold else np.full(len(FEATURE_NAMES), np.nan)
-    breakdowns = {} if breakdown_rows is None else out_of_fold_breakdowns(breakdown_rows, labels, out_of_fold_predictions)
+    breakdowns = {} if breakdown_rows is None else out_of_fold_breakdowns(breakdown_rows, group_labels, group_predictions)
+    detail = {} if group_of_label is None else {"detail": detail_scores(labels, out_of_fold_predictions, detail_fold_accuracies)}
     return {
         **breakdowns,
+        **detail,
         "folds": folds,
         "accuracy_mean": float(np.mean([fold["accuracy"] for fold in folds])),
         "accuracy_std": float(np.std([fold["accuracy"] for fold in folds])),
         "majority_accuracy_mean": float(np.mean([fold["majority_accuracy"] for fold in folds])),
-        "out_of_fold_accuracy": float(accuracy_score(labels, out_of_fold_predictions)),
-        "per_group": per_group_scores(labels, out_of_fold_predictions),
+        "out_of_fold_accuracy": float(accuracy_score(group_labels, group_predictions)),
+        "per_group": per_group_scores(group_labels, group_predictions),
         "confusion_matrix": {
             "labels": list(TRAINED_GROUPS),
-            "rows_true_columns_predicted": confusion_matrix(labels, out_of_fold_predictions, labels=list(TRAINED_GROUPS)).tolist(),
+            "rows_true_columns_predicted": confusion_matrix(group_labels, group_predictions, labels=list(TRAINED_GROUPS)).tolist(),
         },
         "permutation_importance": dict(
             sorted(
@@ -150,7 +187,7 @@ def grouped_cross_validation(
             )
         ),
         "variants": {
-            name: variant_scores(labels, variant_predictions[name], variant_fold_accuracies[name]) for name in scoring_variants
+            name: variant_scores(group_labels, variant_predictions[name], variant_fold_accuracies[name]) for name in scoring_variants
         },
     }
 
@@ -192,7 +229,9 @@ def save_model(
             "classifier": classifier,
             "feature_set": feature_set,
             "feature_names": FEATURE_NAMES,
-            "groups": tuple(classifier.classes_),
+            "trained_label": TRAINED_LABEL_COLUMN,
+            "labels": tuple(classifier.classes_),
+            "groups": tuple(sorted({TYPE_GROUP_BY_TYPE_DETAIL[label] for label in classifier.classes_})),
             "sklearn_version": sklearn.__version__,
             "training_shots": training_shots,
             "training_matches": training_matches,
@@ -218,8 +257,8 @@ def train_classifier(
         shot_rows = load_shot_feature_rows(connection)
     finally:
         connection.close()
-    labelled_rows = labelled_rows_of(shot_rows, feature_set)
-    features, labels, match_ids = shot_features(labelled_rows, feature_set), labelled_rows["type_group"], labelled_rows["match_id"]
+    labelled_rows = rows_with_a_trained_detail(labelled_rows_of(shot_rows, feature_set))
+    features, labels, match_ids = shot_features(labelled_rows, feature_set), labelled_rows[TRAINED_LABEL_COLUMN], labelled_rows["match_id"]
     report = grouped_cross_validation(
         features,
         labels,
@@ -229,6 +268,7 @@ def train_classifier(
         permutation_repeats,
         breakdown_rows=labelled_rows,
         scoring_variants=jittered_feature_frames(shot_rows, labelled_rows, feature_set),
+        group_of_label=TYPE_GROUP_BY_TYPE_DETAIL,
     )
     final_classifier = new_classifier(random_seed).fit(features, labels)
     save_model(final_classifier, model_path, len(labels), match_ids.nunique(), feature_set)
@@ -237,7 +277,9 @@ def train_classifier(
             "feature_set": feature_set,
             "training_shots": len(labels),
             "training_matches": int(match_ids.nunique()),
-            "group_counts": {group: int(count) for group, count in labels.value_counts().reindex(TRAINED_GROUPS, fill_value=0).items()},
+            "trained_label": TRAINED_LABEL_COLUMN,
+            "group_counts": {group: int(count) for group, count in labelled_rows["type_group"].value_counts().reindex(TRAINED_GROUPS, fill_value=0).items()},
+            "detail_counts": {detail: int(count) for detail, count in labels.value_counts().reindex(TRAINED_DETAILS, fill_value=0).items()},
             "model_path": str(model_path),
         }
     )
@@ -249,6 +291,7 @@ def summary_lines(report: dict) -> list[str]:
     return [
         f"trained on {report['training_shots']} shots from {report['training_matches']} matches ({report['feature_set']} features)",
         f"held-out accuracy {report['accuracy_mean']:.3f} +/- {report['accuracy_std']:.3f} over {len(report['folds'])} match folds",
+        f"held-out accuracy on the {len(report['detail']['labels'])} detail labels {report['detail']['accuracy_mean']:.3f} +/- {report['detail']['accuracy_std']:.3f}",
         f"majority-class baseline {report['majority_accuracy_mean']:.3f}",
         *(f"{name}: held-out accuracy {scores['accuracy_mean']:.3f}" for name, scores in report["variants"].items()),
         f"saved {report['model_path']}",

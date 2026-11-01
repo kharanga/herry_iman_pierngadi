@@ -47,16 +47,16 @@ batch was dropped.
 | Rallies | 36, covering 18,353 of 26,235 frames (5 min 06 s of 7 min 17 s); 3 to 22 shots, 2.3 to 24.4 s each |
 | Shot rows | 287: 251 detected hits + 36 inferred serves (one per rally, 0.76 s before the first detected hit) |
 | Rows with a landing point and a prediction | 251 (the 36 rally-ending shots have no reply, so no landing and no prediction) |
-| Serve rows | 36, every one with the server's feet (fixed camera, the serve frame is always in view); predicted `serve` 35, `net` 1 |
-| `me` | 149 rows, 124 predicted: net 35, drop 23, serve 22, drive 20, lift 12, clear 7, smash 5 |
-| `opp` | 138 rows, 127 predicted: net 45, drive 28, lift 18, serve 13, clear 11, drop 6, smash 6 |
-| Habit entries | `me` 106 (21 zone, 81 reply, 4 serve placement), `opp` 114 (22, 89, 3); winner and error families empty (no rally results) |
-| Report | `data/reports/stand_in_set1/index.html`, 298 KB; phone-width screenshot `data/checks/report/stand_in_set1_390px.png` |
+| Serve rows | 36, every one with the server's feet (fixed camera, the serve frame is always in view); predicted `serve` 32 (24 short, 8 long), `push` 2, `net` 1, `lift` 1 |
+| `me` | 149 rows, 124 predicted: net 37, drop 23, serve 22, drive 17, lift 13, clear 8, smash 4 |
+| `opp` | 138 rows, 127 predicted: net 44, drive 27, lift 25, clear 11, serve 10, smash 6, drop 4 |
+| Habit entries | `me` 107 (21 zone, 81 reply, 5 serve placement), `opp` 117 (23, 90, 4); winner and error families empty (no rally results) |
+| Report | `data/reports/stand_in_set1/index.html`, 303 KB; phone-width screenshot `data/checks/report/stand_in_set1_390px.png` |
 | Database | the 287 rows are also in `data/scout.duckdb` (`source = 'own'`, `match_id = 'stand_in_set1'`), so `report.serve stand_in_set1 --me me` works from the real command |
 
 **Doubled serves.** When the movement detector catches the serve itself, the serve rule puts a second serve row
 in front of it (`docs/results/no_shuttle.md`: 3 of 7 in-sample on the broadcast, 0 of 7 held out). On the stand-in,
-0 of the 36 rallies have a second row typed `serve`: every `serve` prediction (35) sits on an inferred serve row at
+0 of the 36 rallies have a second row typed `serve`: every `serve` prediction (32) sits on an inferred serve row at
 `ball_round` 1, and no `ball_round` 2 row is predicted `serve`. That check can only see a doubled serve the
 classifier recognises as one; a detected serve typed as a return by the feet features would pass unnoticed, and
 without labels on this footage that remains possible.

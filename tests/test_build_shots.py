@@ -32,7 +32,7 @@ from analytics.court import (
     shot_geometry,
     zone_in_near_half,
 )
-from analytics.shot_types import SHOT_TYPE_GROUPS, TYPE_GROUP_BY_TYPE_EN, UnmappedShotTypeError, type_group_for
+from analytics.shot_types import SHOT_TYPE_DETAILS, SHOT_TYPE_GROUPS, TYPE_GROUP_BY_TYPE_DETAIL, TYPE_GROUP_BY_TYPE_EN, UnmappedShotTypeError, group_of_detail, type_detail_for, type_group_for
 from ingest.label_translations import SHOT_TYPE_ENGLISH_BY_CHINESE
 from ingest.load_shuttleset import SHUTTLESET_SET_DIR, build_database
 
@@ -54,7 +54,9 @@ CONTRACT_COLUMNS = [
     ("fps", "DOUBLE"),
     ("player", "VARCHAR"),
     ("type_en", "VARCHAR"),
+    ("type_detail", "VARCHAR"),
     ("type_group", "VARCHAR"),
+    ("type_detail_pred", "VARCHAR"),
     ("type_pred", "VARCHAR"),
     ("type_conf", "DOUBLE"),
     ("backhand", "BOOLEAN"),
@@ -74,6 +76,22 @@ CONTRACT_COLUMNS = [
     ("getpoint_player", "VARCHAR"),
     ("lose_reason", "VARCHAR"),
 ]
+
+DETAIL_COLUMN_NAMES = ("type_detail", "type_detail_pred")
+
+CONTRACT_TYPE_DETAILS = {
+    "serve_short": {"short service"},
+    "serve_long": {"long service"},
+    "net": {"net shot", "cross-court net shot", "rush"},
+    "return_net": {"return net"},
+    "drive": {"drive", "driven flight", "back-court drive", "defensive return drive"},
+    "push": {"push"},
+    "clear": {"clear"},
+    "drop": {"drop", "passive drop"},
+    "smash": {"smash", "wrist smash"},
+    "lift": {"lob", "defensive return lob"},
+    "unknown": {"unknown"},
+}
 
 CONTRACT_TYPE_GROUPS = {
     "serve": {"short service", "long service"},
@@ -105,6 +123,9 @@ def test_schema_sql_matches_contract_columns_and_types_in_order():
         ("set_no", 4),
         ("player", "C"),
         ("type_group", "flick"),
+        ("type_detail", "serve"),
+        ("type_detail", "wrist_smash"),
+        ("type_detail_pred", "lob"),
         ("hit_zone", "front"),
         ("hit_zone", "not_over_net"),
         ("hit_zone", "middle_front"),
@@ -650,3 +671,93 @@ def test_rebuild_of_a_nine_zone_table_keeps_own_rows_with_zones_rederived(built_
     with pytest.raises(duckdb.ConstraintException):
         connection.execute("INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, hit_zone) VALUES ('own', 'x', 1, 1, 1, 'me', 'mid_middle')")
     connection.close()
+
+
+def test_type_detail_map_equals_the_contract_and_every_detail_sits_in_its_group():
+    details_from_map = {detail: {type_en for type_en in TYPE_GROUP_BY_TYPE_EN if type_detail_for(type_en) == detail} for detail in SHOT_TYPE_DETAILS}
+    assert details_from_map == CONTRACT_TYPE_DETAILS
+    assert len(SHOT_TYPE_DETAILS) == 11 and set(TYPE_GROUP_BY_TYPE_DETAIL) == set(SHOT_TYPE_DETAILS)
+    for detail, type_names in CONTRACT_TYPE_DETAILS.items():
+        assert {type_group_for(type_en) for type_en in type_names} == {group_of_detail(detail)}
+    assert type_detail_for(None) is None and group_of_detail(None) is None and group_of_detail(float("nan")) is None
+    with pytest.raises(UnmappedShotTypeError):
+        type_detail_for("flick")
+
+
+@requires_shuttleset
+def test_every_shuttleset_row_has_a_detail_in_its_group(built_database):
+    database_path, _ = built_database
+    assert fetch_all(database_path, "SELECT COUNT(*) FROM shots WHERE shots.type_detail IS NULL") == [(0,)]
+    pairs = fetch_all(database_path, "SELECT DISTINCT shots.type_en, shots.type_detail, shots.type_group FROM shots")
+    for type_en, type_detail, type_group in pairs:
+        assert type_detail == type_detail_for(type_en) and type_group == group_of_detail(type_detail)
+
+
+def table_without_columns(database_path, dropped_columns):
+    connection = duckdb.connect(str(database_path))
+    connection.execute(f"CREATE TABLE kept AS SELECT * EXCLUDE ({', '.join(dropped_columns)}) FROM shots")
+    connection.execute("DROP TABLE shots")
+    connection.execute("ALTER TABLE kept RENAME TO shots")
+    connection.close()
+
+
+@requires_shuttleset
+def test_rebuild_of_a_table_without_the_detail_columns_keeps_own_rows_with_empty_details(built_database, tmp_path):
+    database_path, _ = built_database
+    rebuilt_path = tmp_path / "no_details.duckdb"
+    shutil.copy(database_path, rebuilt_path)
+    table_without_columns(rebuilt_path, DETAIL_COLUMN_NAMES)
+    connection = duckdb.connect(str(rebuilt_path))
+    connection.execute("INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, type_group, type_pred, type_conf) VALUES ('own', 'my_game', 1, 1, 1, 'me', 'net', 'smash', 0.7)")
+    connection.close()
+    summary = build_shots(rebuilt_path)
+    assert summary["own_shots"] == 1 and summary["shuttleset_shots"] == 36483
+    assert [name for name, *_ in fetch_all(rebuilt_path, "DESCRIBE shots")] == [name for name, _ in CONTRACT_COLUMNS]
+    assert fetch_all(rebuilt_path, "SELECT shots.type_detail, shots.type_group, shots.type_detail_pred, shots.type_pred, shots.type_conf FROM shots WHERE shots.source = 'own'") == [
+        (None, "net", None, "smash", 0.7)
+    ]
+
+
+@requires_shuttleset
+def test_rebuild_rederives_own_groups_from_their_details(built_database, tmp_path):
+    database_path, _ = built_database
+    rebuilt_path = tmp_path / "details.duckdb"
+    shutil.copy(database_path, rebuilt_path)
+    connection = duckdb.connect(str(rebuilt_path))
+    connection.execute(
+        "INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, type_detail, type_group, type_detail_pred, type_pred) VALUES "
+        "('own', 'my_game', 1, 1, 1, 'me', 'serve_long', 'clear', 'push', 'net'), "
+        "('own', 'my_game', 1, 1, 2, 'opp', NULL, 'lift', NULL, 'drop')"
+    )
+    connection.close()
+    build_shots(rebuilt_path)
+    assert fetch_all(rebuilt_path, "SELECT shots.type_detail, shots.type_group, shots.type_detail_pred, shots.type_pred FROM shots WHERE shots.source = 'own' ORDER BY shots.ball_round") == [
+        ("serve_long", "serve", "push", "drive"),
+        (None, "lift", None, "drop"),
+    ]
+
+
+@requires_shuttleset
+def test_rebuild_of_a_table_missing_another_column_raises_and_keeps_it(built_database, tmp_path):
+    database_path, _ = built_database
+    rebuilt_path = tmp_path / "no_backhand.duckdb"
+    shutil.copy(database_path, rebuilt_path)
+    table_without_columns(rebuilt_path, DETAIL_COLUMN_NAMES + ("backhand",))
+    connection = duckdb.connect(str(rebuilt_path))
+    connection.execute("INSERT INTO shots (source, match_id, set_no, rally, ball_round, player) VALUES ('own', 'my_game', 1, 1, 1, 'me')")
+    connection.close()
+    before = fetch_all(rebuilt_path, "SELECT COUNT(*) FROM shots")
+    with pytest.raises(ShotsSchemaMismatchError):
+        build_shots(rebuilt_path)
+    assert fetch_all(rebuilt_path, "SELECT COUNT(*) FROM shots") == before
+    assert "backhand" not in [name for name, *_ in fetch_all(rebuilt_path, "DESCRIBE shots")]
+
+
+def test_build_shots_refuses_a_missing_database_and_creates_nothing(tmp_path, capsys):
+    from analytics.build_shots import main
+    missing = tmp_path / "scot.duckdb"
+    with pytest.raises(FileNotFoundError):
+        build_shots(missing)
+    assert main([str(missing)]) == 1
+    assert "database not found" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []

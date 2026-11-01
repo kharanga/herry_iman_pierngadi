@@ -6,6 +6,7 @@ import duckdb
 import joblib
 import pandas as pd
 
+from analytics.shot_types import TYPE_GROUP_BY_TYPE_DETAIL
 from shots.features import FEATURE_NAMES, SHIPPED_FEATURE_SET, has_hitter_and_landing_point, load_shot_feature_rows, shot_features
 
 DATABASE_PATH = Path("data/scout.duckdb")
@@ -13,7 +14,10 @@ MODEL_PATH = Path("data/models/shot_type_classifier.joblib")
 
 UPDATE_PREDICTIONS_SQL = """
 UPDATE shots
-SET type_pred = shot_predictions.type_pred, type_conf = shot_predictions.type_conf
+SET
+    type_detail_pred = shot_predictions.type_detail_pred,
+    type_pred = shot_predictions.type_pred,
+    type_conf = shot_predictions.type_conf
 FROM shot_predictions
 WHERE shots.rowid = shot_predictions.row_id
 """
@@ -26,7 +30,9 @@ SELECT
     MIN(shots.type_conf) AS lowest_conf,
     AVG(shots.type_conf) AS mean_conf,
     AVG(CASE WHEN shots.type_pred = shots.type_group THEN 1.0 ELSE 0.0 END)
-        FILTER (WHERE shots.type_pred IS NOT NULL AND shots.type_group <> 'unknown') AS in_sample_agreement
+        FILTER (WHERE shots.type_pred IS NOT NULL AND shots.type_group <> 'unknown') AS in_sample_agreement,
+    AVG(CASE WHEN shots.type_detail_pred = shots.type_detail THEN 1.0 ELSE 0.0 END)
+        FILTER (WHERE shots.type_detail_pred IS NOT NULL AND shots.type_detail <> 'unknown') AS in_sample_detail_agreement
 FROM shots
 WHERE shots.source = 'shuttleset'
 """
@@ -62,12 +68,23 @@ class ModelFeatureMismatchError(RuntimeError):
         self.model_feature_set = model_feature_set
 
 
+class ModelLabelMismatchError(RuntimeError):
+    def __init__(self, model_trained_label: str | None):
+        super().__init__(
+            f"model was trained on {model_trained_label or 'type_group'!r}, but shots.predict fills type_detail_pred and type_pred "
+            "from a model trained on 'type_detail'; retrain with python -m shots.train"
+        )
+        self.model_trained_label = model_trained_label
+
+
 def load_model(model_path: Path) -> dict:
     if not Path(model_path).is_file():
         raise FileNotFoundError(f"model not found: {model_path} (run python -m shots.train first)")
     model = joblib.load(model_path)
     if tuple(model["feature_names"]) != FEATURE_NAMES or model.get("feature_set") != SHIPPED_FEATURE_SET:
         raise ModelFeatureMismatchError(tuple(model["feature_names"]), model.get("feature_set"))
+    if model.get("trained_label") != "type_detail":
+        raise ModelLabelMismatchError(model.get("trained_label"))
     return model
 
 
@@ -77,13 +94,16 @@ def predictions_for(model: dict, shot_rows: pd.DataFrame) -> pd.DataFrame:
     predictions = pd.DataFrame(
         {
             "row_id": shot_rows["row_id"].to_numpy(),
+            "type_detail_pred": pd.Series([None] * len(shot_rows), dtype=object),
             "type_pred": pd.Series([None] * len(shot_rows), dtype=object),
             "type_conf": pd.Series([None] * len(shot_rows), dtype="Float64"),
         }
     )
     if is_predictable.any():
         probabilities = model["classifier"].predict_proba(features[is_predictable])
-        predictions.loc[is_predictable, "type_pred"] = model["classifier"].classes_[probabilities.argmax(axis=1)]
+        predicted_details = model["classifier"].classes_[probabilities.argmax(axis=1)]
+        predictions.loc[is_predictable, "type_detail_pred"] = predicted_details
+        predictions.loc[is_predictable, "type_pred"] = [TYPE_GROUP_BY_TYPE_DETAIL[detail] for detail in predicted_details]
         predictions.loc[is_predictable, "type_conf"] = probabilities.max(axis=1)
     return predictions
 
@@ -103,8 +123,14 @@ def prediction_summary(database_path: Path = DATABASE_PATH) -> dict:
     return summary
 
 
+def require_existing_database(database_path: Path) -> None:
+    if not Path(database_path).is_file():
+        raise FileNotFoundError(f"database not found: {database_path} (build it with python -m ingest.load_shuttleset)")
+
+
 def predict_shot_types(database_path: Path = DATABASE_PATH, model_path: Path = MODEL_PATH) -> int:
     model = load_model(model_path)
+    require_existing_database(database_path)
     connection = duckdb.connect(str(database_path))
     try:
         connection.execute("BEGIN TRANSACTION")
@@ -125,7 +151,7 @@ def predict_shot_types(database_path: Path = DATABASE_PATH, model_path: Path = M
 def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="python -m shots.predict",
-        description="Fill type_pred and type_conf for every shot with a hitter point and a landing point.",
+        description="Fill type_detail_pred, type_pred and type_conf for every shot with a hitter point and a landing point.",
     )
     parser.add_argument("database_path", nargs="?", type=Path, default=DATABASE_PATH, help="DuckDB file (default data/scout.duckdb)")
     parser.add_argument("model_path", nargs="?", type=Path, default=MODEL_PATH, help=f"trained model (default {MODEL_PATH})")
@@ -134,7 +160,12 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
 
 def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
-    print(f"type_pred and type_conf filled for {predict_shot_types(parsed.database_path, parsed.model_path)} shots; "
+    try:
+        predicted_count = predict_shot_types(parsed.database_path, parsed.model_path)
+    except (FileNotFoundError, ModelFeatureMismatchError, ModelLabelMismatchError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    print(f"type_detail_pred, type_pred and type_conf filled for {predicted_count} shots; "
           "shots without both a hitter point and a landing point are left NULL")
     return 0
 

@@ -420,3 +420,31 @@ def test_tendency_docs_have_no_task_ids_and_no_pros_comparison(doc_name):
     text = (PROJECT_ROOT / "docs" / doc_name).read_text()
     assert re.findall(TASK_ID_PATTERN, text) == []
     assert not re.search(r"reference_rate|wilson|`score`|MIN_SAMPLE_SIZE|MIN_SCORE", text)
+
+
+def test_serve_placement_counts_each_serve_kind_and_a_label_beats_a_prediction(tmp_path):
+    serves = [
+        dict(type_detail_pred="serve_short", type_pred="serve", landing_zone="front_backhand"),
+        dict(type_detail_pred="serve_short", type_pred="serve", landing_zone="front_backhand"),
+        dict(type_detail_pred="serve_short", type_pred="serve", landing_zone="front_backhand"),
+        dict(type_detail_pred="serve_short", type_pred="serve", landing_zone="front_forehand"),
+        dict(type_detail_pred="serve_long", type_pred="serve", landing_zone="rear_backhand"),
+        dict(type_detail_pred="serve_long", type_pred="serve", landing_zone="rear_backhand"),
+        dict(type_pred="serve", landing_zone="rear_forehand"),
+        dict(type_detail="serve_long", type_group="serve", type_detail_pred="serve_short", type_pred="serve", landing_zone="rear_backhand"),
+        dict(type_detail="unknown", type_group="unknown", type_detail_pred="serve_short", type_pred="serve", landing_zone="front_backhand"),
+    ]
+    rows = []
+    for rally, serve in enumerate(serves, start=1):
+        rows.append(shot_row("own", "my_game", 1, rally, 1, "opp", hit_zone="mid_backhand", **serve))
+        rows.append(shot_row("own", "my_game", 1, rally, 2, "me", type_detail_pred="lift", type_pred="lift", hit_zone="front_forehand"))
+    theirs = [tendency for tendency in tendencies_for("my_game", "opp", write_shots_database(tmp_path / "scout.duckdb", rows)) if tendency["family"] == "serve_placement"]
+    assert [(tendency["id"], tendency["k"], tendency["n"]) for tendency in theirs] == [
+        ("serve_placement:serve_short:front_backhand", 4, 5),
+        ("serve_placement:serve_short:front_forehand", 1, 5),
+        ("serve_placement:serve_long:rear_backhand", 3, 3),
+        ("serve_placement:serve:rear_forehand", 1, 1),
+    ]
+    assert theirs[0]["text"] == "Short serves go to the receiver's backhand, front court 4 of 5 times."
+    assert theirs[2]["text"].startswith("Long serves go to the receiver's backhand, ") and theirs[2]["text"].endswith(" 3 of 3 times.")
+    assert theirs[3]["text"].startswith("Serves ") and theirs[3]["text"].endswith(" 1 of 1 times.")

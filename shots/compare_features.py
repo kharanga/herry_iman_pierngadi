@@ -10,7 +10,9 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import GroupKFold
 
 from shots.features import FEATURE_NAMES, SHIPPED_FEATURE_SET, shot_features
-from shots.train import DATABASE_PATH, FOLD_COUNT, RANDOM_SEED, TRAINED_GROUPS, labelled_shuttleset_rows, new_classifier
+from analytics.shot_types import TYPE_GROUP_BY_TYPE_DETAIL
+from shots.train import DATABASE_PATH, FOLD_COUNT, RANDOM_SEED, TRAINED_GROUPS, TRAINED_LABEL_COLUMN, as_groups, labelled_shuttleset_rows
+from shots.train import new_classifier, rows_with_a_trained_detail
 
 COMPARISON_PATH = Path("data/models/feature_set_comparison.json")
 GEOMETRY_FEATURE_NAMES = (
@@ -59,7 +61,9 @@ def grouped_accuracy(features: pd.DataFrame, labels: pd.Series, match_ids: pd.Se
     for train_index, test_index in GroupKFold(n_splits=fold_count).split(features, labels, match_ids):
         classifier = new_classifier(random_seed).set_params(categorical_features=categorical_columns)
         classifier.fit(features.iloc[train_index], labels.iloc[train_index])
-        fold_accuracies.append(float(accuracy_score(labels.iloc[test_index], classifier.predict(features.iloc[test_index]))))
+        test_groups = as_groups(labels.iloc[test_index], TYPE_GROUP_BY_TYPE_DETAIL)
+        predicted_groups = as_groups(classifier.predict(features.iloc[test_index]), TYPE_GROUP_BY_TYPE_DETAIL)
+        fold_accuracies.append(float(accuracy_score(test_groups, predicted_groups)))
     return fold_accuracies
 
 
@@ -72,7 +76,7 @@ def compare_feature_sets(
 ) -> dict:
     connection = duckdb.connect(str(database_path), read_only=True)
     try:
-        labelled_rows = labelled_shuttleset_rows(connection, feature_set)
+        labelled_rows = rows_with_a_trained_detail(labelled_shuttleset_rows(connection, feature_set))
         all_features = shot_features(labelled_rows, feature_set)
         all_features[PREVIOUS_TRUE_GROUP_FEATURE] = previous_true_group_codes(connection, labelled_rows["row_id"])
     finally:
@@ -80,7 +84,7 @@ def compare_feature_sets(
     comparison = {}
     for set_name, feature_names in FEATURE_SETS.items():
         fold_accuracies = grouped_accuracy(
-            all_features[list(feature_names)], labelled_rows["type_group"], labelled_rows["match_id"], fold_count, random_seed
+            all_features[list(feature_names)], labelled_rows[TRAINED_LABEL_COLUMN], labelled_rows["match_id"], fold_count, random_seed
         )
         comparison[set_name] = {
             "feature_set": feature_set,

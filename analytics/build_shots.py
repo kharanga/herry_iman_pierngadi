@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from analytics.court import apply_homography, shot_geometry, shuttleset_pixel_to_court_homography
-from analytics.shot_types import type_group_for
+from analytics.shot_types import group_of_detail, type_detail_for
 
 DATABASE_PATH = Path("data/scout.duckdb")
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
@@ -113,7 +113,8 @@ DELETE_SHUTTLESET_SHOTS_SQL = "DELETE FROM shots WHERE shots.source = 'shuttlese
 SHOTS_TABLE_EXISTS_SQL = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = 'shots'"
 OWN_SHOTS_SQL = "SELECT * FROM shots WHERE shots.source = 'own' ORDER BY shots.rowid"
 DROP_SHOTS_SQL = "DROP TABLE IF EXISTS shots"
-INSERT_OWN_SHOTS_SQL = "INSERT INTO shots SELECT * FROM own_shot_rows"
+DETAIL_COLUMNS = ("type_detail", "type_detail_pred")
+INSERT_OWN_SHOTS_SQL = "INSERT INTO shots BY NAME SELECT * FROM own_shot_rows"
 
 INSERT_SHUTTLESET_SHOTS_SQL = """
 INSERT INTO shots
@@ -127,7 +128,9 @@ SELECT
     shuttleset_shot_rows.fps,
     shuttleset_shot_rows.player,
     shuttleset_shot_rows.type_en,
+    shuttleset_shot_rows.type_detail,
     shuttleset_shot_rows.type_group,
+    CAST(NULL AS VARCHAR) AS type_detail_pred,
     CAST(NULL AS VARCHAR) AS type_pred,
     CAST(NULL AS DOUBLE) AS type_conf,
     shuttleset_shot_rows.backhand,
@@ -260,7 +263,8 @@ def shuttleset_shots_frame(
     geometry = geometry_columns(shot_rows, meters, left_handed_player_names)
     pixel_columns = [column for columns in POSITION_COLUMNS.values() for column in columns]
     shots_frame = pd.concat([shot_rows.drop(columns=pixel_columns), geometry], axis=1)
-    shots_frame["type_group"] = shots_frame["type_en"].map(type_group_for)
+    shots_frame["type_detail"] = shots_frame["type_en"].map(type_detail_for)
+    shots_frame["type_group"] = shots_frame["type_detail"].map(group_of_detail)
     return shots_frame
 
 
@@ -284,7 +288,31 @@ def own_rows_with_rederived_zones(own_rows: pd.DataFrame) -> pd.DataFrame:
     rederived["hit_zone"] = pd.Series([geometry["hit_zone"] for geometry in geometries], index=own_rows.index, dtype="object")
     rederived["landing_zone"] = pd.Series([geometry["landing_zone"] for geometry in geometries], index=own_rows.index, dtype="object")
     rederived["is_cross"] = pd.Series([geometry["is_cross"] for geometry in geometries], index=own_rows.index, dtype="boolean")
-    return rederived
+    return with_groups_from_details(rederived)
+
+
+def group_or_kept(type_details: pd.Series, kept_groups: pd.Series) -> pd.Series:
+    derived = type_details.map(group_of_detail)
+    return derived.where(derived.notna(), kept_groups).astype("object")
+
+
+def require_every_schema_column_but_the_detail_columns(own_rows: pd.DataFrame) -> None:
+    missing = [name for name, _ in schema_columns() if name not in own_rows.columns and name not in DETAIL_COLUMNS]
+    if missing:
+        raise ShotsSchemaMismatchError(
+            [(name, str(dtype)) for name, dtype in own_rows.dtypes.items()], schema_columns()
+        )
+
+
+def with_groups_from_details(own_rows: pd.DataFrame) -> pd.DataFrame:
+    require_every_schema_column_but_the_detail_columns(own_rows)
+    rows = own_rows.copy()
+    for detail_column in DETAIL_COLUMNS:
+        if detail_column not in rows:
+            rows[detail_column] = pd.Series([None] * len(rows), index=rows.index, dtype="object")
+    rows["type_group"] = group_or_kept(rows["type_detail"], rows["type_group"])
+    rows["type_pred"] = group_or_kept(rows["type_detail_pred"], rows["type_pred"])
+    return rows
 
 
 def recreate_shots_table(connection: duckdb.DuckDBPyConnection) -> None:
@@ -292,7 +320,13 @@ def recreate_shots_table(connection: duckdb.DuckDBPyConnection) -> None:
     create_shots_table(connection)
 
 
+def require_existing_database(database_path: Path) -> None:
+    if not Path(database_path).is_file():
+        raise FileNotFoundError(f"database not found: {database_path} (build it with python -m ingest.load_shuttleset)")
+
+
 def build_shots(database_path: Path, left_handed_player_names: frozenset[str] = LEFT_HANDED_PLAYER_NAMES) -> dict:
+    require_existing_database(database_path)
     connection = duckdb.connect(str(database_path))
     try:
         connection.execute("BEGIN TRANSACTION")
@@ -334,7 +368,11 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
 
 def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
-    summary = build_shots(parsed.database_path)
+    try:
+        summary = build_shots(parsed.database_path)
+    except FileNotFoundError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
     print(
         f"shots: {summary['shuttleset_shots']} shuttleset rows "
         f"from {summary['raw_shots']} raw shots ({summary['duplicates_dropped']} exact duplicates dropped); "

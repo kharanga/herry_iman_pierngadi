@@ -144,5 +144,7 @@ split-off type.
 - On club footage the serve row is inferred, 0.76 s before the first detected hit (`docs/results/no_shuttle.md`).
   Its flight time is therefore a constant, and short vs long has to come from where the receiver stands.
   The 99.7% above is for real serve frames and is not measured for inferred ones.
+- The middle set's 82.8% is scored on the same match folds that chose its splits, so it is slightly optimistic.
+  Choosing the splits inside each fold would remove that.
 - Pro play: what a club player's push or return net looks like from the feet may differ. Labelled club
   games are the check.

@@ -28,6 +28,9 @@ GROUP_PHRASES = {
 DEPTH_PHRASES = {"front": "front court", "mid": "mid court", "rear": "back court"}
 SIDE_PHRASES = {"forehand": "forehand side", "backhand": "backhand side"}
 SERVE_DEPTH_PHRASES = {"front": "short", "mid": "mid-depth", "rear": "long"}
+SERVE_KIND_PHRASES = {"serve_short": "Short serves", "serve_long": "Long serves"}
+SERVE_WITHOUT_KIND = "serve"
+CONDITION_ORDER_BY_FAMILY = {"zone_mix": ZONE_NAMES, "serve_placement": (*SERVE_KIND_PHRASES, SERVE_WITHOUT_KIND)}
 ERROR_REASON_PHRASES = {
     "out": "hit out",
     "net": "into the net",
@@ -36,7 +39,6 @@ ERROR_REASON_PHRASES = {
     "foul": "faults",
 }
 GROUP_ORDER = ("serve", "clear", "drop", "smash", "net", "lift", "drive")
-CONDITION_ORDER_BY_FAMILY = {"zone_mix": ZONE_NAMES}
 RESPONSE_CONDITION_SEPARATOR = "|"
 REPLY_DIRECTIONS = {True: "cross", False: "straight"}
 
@@ -63,7 +65,11 @@ WITH shots_with_group AS (
         CASE
             WHEN shots.type_group IS NOT NULL AND shots.type_group <> 'unknown' THEN 'label'
             WHEN shots.type_pred IS NOT NULL THEN 'prediction'
-        END AS shot_group_source
+        END AS shot_group_source,
+        CASE
+            WHEN shots.type_group IS NOT NULL AND shots.type_group <> 'unknown' THEN shots.type_detail
+            ELSE shots.type_detail_pred
+        END AS shot_detail
     FROM shots
 )
 SELECT
@@ -138,6 +144,10 @@ def split_response_condition(condition: str) -> tuple[str, str, str]:
     return previous_shot_group, previous_hit_zone, previous_landing_zone
 
 
+def serve_kinds(shot_details: pd.Series) -> pd.Series:
+    return shot_details.where(shot_details.isin(tuple(SERVE_KIND_PHRASES)), SERVE_WITHOUT_KIND).astype(object)
+
+
 def family_observations(shot_rows: pd.DataFrame) -> pd.DataFrame:
     has_group = shot_rows["shot_group"].notna()
     hitter_won = shot_rows["getpoint_player"] == shot_rows["player"]
@@ -178,7 +188,7 @@ def family_observations(shot_rows: pd.DataFrame) -> pd.DataFrame:
             reply_outcomes,
             combined_group_source(shot_rows["shot_group_source"], shot_rows["previous_shot_group_source"]),
         ),
-        ("serve_placement", is_serve & shot_rows["landing_zone"].notna(), "serve", shot_rows["landing_zone"], shot_rows["shot_group_source"]),
+        ("serve_placement", is_serve & shot_rows["landing_zone"].notna(), serve_kinds(shot_rows["shot_detail"]), shot_rows["landing_zone"], shot_rows["shot_group_source"]),
         ("winning_shot", has_group & shot_rows["is_last_shot"] & hitter_won, "winner", shot_rows["shot_group"], shot_rows["shot_group_source"]),
         ("error_shot", has_group & shot_rows["is_last_shot"] & hitter_lost, "error", shot_rows["shot_group"], shot_rows["shot_group_source"]),
         ("error_reason", shot_rows["is_last_shot"] & hitter_lost & shot_rows["lose_reason"].notna(), "error", shot_rows["lose_reason"], "label"),
@@ -232,6 +242,19 @@ def serve_landing_phrase(landing_zone: str) -> str:
     return f"{SERVE_DEPTH_PHRASES[depth]} to the receiver's {side}"
 
 
+def serve_kind_landing_phrase(landing_zone: str) -> str:
+    if landing_zone == "not_over_net":
+        return "into the net"
+    depth, side = landing_zone.split("_")
+    return f"to the receiver's {side}, {DEPTH_PHRASES[depth]}"
+
+
+def serve_placement_text(serve_kind: str, landing_zone: str, evidence: str) -> str:
+    if serve_kind in SERVE_KIND_PHRASES:
+        return f"{SERVE_KIND_PHRASES[serve_kind]} go {serve_kind_landing_phrase(landing_zone)} {evidence}."
+    return f"Serves {serve_landing_phrase(landing_zone)} {evidence}."
+
+
 def tendency_text(family: str, condition: str, outcome: str, k: int, n: int) -> str:
     evidence = f"{k} of {n} times"
     if family == "zone_mix":
@@ -243,7 +266,7 @@ def tendency_text(family: str, condition: str, outcome: str, k: int, n: int) -> 
             f"to the {short_zone_phrase(previous_landing_zone)}: {reply_phrase(outcome)} {evidence}."
         )
     if family == "serve_placement":
-        return f"Serves {serve_landing_phrase(outcome)} {evidence}."
+        return serve_placement_text(condition, outcome, evidence)
     if family == "winning_shot":
         return f"Wins rallies with {GROUP_PHRASES[outcome][1]}: {k} of {n} winners."
     if family == "error_shot":

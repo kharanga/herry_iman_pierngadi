@@ -268,7 +268,8 @@ def test_a_run_reusing_every_tracked_output_is_repeatable_and_writes_only_where_
     assert len(rows) > 0 and set(rows["set_no"]) == {1} and set(rows["player"]) <= {"me", "opp"}
     with_scratch = tmp_path / "direct.duckdb"
     direct = build_own_match(BROADCAST_VIDEO, "int_review", [(*TEST_RANGE, 1)], with_scratch, hit_point="feet").sort_values(["set_no", "rally", "ball_round"]).reset_index(drop=True)
-    pd.testing.assert_frame_equal(rows.drop(columns=["type_pred"]).reset_index(drop=True), direct.drop(columns=["type_pred", "type_conf"]).astype(rows.drop(columns=["type_pred"]).dtypes.to_dict()), check_dtype=False)
+    predicted_columns = ["type_detail_pred", "type_pred"]
+    pd.testing.assert_frame_equal(rows.drop(columns=predicted_columns).reset_index(drop=True), direct.drop(columns=predicted_columns + ["type_conf"]).astype(rows.drop(columns=predicted_columns).dtypes.to_dict()), check_dtype=False)
     assert ((rows["hit_x"] == rows["player_x"]) | rows["hit_x"].isna()).all() and (rows["hit_x"].isna() == rows["player_x"].isna()).all()
     assert rows.groupby(["set_no", "rally"])["landing_x"].apply(lambda landing: landing.isna().sum() == 1).all()
     assert (rows[rows["ball_round"] == 1]["frame_num"] + 23 == rows[rows["ball_round"] == 2]["frame_num"].to_numpy()).all()

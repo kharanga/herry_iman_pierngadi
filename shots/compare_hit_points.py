@@ -9,7 +9,9 @@ import pandas as pd
 
 from shots.features import FEATURE_SET_NAMES, feet_landing_columns, has_hitter_and_landing_point, shot_features
 from shots.features import load_shot_feature_rows
-from shots.train import DATABASE_PATH, FOLD_COUNT, RANDOM_SEED, grouped_cross_validation, jittered_feature_frames, labelled_rows_of
+from analytics.shot_types import TYPE_GROUP_BY_TYPE_DETAIL
+from shots.train import DATABASE_PATH, FOLD_COUNT, RANDOM_SEED, TRAINED_LABEL_COLUMN, grouped_cross_validation, jittered_feature_frames
+from shots.train import labelled_rows_of, rows_with_a_trained_detail
 
 COMPARISON_PATH = Path("data/models/hit_point_comparison.json")
 LANDING_OFFSET_QUANTILES = (0.5, 0.9)
@@ -38,13 +40,14 @@ def landing_offset_summary(shot_rows: pd.DataFrame) -> dict:
 def evaluate_feature_set(shot_rows: pd.DataFrame, labelled_rows: pd.DataFrame, feature_set: str, fold_count: int, random_seed: int) -> dict:
     report = grouped_cross_validation(
         shot_features(labelled_rows, feature_set),
-        labelled_rows["type_group"],
+        labelled_rows[TRAINED_LABEL_COLUMN],
         labelled_rows["match_id"],
         fold_count,
         random_seed,
         permutation_repeats=0,
         breakdown_rows=labelled_rows,
         scoring_variants=jittered_feature_frames(shot_rows, labelled_rows, feature_set),
+        group_of_label=TYPE_GROUP_BY_TYPE_DETAIL,
     )
     report.pop("permutation_importance")
     report.pop("per_type_en")
@@ -62,7 +65,7 @@ def compare_hit_points(
         shot_rows = load_shot_feature_rows(connection)
     finally:
         connection.close()
-    rows_by_feature_set = {feature_set: labelled_rows_of(shot_rows, feature_set) for feature_set in FEATURE_SET_NAMES}
+    rows_by_feature_set = {feature_set: rows_with_a_trained_detail(labelled_rows_of(shot_rows, feature_set)) for feature_set in FEATURE_SET_NAMES}
     shared_rows = rows_predictable_with_every_feature_set(rows_by_feature_set["contact"])
     comparison = {
         "landing_offset_m": landing_offset_summary(shared_rows),

@@ -36,6 +36,7 @@ SELECT
     shots.frame_num,
     shots.fps,
     shots.type_en,
+    shots.type_detail,
     shots.type_group,
     shots.hit_x,
     shots.hit_y,

@@ -27,9 +27,9 @@ shows that player's shot: the hit-from zone in yellow, the landing zone in red a
 me at the bottom. Bullets whose shot types
 came from the classifier carry a "predicted shot types" tag.
 
-For `match_tracked`: 68 bullets for the opponent and 66 for me, under
+For `match_tracked`: 67 bullets for the opponent and 66 for me, under
 Shots by court zone, Replies to the other player's shot, Serves (opponent) and Shots by court zone, Replies to the other player's shot (me);
-179.9 KB of HTML; 134 bullets from predictions only, 0 mixed. (My serve rows on the broadcast have no
+178.8 KB of HTML; 133 bullets from predictions only, 0 mixed. (My serve rows on the broadcast have no
 position, so no serve bullets for me; see `docs/results/no_shuttle.md`.)
 
 ## Checks
@@ -37,13 +37,13 @@ position, so no serve bullets for me; see `docs/results/no_shuttle.md`.)
 | Check | Result |
 |---|---|
 | Builds for my tracked match | `report.serve match_tracked --me me --no-serve` writes the page |
-| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 16.6 s in one process |
-| Every habit shown, no cap | each page lists every entry of both players: 254 to 647 bullets a page (median 464.5) |
-| Every bullet has a count | all 40,816 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
+| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 19.3 s in one process |
+| Every habit shown, no cap | each page lists every entry of both players: 255 to 651 bullets a page (median 465) |
+| Every bullet has a count | all 40,851 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
 | No comparison with pros | 0 of 89 pages mention pros (0 found) |
-| Diagrams | 5,152 bullets (zone and serve placement) get a shaded zone; 33,426 reply bullets get hit-from and landing zones with an arrow |
-| Reply bullets name the other player | 33,426 of 33,426 reply bullets name the player; 0 say "the other player" |
-| Page size | ShuttleSet 316 to 839 KB (median 594 KB), nothing external (inline CSS and SVG, no scripts) |
+| Diagrams | 5,189 bullets (zone and serve placement) get a shaded zone; 33,422 reply bullets get hit-from and landing zones with an arrow |
+| Reply bullets name the other player | 33,422 of 33,422 reply bullets name the player; 0 say "the other player" |
+| Page size | ShuttleSet 317 to 844 KB (median 595 KB), nothing external (inline CSS and SVG, no scripts) |
 | Only the report is served | the server serves a temporary folder holding a copy of the page and nothing else |
 
 ## Readable at 390 px
@@ -64,7 +64,7 @@ long: it is meant to be scrolled, one family at a time.
   right-handed players.
 
 ## Limits
-- ShuttleSet pages are long (647 bullets at most): every rare choice is listed. Ranking or filtering can
+- ShuttleSet pages are long (651 bullets at most): every rare choice is listed. Ranking or filtering can
   come back as its own task.
 - The server is Python's `http.server`: fine for one phone on the home network, not for the internet.
 - The page is static: re-run the command after new shots are loaded.

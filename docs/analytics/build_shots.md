@@ -41,16 +41,18 @@ only the `source = 'shuttleset'` rows, so `own` rows survive it.
 | fps | DOUBLE | yes | frame rate of the match video |
 | player | VARCHAR | no | hitter: `A`/`B` (ShuttleSet) or `me`/`opp` (own) |
 | type_en | VARCHAR | yes | English shot type |
-| type_group | VARCHAR | yes | `serve, clear, drop, smash, net, lift, drive, unknown` (see `shot_types.md`) |
-| type_pred | VARCHAR | yes | classifier's predicted group; NULL until the classifier runs |
+| type_detail | VARCHAR | yes | shot label: `serve_short, serve_long, net, return_net, drive, push, clear, drop, smash, lift, unknown` (see `shot_types.md`); NULL on own rows until labelled |
+| type_group | VARCHAR | yes | `serve, clear, drop, smash, net, lift, drive, unknown`, the group of `type_detail` |
+| type_detail_pred | VARCHAR | yes | classifier's predicted label; NULL until the classifier runs |
+| type_pred | VARCHAR | yes | the group of `type_detail_pred` |
 | type_conf | DOUBLE | yes | classifier confidence; NULL until the classifier runs |
 | backhand | BOOLEAN | yes | hit on the backhand |
 | hit_x, hit_y | DOUBLE | yes | hitter's feet at the hit, court meters, normalized |
 | landing_x, landing_y | DOUBLE | yes | where the shot ended, court meters, normalized (see below) |
 | player_x, player_y | DOUBLE | yes | hitter's position at the hit, normalized |
 | opponent_x, opponent_y | DOUBLE | yes | receiver's position at the hit, normalized |
-| hit_zone | VARCHAR | yes | zone of the hit, from the hitter's view: one of the 9 zones below |
-| landing_zone | VARCHAR | yes | zone of the landing, from the receiver's view: one of the 9 zones, or `not_over_net` |
+| hit_zone | VARCHAR | yes | zone of the hit, from the hitter's view: one of the 6 zones below |
+| landing_zone | VARCHAR | yes | zone of the landing, from the receiver's view: one of the 6 zones, or `not_over_net` |
 | is_cross | BOOLEAN | yes | cross-court (see `court.md`) |
 | roundscore_me | INTEGER | yes | score of `A` (ShuttleSet) or `me` (own) **before** the rally |
 | roundscore_opp | INTEGER | yes | score of `B` or `opp` before the rally |
@@ -58,7 +60,7 @@ only the `source = 'shuttleset'` rows, so `own` rows survive it.
 | lose_reason | VARCHAR | yes | why the rally ended, on the last shot only |
 
 CHECK constraints reject any other value of `source`, `player`, `getpoint_player`,
-`set_no`, `type_group`, `type_pred`, `hit_zone` and `landing_zone`.
+`set_no`, `type_detail`, `type_group`, `type_detail_pred`, `type_pred`, `hit_zone` and `landing_zone`.
 
 Zones (`analytics.court.ZONE_NAMES`): each half is 3 depth bands x 2 sides = 6 zones, with the
 band edges on the painted lines.
@@ -113,10 +115,15 @@ Own rows are assumed right-handed when re-derived (handedness is not stored). Th
 - `left_handed_player_names` (iterable of `str`): player names as in `matches.winner` / `matches.loser`.
 - Returns a `dict`: `raw_shots` (row count), `shuttleset_shots` (rows written),
   `duplicates_dropped` (the difference), `own_shots` (rows kept).
+- `FileNotFoundError` if `database_path` is not a file, checked before opening it, so a mistyped path creates no
+  empty database; the command prints it and exits 1.
 - Errors (the transaction rolls back, so the database keeps its previous `shots`):
   - `duckdb.CatalogException` if `raw_shots`, `matches` or `homography` is missing.
-  - `duckdb.CatalogException` / `BinderException` if an existing `shots` table lacks a column of `schema.sql`
-    (its own rows cannot be read back in full); a table with the current columns but older CHECKs is simply recreated.
+  - `ShotsSchemaMismatchError` if an existing `shots` table with own rows lacks a column of `schema.sql` other than
+    `type_detail` and `type_detail_pred` (its own rows cannot be read back in full). A table from before those two
+    columns keeps its own rows, with both new columns NULL; a table with the current columns but older CHECKs is
+    simply recreated. Own rows are written back by column name, and their `type_group` / `type_pred` are re-derived
+    from `type_detail` / `type_detail_pred` where those are set.
   - `analytics.shot_types.UnmappedShotTypeError` if a shot type has no group.
   - `duckdb.IOException` if the database cannot be opened, e.g. its folder does not exist.
 
@@ -180,7 +187,7 @@ stored `hit_zone` is wrong on purpose):
 >>> shots_columns(connection) == schema_columns()
 True
 >>> len(schema_columns()), schema_columns()[:3]
-(28, [('source', 'VARCHAR'), ('match_id', 'VARCHAR'), ('set_no', 'INTEGER')])
+(30, [('source', 'VARCHAR'), ('match_id', 'VARCHAR'), ('set_no', 'INTEGER')])
 >>> shots_constraints(connection) == schema_columns_and_constraints()[1]
 True
 >>> [constraint for constraint in shots_constraints(connection) if constraint[1] == ("hit_zone",)][0][2].count("_middle")
@@ -210,7 +217,7 @@ and keeps the `own` rows (below). The error is for the other writers (`shots.pre
 ...     create_shots_table(connection)
 ... except ShotsSchemaMismatchError as error:
 ...     error.existing_columns[-1], len(error.expected_columns)
-(('speed', 'DOUBLE'), 28)
+(('speed', 'DOUBLE'), 30)
 >>> _ = connection.execute("ALTER TABLE shots DROP COLUMN speed")
 
 ```

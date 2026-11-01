@@ -63,3 +63,18 @@ def test_preview_default_png_is_named_after_the_report_folder():
     with pytest.raises(SystemExit) as stopped:
         preview.main([])
     assert stopped.value.code == 2
+
+
+def test_predict_refuses_a_missing_database_without_creating_it(tmp_path, monkeypatch, capsys):
+    predict = importlib.import_module("shots.predict")
+    monkeypatch.setattr(predict, "load_model", lambda model_path: {"trained_label": "type_detail"})
+    missing = tmp_path / "scot.duckdb"
+    assert predict.main([str(missing), str(tmp_path / "model.joblib")]) == 1
+    assert "database not found" in capsys.readouterr().err and list(tmp_path.iterdir()) == []
+
+
+def test_build_shots_refuses_a_missing_database_without_creating_it(tmp_path, capsys):
+    build_shots = importlib.import_module("analytics.build_shots")
+    missing = tmp_path / "scot.duckdb"
+    assert build_shots.main([str(missing)]) == 1
+    assert "database not found" in capsys.readouterr().err and list(tmp_path.iterdir()) == []

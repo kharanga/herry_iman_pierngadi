@@ -1,6 +1,8 @@
 # `shots/`: shot-type classifier
 
-Predicts a shot's `type_group` (serve, clear, drop, smash, net, lift, drive) from the two
+Predicts a shot's label `type_detail` (`serve_short`, `serve_long`, `net`, `return_net`, `drive`, `push`,
+`clear`, `drop`, `smash`, `lift`; see `shot_types.md`) and with it its `type_group` (serve, clear, drop,
+smash, net, lift, drive) from the two
 players' feet and the hit frames only, so the same model runs on my own footage, where the
 pipeline tracks the players (not the shuttle) and nobody labels shot types.
 
@@ -12,7 +14,7 @@ pipeline tracks the players (not the shuttle) and nobody labels shot types.
 - `shots/train.py`: trains a gradient-boosted tree (`HistGradientBoostingClassifier`)
   on ShuttleSet, evaluates it on held-out matches (exact frames and jittered frames), saves the
   model under `data/models/`.
-- `shots/predict.py`: fills `shots.type_pred` and `shots.type_conf` for every row that has a hitter
+- `shots/predict.py`: fills `shots.type_detail_pred`, `shots.type_pred` and `shots.type_conf` for every row that has a hitter
   point and a landing point, any source.
 - `shots/compare_features.py`: re-runs the same match folds for several feature subsets (the
   feature-set table in the results doc).
@@ -39,7 +41,7 @@ Measured accuracy and the per-group breakdown are in `docs/results/classifier_fe
 
 Defaults: `data/scout.duckdb` and `data/models/shot_type_classifier.joblib`. Training also
 writes `data/models/shot_type_classifier_report.json` (every number in the results doc).
-`train` opens the database read-only; `predict` changes only `type_pred` and `type_conf`.
+`train` opens the database read-only; `predict` changes only `type_detail_pred`, `type_pred` and `type_conf`.
 
 ## Features
 
@@ -76,7 +78,7 @@ Missing values stay NaN; the gradient-boosted tree handles them natively.
 **Which shots get a prediction.** Only shots with both a hitter point and a landing point in
 the shipped feature set. With `feet` that means the hitter's feet are known **and the next shot's
 hitter's feet are known**: a rally's last shot has no reply, so it gets no prediction, and neither
-does a shot whose reply has no hitter position. Other shots keep `type_pred` and `type_conf` NULL.
+does a shot whose reply has no hitter position. Other shots keep `type_detail_pred`, `type_pred` and `type_conf` NULL.
 Training and evaluation use the same rule, so the reported accuracy is for exactly the shots
 that get a prediction.
 
@@ -205,6 +207,8 @@ True
 | `DATABASE_PATH` | `data/scout.duckdb` |
 | `MODEL_PATH` | `data/models/shot_type_classifier.joblib` |
 | `TRAINED_GROUPS` | the 7 groups except `unknown` |
+| `TRAINED_DETAILS` | the 10 labels except `unknown` |
+| `TRAINED_LABEL_COLUMN` | `type_detail`, the column the model learns |
 | `FOLD_COUNT` | 5 |
 | `RANDOM_SEED` | 0 |
 | `PERMUTATION_REPEATS` | 3 |
@@ -212,8 +216,9 @@ True
 ### `train_classifier(database_path=DATABASE_PATH, model_path=MODEL_PATH, fold_count=5, random_seed=0, permutation_repeats=3, feature_set=SHIPPED_FEATURE_SET)`
 
 1. Takes the ShuttleSet rows whose `type_group` is not `unknown` (shots typed `unknown` are left
-   out of training and evaluation: their label carries no group) and that have a hitter point
-   and a landing point in `feature_set`.
+   out of training and evaluation: their label carries no group), that have a hitter point
+   and a landing point in `feature_set`, and whose `type_detail` is one of `TRAINED_DETAILS`
+   (`rows_with_a_trained_detail`; a row with a group but no label is left out). The model learns `type_detail`.
 2. Grouped cross-validation over **matches** (`GroupKFold`): each fold's test matches never
    appear in its training data, and every shot gets a prediction from a model that never
    saw its match. Raises `RuntimeError` if a fold ever had a match on both sides. Each fold's
@@ -221,13 +226,18 @@ True
    (`shots/jitter.py`), the `variants` of the report.
 3. Trains the final model on all labelled matches and saves it.
 
-- Returns the report `dict`: `feature_set`, `folds` (per fold: test matches, shots, accuracy, majority
-  group and its accuracy), `accuracy_mean`, `accuracy_std`, `majority_accuracy_mean`, `out_of_fold_accuracy`,
+- Scores are at **group level** (both the label and the prediction renamed to their group), so they compare
+  directly with a model trained on the groups; the same out-of-fold predictions at label level are under `detail`.
+- Returns the report `dict`: `feature_set`, `trained_label`, `detail` (label level: `labels`, `accuracy_mean`,
+  `accuracy_std`, `out_of_fold_accuracy`, `per_detail`, `confusion_matrix`), `folds` (per fold: test matches,
+  shots, group accuracy, majority group and its accuracy), `accuracy_mean`, `accuracy_std`, `majority_accuracy_mean`, `out_of_fold_accuracy`,
   `per_group` (precision, recall, f1, support), `confusion_matrix`, `permutation_importance`
   (mean accuracy drop on the test folds, largest first), `variants` (per jitter label: `accuracy_mean`,
   `accuracy_std`, `out_of_fold_accuracy`, `per_group`), `subsets`, `per_type_en`, `training_shots`,
-  `training_matches`, `group_counts`, `model_path`. The same dict is written as JSON next to the model.
-- The saved model is a joblib `dict`: `classifier`, `feature_set`, `feature_names`, `groups`, `sklearn_version`,
+  `training_matches`, `group_counts`, `detail_counts`, `model_path`. The same dict is written as JSON next to the model.
+  `permutation_importance` is measured on the label the model predicts (`type_detail`).
+- The saved model is a joblib `dict`: `classifier`, `feature_set`, `feature_names`, `trained_label`, `labels` (the
+  classifier's classes), `groups` (their groups), `sklearn_version`,
   `training_shots`, `training_matches`.
 - Errors: `duckdb.IOException` if the database does not exist; `duckdb.CatalogException` if it
   has no `shots` table; `ValueError` from scikit-learn if there are fewer matches than folds,
@@ -239,20 +249,26 @@ True
 - `labelled_shuttleset_shots(connection, feature_set)`: `(features, labels, match_ids)` for training.
 - `jittered_feature_frames(shot_rows, labelled_rows, feature_set, random_seed)`: `{jitter label: features}`
   for the labelled rows, with the whole table jittered first.
-- `grouped_cross_validation(features, labels, match_ids, fold_count, random_seed, permutation_repeats, breakdown_rows, scoring_variants)`:
-  the evaluation part, returns the report without the training fields. `permutation_repeats=0` skips the
+- `grouped_cross_validation(features, labels, match_ids, fold_count, random_seed, permutation_repeats, breakdown_rows, scoring_variants, group_of_label=None)`:
+  the evaluation part, returns the report without the training fields. With `group_of_label` (a label -> group
+  `dict`, e.g. `TYPE_GROUP_BY_TYPE_DETAIL`) the scores are at group level and the label level goes under `detail`;
+  without it the labels are the groups and there is no `detail`. `permutation_repeats=0` skips the
   permutation importance (every value NaN); `scoring_variants` (`{name: features}`, same index as `features`)
   are scored by each fold's model on its test shots and reported under `variants`.
 - `new_classifier(random_seed)`: `HistGradientBoostingClassifier(random_state=random_seed)`, default settings.
 - `majority_group(labels)`: most common label (ties: alphabetical first).
-- `per_group_scores(true_groups, predicted_groups)`: precision/recall/f1/support per group.
+- `per_group_scores(true_groups, predicted_groups)`: precision/recall/f1/support per group;
+  `per_label_scores(true_labels, predicted_labels, label_names)` the same for any labels.
+- `as_groups(labels, group_of_label)`: the labels renamed to their groups (unchanged without a map).
+- `detail_scores(labels, predictions, fold_accuracies)`: the `detail` entry of the report.
 - `variant_scores(labels, predictions, fold_accuracies)`: the per-variant entry of the report.
 - `save_model(classifier, model_path, training_shots, training_matches, feature_set)`, `report_path_for(model_path)`, `summary_lines(report)`.
 
 ## `shots/predict.py`
 
 ### `predict_shot_types(database_path=DATABASE_PATH, model_path=MODEL_PATH)`
-Sets `type_pred` (the most likely group) and `type_conf` (its probability, 0-1) on every `shots`
+Sets `type_detail_pred` (the most likely label), `type_pred` (that label's group) and `type_conf` (the
+label's probability, 0-1; the group's own probability is at least this) on every `shots`
 row that has a hitter point and a landing point in the shipped feature set: both sources, and
 `unknown` shots too. Every other row gets NULL in both columns, which also clears an older
 prediction. Matched by `rowid`, in one transaction; no other column changes.
@@ -260,18 +276,21 @@ prediction. Matched by `rowid`, in one transaction; no other column changes.
 - Returns the number of rows that got a prediction (`int`).
 - Errors: `FileNotFoundError` if the model file is missing; `ModelFeatureMismatchError` if the model
   was trained on a different `FEATURE_NAMES` or a different feature set than `SHIPPED_FEATURE_SET`
-  (retrain); `FileNotFoundError` for a missing database (checked before opening it, so a mistyped path
+  (retrain); `ModelLabelMismatchError` if the model was not trained on `type_detail` (a model from before the
+  labels; retrain); `FileNotFoundError` for a missing database (checked before opening it, so a mistyped path
   creates no file; the command prints it and exits 1); `CatalogException` for a missing table. On any error
   the transaction rolls back.
 
 ### Helpers
 - `load_model(model_path)`: loads and checks the joblib `dict`.
 - `prediction_summary(database_path)`: counts for the results doc: ShuttleSet rows (`shots`, `predicted_shots`,
-  `lowest_conf`, `mean_conf`, `in_sample_agreement`, `unknown_shot_predictions`) and, under `own_matches`,
+  `lowest_conf`, `mean_conf`, `in_sample_agreement`, `in_sample_detail_agreement`, `unknown_shot_predictions`) and, under `own_matches`,
   per own match id `shots`, `predicted_shots` and `rallies`.
-- `predictions_for(model, shot_rows)`: `DataFrame` of `row_id`, `type_pred`, `type_conf`, with
+- `predictions_for(model, shot_rows)`: `DataFrame` of `row_id`, `type_detail_pred`, `type_pred`, `type_conf`, with
   `None` / `<NA>` for rows without a hitter point and a landing point.
 - `ModelFeatureMismatchError(model_feature_names, model_feature_set)`: a `RuntimeError` with both attributes.
+- `ModelLabelMismatchError(model_trained_label)`: a `RuntimeError`; `model_trained_label` is `None` for a model
+  saved before labels existed.
 
 ## `shots/compare_features.py`
 
@@ -280,13 +299,14 @@ re-runs the same match folds and classifier as training for each entry of `FEATU
 only, + timing, the shipped `FEATURE_NAMES`, and the shipped set plus the previous shot's **true**
 group (a categorical feature, `previous_true_group`, from `PREVIOUS_TRUE_GROUP_SQL`). That last set
 is an experiment only: on my own footage the true group is never known. All columns come from
-`feature_set` (default: the shipped `feet` set).
+`feature_set` (default: the shipped `feet` set). Like training, each set learns `type_detail` on the shots that
+have one and is scored on the groups of its labels, so the shipped set's folds equal the training report's.
 
 - Returns `{set_name: {"feature_set", "feature_names", "fold_accuracies", "accuracy_mean"}}` and writes it as JSON to
   `comparison_path` (default `data/models/feature_set_comparison.json`).
 - Errors: as `train_classifier`.
 - Helpers: `previous_true_group_codes(connection, row_ids)` (group codes 0-7, NaN on a rally's first shot),
-  `grouped_accuracy(features, labels, match_ids, fold_count, random_seed)` (accuracy per fold).
+  `grouped_accuracy(features, labels, match_ids, fold_count, random_seed)` (group accuracy per fold for detail labels).
 
 ## `shots/compare_hit_points.py`
 
@@ -295,13 +315,13 @@ evaluates the `contact` and `feet` feature sets with the same match folds, class
 as training (no permutation importance), twice each: on the **shared shots** (labelled shots that
 have a hitter point and a landing point in both sets, so the two accuracies are on identical
 shots) and on **all its shots** (every shot that set can predict; for `feet` that is the shipped model's
-evaluation, fold by fold).
+evaluation, fold by fold). Both sets learn `type_detail` and are scored as groups, like training.
 
 - Returns and writes as JSON (default `data/models/hit_point_comparison.json`):
   `landing_offset_m` (`shots`, `mean_m`, `p50_m`, `p90_m`: distance between the reply hitter's feet and the
   labelled landing point on the shared shots), `shared_shots` and `all_shots` (per feature set: `shots`,
   `matches`, `folds`, `accuracy_mean`, `accuracy_std`, `majority_accuracy_mean`, `out_of_fold_accuracy`,
-  `per_group`, `confusion_matrix`, `subsets`, `variants`).
+  `per_group`, `confusion_matrix`, `subsets`, `variants`, `detail`).
 - Errors: as `train_classifier`.
 - Helpers: `rows_predictable_with_every_feature_set(labelled_rows)`, `landing_offset_summary(shot_rows)` (with no
   shot that has both a labelled landing and a reply hitter: `shots` 0 and `None` for every distance, and the results
@@ -417,10 +437,10 @@ landing and is neither trained on nor predicted:
 ...             player_x, player_y = hitter_feet[group]
 ...             jitter = ((match_number * 7 + rally * 3 + ball_round) % 10) / 20
 ...             rows.append(("shuttleset", f"match_{match_number}", 1, rally, ball_round, rally * 1000 + ball_round * 60,
-...                          30.0, "A", group, group, player_x + jitter, player_y, 3.0, 10.0))
+...                          30.0, "A", group, group, group, player_x + jitter, player_y, 3.0, 10.0))
 >>> _ = connection.executemany(
-...     "INSERT INTO shots (source, match_id, set_no, rally, ball_round, frame_num, fps, player, type_en, type_group, "
-...     "player_x, player_y, opponent_x, opponent_y) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
+...     "INSERT INTO shots (source, match_id, set_no, rally, ball_round, frame_num, fps, player, type_en, type_detail, type_group, "
+...     "player_x, player_y, opponent_x, opponent_y) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
 >>> _ = connection.execute(
 ...     "INSERT INTO shots (source, match_id, set_no, rally, ball_round, frame_num, fps, player, player_x, player_y) "
 ...     "VALUES ('own', 'club_2026_10_20', 1, 1, 1, 100, 30.0, 'me', 1.1, 1.0), "
@@ -432,14 +452,19 @@ landing and is neither trained on nor predicted:
 ('feet', 240, 6, 1.0, 0.5)
 >>> sorted(report["variants"]), report["variants"]["hit frames +/- 5"]["accuracy_mean"]
 (['hit frames +/- 10', 'hit frames +/- 5'], 1.0)
->>> sorted(load_model(temp_dir / "models" / "classifier.joblib")["groups"])
-['clear', 'net']
+>>> model = load_model(temp_dir / "models" / "classifier.joblib")
+>>> model["trained_label"], sorted(model["labels"]), sorted(model["groups"])
+('type_detail', ['clear', 'net'], ['clear', 'net'])
+>>> report["detail"]["accuracy_mean"], sorted(report["detail_counts"].items())[:2]
+(1.0, [('clear', 120), ('drive', 0)])
 >>> predict_shot_types(database_path, temp_dir / "models" / "classifier.joblib")
 241
 >>> connection = duckdb.connect(str(database_path))
 >>> connection.execute("SELECT rally, ball_round, type_pred, type_conf IS NULL FROM shots WHERE source = 'own' ORDER BY rally, ball_round").fetchall()
 [(1, 1, 'clear', False), (1, 2, None, True), (2, 1, None, True)]
 >>> connection.execute("SELECT COUNT(*) FROM shots WHERE type_pred = type_group").fetchone()[0]
+240
+>>> connection.execute("SELECT COUNT(*) FROM shots WHERE type_detail_pred = type_detail").fetchone()[0]
 240
 >>> connection.close()
 >>> try:

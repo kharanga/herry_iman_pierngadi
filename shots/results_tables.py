@@ -36,8 +36,16 @@ def accuracy_table(report: dict) -> str:
             "|---|---|",
             f"| **Classifier** | **{report['accuracy_mean']:.1%}** (± {report['accuracy_std']:.1%} across folds; folds {fold_percentages}) |",
             f"| Majority class (`{report['folds'][0]['majority_group']}`) | {report['majority_accuracy_mean']:.1%} |",
+            *detail_accuracy_rows(report),
         ]
     )
+
+
+def detail_accuracy_rows(report: dict) -> list[str]:
+    if "detail" not in report:
+        return []
+    detail = report["detail"]
+    return [f"| Same model, scored on its {len(detail['labels'])} labels | {detail['accuracy_mean']:.1%} (± {detail['accuracy_std']:.1%} across folds) |"]
 
 
 def accuracy_cell(accuracy: float | None) -> str:
@@ -77,6 +85,7 @@ def predictions_table(summary: dict) -> str:
             f"| Left NULL (no hitter point or no landing point) | {thousands(summary['shots'] - summary['predicted_shots'])} |",
             f"| `type_conf` mean / lowest | {summary['mean_conf']:.2f} / {summary['lowest_conf']:.2f} |",
             f"| In-sample agreement with `type_group` (not an accuracy) | {summary['in_sample_agreement']:.1%} |",
+            f"| In-sample agreement with `type_detail` (not an accuracy) | {summary['in_sample_detail_agreement']:.1%} |",
             f"| Shots typed `unknown`, predicted as | {unknown_predictions} |",
         ]
         + [
@@ -97,9 +106,28 @@ def per_group_table(report: dict) -> str:
     )
 
 
+def per_detail_table(report: dict) -> str:
+    rows = sorted(report["detail"]["per_detail"].items(), key=lambda label_and_scores: -label_and_scores[1]["f1"])
+    return "\n".join(
+        ["| Label | Shots | Precision | Recall | F1 |", "|---|---|---|---|---|"]
+        + [
+            f"| {label} | {thousands(scores['support'])} | {scores['precision']:.3f} | {scores['recall']:.3f} | {scores['f1']:.3f} |"
+            for label, scores in rows
+        ]
+    )
+
+
 def confusion_matrix_table(report: dict) -> str:
-    groups = report["confusion_matrix"]["labels"]
-    matrix = report["confusion_matrix"]["rows_true_columns_predicted"]
+    return confusion_table(report["confusion_matrix"])
+
+
+def detail_confusion_matrix_table(report: dict) -> str:
+    return confusion_table(report["detail"]["confusion_matrix"])
+
+
+def confusion_table(confusion: dict) -> str:
+    groups = confusion["labels"]
+    matrix = confusion["rows_true_columns_predicted"]
     lines = ["| true \\ predicted | " + " | ".join(groups) + " |", "|---" * (len(groups) + 1) + "|"]
     for row_index, (group, counts) in enumerate(zip(groups, matrix)):
         cells = [f"**{thousands(count)}**" if column_index == row_index else thousands(count) for column_index, count in enumerate(counts)]
@@ -127,6 +155,8 @@ def results_tables(report: dict, comparison: dict, summary: dict) -> str:
         ("Accuracy by shot position", subsets_table(report)),
         ("Per group", per_group_table(report)),
         ("Confusion matrix", confusion_matrix_table(report)),
+        ("Per label", per_detail_table(report)),
+        ("Confusion matrix, labels", detail_confusion_matrix_table(report)),
         ("Feature importance", importance_table(report)),
         ("Weak shot types", weak_types_table(report)),
         ("Feature sets", feature_set_table(comparison)),

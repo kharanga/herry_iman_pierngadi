@@ -19,9 +19,9 @@ with other players, no score, no ranking and no minimum sample size: every choic
 
 | Family | Situation (`condition`) | What they did (`outcome`) | Shots counted |
 |---|---|---|---|
-| `zone_mix` | hit zone (9 zones) | shot group | every shot except serves |
+| `zone_mix` | hit zone (6 zones) | shot group | every shot except serves |
 | `response` | the other player's previous shot: group, `hit_zone`, `landing_zone` | shot group + `straight` / `cross` | every reply to the other player's shot (see below) |
-| `serve_placement` | `serve` | landing zone (or `not_over_net`) | serves |
+| `serve_placement` | `serve_short`, `serve_long`, or `serve` when the serve has no label | landing zone (or `not_over_net`) | serves |
 | `winning_shot` | `winner` | shot group | the last shot of a rally the hitter won |
 | `error_shot` | `error` | shot group | the last shot of a rally the hitter lost |
 | `error_reason` | `error` | `lose_reason` (`out`, `net`, ...) | the same, where a reason is recorded |
@@ -32,6 +32,11 @@ A rally's last shot belongs to the winner if `getpoint_player` equals the hitter
 `type_pred` (my footage, and ShuttleSet shots typed `unknown`). Each tendency says which in
 `label_source`: `labels` (all true labels), `predictions` (all predicted), or `mixed`. A `response`
 counts as predicted if either shot's group was predicted.
+
+**Short and long serves.** A serve's kind is its `type_detail` when the group is a label, otherwise its
+`type_detail_pred`. Serves of each kind are counted on their own ("Short serves go to the receiver's forehand,
+front court 7 of 9 times."). A serve with neither (e.g. a labelled serve with no kind) keeps the old wording
+("Serves short to the receiver's forehand 2 of 3 times."). The kinds come in the order short, long, without a kind.
 
 **Shots left out.** Per-player stats skip rallies where `player` is unreliable (see
 `docs/results/schema.md`, "Known data issues"): one-shot rallies whose only shot is typed `unknown`,
@@ -51,7 +56,7 @@ For a player, situation (`family` + `condition`) and choice (`outcome`): `n` = t
 situation, `k` = times they made that choice, `rate = k / n`. The `k` of a situation's choices add up to its `n`.
 
 Entries are ordered **family, then situation, then most times first**. Families follow `FAMILIES`; zones follow
-`analytics.court.ZONE_NAMES` (front, mid, rear; forehand, middle, backhand); `response` situations go by the
+`analytics.court.ZONE_NAMES` (front, mid, rear; forehand, backhand); serve kinds go short, long, without a kind; `response` situations go by the
 previous shot's group in `GROUP_ORDER` (serve, clear, drop, smash, net, lift, drive), then its hit zone, then its
 landing zone (both in `ZONE_NAMES` order); ties on `k` go by choice name. This is a reading order,
 not a ranking.
@@ -165,6 +170,11 @@ own shots count. These rows have no `is_cross`, so the reply choices are the sho
 ('From the back court, backhand side: clears 2 of 10 times.', 'labels', [1], ['condition', 'family', 'id', 'k', 'label_source', 'match_id', 'n', 'outcome', 'player', 'rate', 'sets', 'text'])
 >>> [tendency["text"] for tendency in tendencies_for("club_2026_10_20", "me", database_path)]
 ["Serves short to the receiver's forehand 10 of 10 times."]
+>>> connection = duckdb.connect(str(database_path))
+>>> _ = connection.execute("UPDATE shots SET type_detail = 'serve_short' WHERE shots.match_id = 'club_2026_10_20' AND shots.type_group = 'serve' AND shots.rally <= 7")
+>>> connection.close()
+>>> [tendency["text"] for tendency in tendencies_for("club_2026_10_20", "me", database_path)]
+["Short serves go to the receiver's forehand, front court 7 of 7 times.", "Serves short to the receiver's forehand 3 of 3 times."]
 >>> try:
 ...     tendencies_for("club_2026_10_20", "nobody", database_path)
 ... except UnknownMatchPlayerError as error:
