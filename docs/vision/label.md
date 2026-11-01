@@ -14,7 +14,7 @@ loop (`label_video`) only reads frames, draws and forwards key names.
 ## Command
 
 ```
-.venv/bin/python -m vision.label <video> --match-id <id> [--labels FILE] [--players-dir D] [--hits-dir D]
+.venv/bin/python -m vision.label <video> --match-id <id> [--labels FILE] [--players-dir D] [--hits-dir D] [--blank] [--segment-seconds 60]
 ```
 
 | Argument | Meaning |
@@ -23,6 +23,7 @@ loop (`label_video`) only reads frames, draws and forwards key names.
 | `--match-id` | shown in the window title and the printed summary |
 | `--labels` | the labels CSV to read on start and write on `w`/`q` (default `data/labels/<video id>.csv`); the rallies CSV sits next to it as `<name>_rallies.csv` |
 | `--players-dir`, `--hits-dir` | roots of the tracking and hit files (defaults `data/players`, `data/hits`), e.g. to label on top of another tracking configuration |
+| `--blank`, `--segment-seconds N` | label with nothing the detector inferred, moving by segments of N seconds (default 60), with `b` / `e` for your own rallies; as in the browser tool (`docs/vision/label_ui.md`, "Blank mode") |
 
 The window (`compose_panels`): left the **stepping panel**, the current frame paused
 at 960 px wide with the tracking overlay (`vision.overlay`), under it the rally's
@@ -40,10 +41,12 @@ loop's own position. The key map is printed on start and drawn under the panels.
 | `<` `>` | ten frames back / forward |
 | `[` `]` | previous / next rally (the left panel jumps to its start, the right panel reloads) |
 | `h` | mark a hit at the current frame; then `m` or `o` for the hitter, then a type key |
-| `s` `c` `d` `k` `n` `l` `v` `?` | after `h` or `a` and the hitter: serve, clear, drop, smash, net, lift, drive, unknown; the label is stored and shown |
+| `c` `d` `k` `n` `t` `l` `v` `p` `?` | after `h` or `a` and the hitter: clear, drop, smash, net, return net, lift, drive, push, unknown; the label is stored and shown |
+| `s`, then `s` or `l` | after `h` or `a` and the hitter: a serve; the status line asks **SERVE, press s for SHORT or l for LONG**, and the second key picks `serve_short` or `serve_long` (`esc` cancels). Inside this prompt `l` means long, not lift |
 | `a` | accept the nearest proposal within 60 frames: jumps to it, takes its hitter, waits for the type key |
 | `x` | delete the labelled hit nearest to the current frame |
 | `u` | undo the last change to labels or rallies (200 steps) |
+| `b` / `e` | rally starts / ends at the current frame (for `--blank`; see `docs/vision/label_ui.md`, "Blank mode") |
 | `r` | move the current rally's start (when the frame is in its first half) or end (second half) to the current frame |
 | `+` | add a rally starting at the current frame (2 s long; adjust with `r`), when the frame is in no rally |
 | `-` | delete the current rally and its labels |
@@ -56,8 +59,34 @@ Labelling a frame that already has a label replaces it. A hit's rally is the ral
 containing its frame; moving rally bounds relabels the hits and drops those left
 outside every rally.
 
+### Rally bounds
+
+The rallies file is also an in-play label: the in-play model is trained and scored on
+these bounds (`docs/results/club_games.md`). So set them by these rules, in this tool
+and in `vision.label_ui`:
+
+- **start** = the frame where the serve's racket meets the shuttle;
+- **end** = the frame where the shuttle lands (on the floor, or the net for a net
+  error).
+
+A gap counts as not in play only when the rallies on both sides of it are labelled.
+
+A detected rally that runs across two points has to be split:
+
+1. Step to where the first point's shuttle lands and press `r` to move the end there.
+2. Step to the next serve's contact and press `+`.
+3. Move the new rally's end with `r`.
+
+Moving an end drops the hit labels left outside every rally, so split a merged rally
+before labelling its hits.
+
 Output: `data/labels/<video id>.csv` with `rally, frame_num, player, type_group,
-source` (`hand` for `h`, `accepted` for `a`) and `data/labels/<video id>_rallies.csv`
+type_detail, source` (`hand` for `h`, `accepted` for `a`). `type_detail` is one of the
+11 labels of `analytics.shot_types.SHOT_TYPE_DETAILS` (`serve_short`, `serve_long`,
+`net`, `return_net`, `drive`, `push`, `clear`, `drop`, `smash`, `lift`, `unknown`), and
+`type_group` is derived from it (`TYPE_GROUP_BY_TYPE_DETAIL`: both serves are `serve`,
+`return_net` is `net`, `push` is `drive`). Files written before `type_detail` existed
+still load, with an empty detail; their `serve` labels keep the group `serve`. and `data/labels/<video id>_rallies.csv`
 with `rally, start_frame, end_frame`, rallies numbered by start frame. On start the
 tool loads both if they exist (the rallies file replaces the detector's rallies).
 Scoring a hits file against the labels: `python -m vision.hits <video> --start N --end N
@@ -78,7 +107,7 @@ or hits file.
 
 ## Classes
 
-`HitLabel(rally, frame, player, type_group, source)`, `RallySpan(rally, start_frame,
+`HitLabel(rally, frame, player, type_group, source, type_detail="")`, `RallySpan(rally, start_frame,
 end_frame)`, `Proposal(frame, hitter)`, `PendingHit(frame, source, player=None)` and
 `LabelState(labels, rallies, proposals, rally_index, frame, last_frame, fps, pending,
 history, dirty)`, all frozen; `state.rally` is the current `RallySpan` or `None`.
@@ -110,7 +139,7 @@ labels re-assigned to the rally containing them (dropped when none does).
 >>> rally_containing(state.rallies, 450), rally_containing(state.rallies, 300)
 (1, None)
 >>> labels_relabelled([HitLabel(1, 450, "me", "net", "hand"), HitLabel(1, 300, "me", "net", "hand")], state.rallies)
-(HitLabel(rally=2, frame=450, player='me', type_group='net', source='hand'),)
+(HitLabel(rally=2, frame=450, player='me', type_group='net', source='hand', type_detail=''),)
 
 ```
 
@@ -142,15 +171,15 @@ hit. `set_pending_type` before a hitter does nothing.
 ```python
 >>> pending = begin_hit(replace(state, frame=131))
 >>> pending.pending
-PendingHit(frame=131, source='hand', player=None)
+PendingHit(frame=131, source='hand', player=None, choosing_serve_length=False)
 >>> set_pending_type(pending, "net").labels
 ()
 >>> labelled = set_pending_type(set_pending_player(pending, "me"), "net")
 >>> labelled.labels, labelled.pending, labelled.dirty
-((HitLabel(rally=1, frame=131, player='me', type_group='net', source='hand'),), None, True)
+((HitLabel(rally=1, frame=131, player='me', type_group='net', source='hand', type_detail='net'),), None, True)
 >>> accepted = accept_nearest_proposal(replace(labelled, frame=158))
 >>> accepted.frame, accepted.pending
-(160, PendingHit(frame=160, source='accepted', player='opp'))
+(160, PendingHit(frame=160, source='accepted', player='opp', choosing_serve_length=False))
 >>> two = set_pending_type(accepted, "lift")
 >>> [(label.frame, label.player, label.type_group, label.source) for label in two.labels]
 [(131, 'me', 'net', 'hand'), (160, 'opp', 'lift', 'accepted')]
@@ -189,31 +218,86 @@ True
 
 ```
 
+### `segment_spans(last_frame, fps, segment_seconds=60)`, `following_frame(state)`, `at_frame(state, frame, **changes)`, `go_to_segment(state, index)`, `mark_rally_start(state)`, `mark_rally_end(state)`, `with_rallies(state, rallies, focus_frame)`, `detector_tables(video_path, last_frame, hits_dir, blank)`, `segment_seconds_of(blank, segment_seconds)`, `overlay_state(frame_index, tracks, hits, rallies, blank)`
+Blank mode with segments (`docs/vision/label_ui.md`, "Blank mode"):
+
+- `LabelState.segments` and `segment_index` hold the navigation spans.
+- `state.view` is the current segment, or the current rally without segments.
+- `following_frame` keeps the segment, and the rally holding the frame, in step with the
+  frame.
+- `at_frame(state, frame, **changes)` is the one way the frame changes: steps, segment
+  and rally moves, proposal acceptance, `-` (which keeps the frame in segment mode), and
+  the browser's jumps all go through it.
+- `detector_tables` gives empty hits and rallies with `blank`, so no hits file is read.
+- `overlay_state` drops the detector's rally text from the overlay.
+- `segment_seconds_of` is 60 with `--blank` and no `--segment-seconds`.
+
+```python
+>>> from vision.label import detector_tables, segment_seconds_of, segment_spans
+>>> segment_spans(3599, 24.0, 60)
+(RallySpan(rally=1, start_frame=0, end_frame=1439), RallySpan(rally=2, start_frame=1440, end_frame=2879), RallySpan(rally=3, start_frame=2880, end_frame=3599))
+>>> segment_seconds_of(True, None), segment_seconds_of(False, None), segment_seconds_of(False, 30)
+(60.0, None, 30)
+>>> no_hits, no_rallies = detector_tables(Path("never.mp4"), 3599, blank=True)
+>>> blank = initial_state(no_hits, no_rallies, 3599, 24.0, segment_seconds=60)
+>>> blank.view, blank.rallies, blank.proposals
+(RallySpan(rally=1, start_frame=0, end_frame=1439), (), ())
+>>> blank = handle_key(blank, "]")
+>>> blank.frame, blank.segment_index, handle_key(blank, ",").segment_index
+(1440, 1, 0)
+>>> for key in ["b", "h", "m", "s", "s"] + ["."] * 30 + ["h", "o", "t"] + [">"] * 9 + ["e"]:
+...     blank = handle_key(blank, key)
+>>> blank.rallies, [(label.rally, label.frame, label.type_detail) for label in blank.labels]
+((RallySpan(rally=1, start_frame=1440, end_frame=1560),), [(1, 1440, 'serve_short'), (1, 1470, 'return_net')])
+>>> handle_key(replace(blank, frame=500), "b").rallies
+(RallySpan(rally=1, start_frame=500, end_frame=1439), RallySpan(rally=2, start_frame=1440, end_frame=1560))
+>>> handle_key(replace(blank, frame=2000), "e").rallies, handle_key(replace(blank, frame=10), "-").rallies == blank.rallies
+((RallySpan(rally=1, start_frame=1440, end_frame=2000),), True)
+
+```
+
 ### `handle_key(state, key)`
-The dispatcher the window calls with a key name (`","`, `"h"`, `"esc"`, ...): while a
-hit is pending only `m`/`o`, a type key and `esc` do anything; otherwise steps, rally
-moves and the single-key actions.
+The dispatcher the window calls with a key name (`","`, `"h"`, `"esc"`, ...). While a
+hit is pending, only `m`/`o`, a type key, `s` and `esc` do anything (`pending_key`).
+`s` opens the serve prompt (`ask_serve_length`), where only `s` (short), `l` (long) and
+`esc` count. Otherwise the keys are steps, rally moves and the single-key actions.
+`set_pending_type` takes a detail and derives the group (`group_and_detail`). A plain
+group name such as `serve` is kept as the group with an empty detail.
 
 ```python
 >>> flow = state
 >>> for key in ("]", ">", ".", "h", "o", "k"):
 ...     flow = handle_key(flow, key)
 >>> flow.frame, flow.labels
-(411, (HitLabel(rally=2, frame=411, player='opp', type_group='smash', source='hand'),))
+(411, (HitLabel(rally=2, frame=411, player='opp', type_group='smash', source='hand', type_detail='smash'),))
 >>> handle_key(begin_hit(flow), ".").frame == flow.frame, handle_key(begin_hit(flow), "esc").pending
 (True, None)
+>>> served = state
+>>> for key in ("h", "m", "s"):
+...     served = handle_key(served, key)
+>>> served.pending.choosing_serve_length, status_line(served).split("   ")[-1]
+(True, 'HIT at f100 by me: SERVE, press s for SHORT or l for LONG (esc cancels)')
+>>> [(label.type_group, label.type_detail) for label in handle_key(served, "l").labels], handle_key(served, "c").labels, handle_key(served, "esc").pending
+([('serve', 'serve_long')], (), None)
+>>> from vision.label import SERVE_LENGTH_KEYS, TYPE_KEYS, group_and_detail
+>>> from analytics.shot_types import SHOT_TYPE_DETAILS
+>>> sorted(set(TYPE_KEYS.values()) | set(SERVE_LENGTH_KEYS.values())) == sorted(SHOT_TYPE_DETAILS)
+True
+>>> group_and_detail("push"), group_and_detail("return_net"), group_and_detail("serve")
+(('drive', 'push'), ('net', 'return_net'), ('serve', ''))
 
 ```
 
 ### `labels_frame`, `rallies_frame`, `labels_from_frame`, `rallies_from_frame`, `proposals_from_hits`, `label_paths`, `write_atomically`, `save_labels`, `initial_state`
 The two tables and their round trip; `initial_state` takes the detector's hits and
-rallies plus, optionally, saved labels and rallies (the saved rallies win).
+rallies plus, optionally, saved labels and rallies (the saved rallies win). A labels
+file without `type_detail` loads with empty details (`detail_of`).
 
 ```python
 >>> labels_frame(two)
-   rally  frame_num player type_group    source
-0      1        131     me        net      hand
-1      1        160    opp       lift  accepted
+   rally  frame_num player type_group type_detail    source
+0      1        131     me        net         net      hand
+1      1        160    opp       lift        lift  accepted
 >>> rallies_frame(two)
    rally  start_frame  end_frame
 0      1          100        200
@@ -227,6 +311,10 @@ rallies plus, optionally, saved labels and rallies (the saved rallies win).
 >>> again = initial_state(hits, rallies, 999, 30.0, pd.read_csv(folder / "clip.csv"), pd.read_csv(folder / "clip_rallies.csv"))
 >>> again.labels == two.labels, again.rallies == two.rallies
 (True, True)
+>>> old_file = folder / "old.csv"
+>>> _ = old_file.write_text("rally,frame_num,player,type_group,source\n1,131,me,serve,hand\n")
+>>> labels_from_frame(pd.read_csv(old_file))
+(HitLabel(rally=1, frame=131, player='me', type_group='serve', source='hand', type_detail=''),)
 >>> [path.as_posix() for path in label_paths(Path("data/recordings/stand_in/set1.mp4"))]
 ['data/labels/stand_in_set1.csv', 'data/labels/stand_in_set1_rallies.csv']
 
@@ -252,7 +340,7 @@ OpenCV's key code into the names `handle_key` understands (arrow codes become `,
 'f100  rally 1 of 2 [100-200]  labels in rally: 0  total: 0   HIT at f100 by me: press a type key'
 >>> canvas = compose_panels(np.zeros((540, 960, 3), np.uint8), np.zeros((270, 480, 3), np.uint8), draw_timeline(two, 960), status_line(two))
 >>> canvas.shape
-(718, 1450, 3)
+(740, 1450, 3)
 >>> indices = list(range(100, 200))
 >>> loop_position(indices, 0.0, 30.0, 0.5), loop_position(indices, 1.0, 30.0, 0.5), loop_position(indices, 4.0, 30.0, 0.5)
 (0, 15, 60)

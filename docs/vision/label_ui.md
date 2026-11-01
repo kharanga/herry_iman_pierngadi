@@ -9,14 +9,51 @@ runs a model.
 ## Start
 
 ```
-.venv/bin/python -m vision.label_ui <video> --match-id <id> [--labels FILE] [--port 8766] [--no-browser] [--players-dir D] [--hits-dir D]
+.venv/bin/python -m vision.label_ui <video> --match-id <id> [--labels FILE] [--port 8766] [--no-browser] [--players-dir D] [--hits-dir D] [--blank] [--segment-seconds 60]
 ```
 
-It needs the video's hits and rallies files for the whole video (`python -m vision.hits
-<video> --start 0 --end <last frame>`) and draws the tracking overlay when the player
+Without `--blank`, it needs the video's hits and rallies files for the whole video
+(`python -m vision.hits <video> --start 0 --end <last frame>`). It draws the tracking overlay when the player
 files exist, and the `ffmpeg` binary on the path for the rally clips. It serves `http://127.0.0.1:8766/` (local only) and opens it in the default
 browser; ctrl-c (or `kill`, SIGTERM) stops it and removes the clip folder. `--port 0` picks a free port. Exit codes: `0`; `1` with
-`error: ...` for a missing video or hits file.
+`error: ...` for a missing video or hits file, or a `--segment-seconds` that isn't positive.
+
+### Blank mode (`--blank`)
+
+For labelling a whole video by hand, with nothing the detector inferred on screen:
+
+- **Nothing inferred:** no detected rallies, no hit proposals, no inferred serves, and no
+  hit flash or detector rally text in the overlay. No hits file is read.
+- **Tracking stays:** the tracking boxes, `me`/`opp` and the foot dots stay, because
+  they are measured, not inferred.
+- **Segments:** the video is cut into back-to-back **segments** of `--segment-seconds`
+  (default 60). `[` / `]` and the prev/next buttons move between segments. The timeline,
+  the looping clip on the right and the hit list cover the current segment, as they
+  cover a rally otherwise. Stepping with `,` `.` `<` `>` past a segment's edge moves into
+  the next or previous segment. Segments are never written to a file.
+  `--segment-seconds` also turns segments on without `--blank`.
+- **Rallies:** you mark them yourself:
+  - `b` (**rally starts here**) starts a rally at the current frame. The new rally runs
+    to the frame before the next rally, or to the end of the video, until you end it.
+    Pressed inside a rally, `b` moves that rally's start instead.
+  - `e` (**rally ends here**) ends the rally holding the current frame there. Pressed
+    after a rally, `e` extends that rally to the current frame.
+  - Rallies never overlap, and they may cross segment edges.
+  - `r` and `-` act only on the rally holding the current frame. `-` leaves the frame
+    where it is. `u` undoes any of these.
+  - The "accept proposal (a)", "rally start/end here (r)" and "add rally (+)" buttons are
+    hidden, because `b` / `e` replace them and there are no proposals. The keys still
+    work.
+  - Your rallies are the dark green blocks on the timeline.
+- **Labels:** a hit's rally is your rally that holds it. Mark the rally's start (the
+  serve's contact, `docs/vision/label.md`) before its hits. A hit outside every rally is
+  dropped at the next rally change.
+- **Files:** labels and rallies keep video frame numbers and the same CSV columns, so one
+  labels file and one rallies file hold the whole video.
+
+The status line shows `BLANK`, the clock time, the segment, the rally holding the frame
+and the number of rallies. Screenshot: `data/checks/label_ui/blank_segments.png` (Chong
+v Ding, segment 2).
 
 ## The page
 
@@ -37,8 +74,10 @@ Every action is a button and a key; the keys are the OpenCV tool's (`docs/vision
 |---|---|---|
 | left / right arrow, `,` `.` | -1, +1 | one frame |
 | shift+arrow, `<` `>` | -10, +10 | ten frames |
-| `[` `]` | prev rally, next rally | rally |
-| `h`, then `m`/`o`, then `s c d k n l v ?` | hit, me, opp, serve ... unknown | label a hit at the current frame |
+| `[` `]` | prev rally, next rally (prev / next segment with segments) | rally, or segment |
+| `b`, `e` | rally starts here, rally ends here | mark your own rally's start and end (blank mode) |
+| `h`, then `m`/`o`, then `c d k n t l v p ?` | hit, me, opp, clear ... unknown | label a hit at the current frame: clear, drop, smash, net, return net, lift, drive, push, unknown |
+| `h`, then `m`/`o`, then `s` and `s`/`l` | serve short (s s), serve long (s l) | a serve: after `s` a pink banner asks **SERVE, press s for SHORT or l for LONG**; inside it `l` means long, not lift. Each serve button sends both keys |
 | `a` | accept proposal | the nearest proposal (within 60 frames) with its hitter, then a type |
 | `x`, `u` | delete nearest, undo | |
 | `r`, `+`, `-` | rally start/end here, add rally, remove rally | rally bounds |
@@ -61,7 +100,7 @@ already saved. The help line under the buttons is `BROWSER_KEY_HELP`, the OpenCV
 ```
 
 **Autosave:** after every change that alters labels or rallies the server writes both CSVs
-atomically (`data/labels/<video id>.csv`: `rally, frame_num, player, type_group, source`;
+atomically (`data/labels/<video id>.csv`: `rally, frame_num, player, type_group, type_detail, source`;
 `data/labels/<video id>_rallies.csv`: `rally, start_frame, end_frame`). Reloading the page
 or restarting the server restores the state from them.
 
@@ -110,7 +149,7 @@ The request handling is a thin layer over pure functions:
 >>> for action in ({"type": "jump", "frame": 131}, {"type": "key", "key": "h"}, {"type": "key", "key": "o"}, {"type": "key", "key": "n"}):
 ...     state = apply_action(state, action)
 >>> state.labels, progress(state)
-((HitLabel(rally=1, frame=131, player='opp', type_group='net', source='hand'),), {'rallies_labelled': 1, 'rallies': 2, 'hits_labelled': 1})
+((HitLabel(rally=1, frame=131, player='opp', type_group='net', source='hand', type_detail='net'),), {'rallies_labelled': 1, 'rallies': 2, 'hits_labelled': 1})
 >>> view = state_json(state)
 >>> view["rally"], [p["frame"] for p in view["proposals"]], view["labels"][0]["frame"], view["pending"], view["can_undo"]
 ({'rally': 1, 'start_frame': 90, 'end_frame': 200}, [100, 130], 131, None, True)

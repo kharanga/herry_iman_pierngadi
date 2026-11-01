@@ -326,3 +326,31 @@ def test_the_server_keeps_answering_after_clients_hang_up_mid_answer(labelling):
             hung_up.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
             hung_up.sendall(b"GET /frame.jpg?f=5 HTTP/1.1\r\nHost: x\r\n\r\n")
     assert request(labelling["port"], "GET", "/api/state")[0] == 200
+
+
+def test_the_ten_label_keys_through_http_give_the_state_and_the_csvs_of_handle_key(labelling):
+    reference, labels_dir = labelling["reference"], labelling["labels_dir"]
+    keys = ["h", "s", "h", "m", "s", "c", "k", "o", "l", ".", ".", "h", "o", "s", "esc", "h", "o", "t", ">", "h", "m", "p", "]", "h", "o", "s", "s", ">", "h", "m", "l"]
+    for key in keys:
+        status, state = act(labelling["port"], {"type": "key", "key": key})
+        reference = handle_key(reference, key)
+        if reference.dirty:
+            reference = save_labels(reference, labels_dir / "ref.csv", labels_dir / "ref_rallies.csv")
+        assert status == 200 and state == state_json(reference), key
+    saved = pd.read_csv(labels_dir / "ui.csv")
+    assert (labels_dir / "ui.csv").read_bytes() == (labels_dir / "ref.csv").read_bytes()
+    assert saved[["type_group", "type_detail"]].values.tolist() == [["serve", "serve_long"], ["net", "return_net"], ["drive", "push"], ["serve", "serve_short"], ["lift", "lift"]]
+
+
+def test_the_serve_prompt_shows_in_the_state_and_the_page_has_a_button_per_label(labelling):
+    port = labelling["port"]
+    for key in ("h", "m", "s"):
+        status, state = act(port, {"type": "key", "key": key})
+    assert state["pending"]["choosing_serve_length"] is True and state["labels"] == []
+    status, state = act(port, {"type": "key", "key": "l"})
+    assert state["pending"] is None and [(label["type_group"], label["type_detail"]) for label in state["labels"]] == [("serve", "serve_long")]
+    page = request(port, "GET", "/")[2].decode()
+    assert "data-keys='[\"s\",\"s\"]'" in page and "data-keys='[\"s\",\"l\"]'" in page
+    for key in ("c", "d", "k", "n", "t", "l", "v", "p"):
+        assert f'data-key="{key}"' in page, key
+    assert "SERVE, press s for SHORT or l for LONG (esc cancels)" in page

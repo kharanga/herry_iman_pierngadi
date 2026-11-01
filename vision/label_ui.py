@@ -18,46 +18,55 @@ import numpy as np
 import pandas as pd
 
 from vision.alignment import open_video, read_frame
-from vision.hits import HITS_DIR, output_paths
+from vision.hits import HITS_DIR
 from vision.label import (
+    DEFAULT_SEGMENT_SECONDS,
     KEY_HELP,
     LEFT_PANEL_WIDTH,
     PLAYER_KEYS,
+    RALLY_END_KEY,
+    RALLY_START_KEY,
+    SERVE_KEY,
+    SERVE_LENGTH_KEYS,
     STEP_KEYS,
     TYPE_KEYS,
     LabelState,
+    at_frame,
+    detector_tables,
     handle_key,
     initial_state,
     label_paths,
     load_tracks,
+    overlay_state,
     rally_containing,
     remembered,
     save_labels,
     scaled,
+    segment_seconds_of,
     video_last_frame_and_fps,
 )
-from vision.overlay import draw_tracking_overlay, frame_state
+from vision.overlay import draw_tracking_overlay
 from vision.players import PLAYERS_DIR
 
 DEFAULT_PORT = 8766
 CLIP_WIDTH = 480
 JPEG_QUALITY = 85
 CLIENT_GONE_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
-ACTION_KEYS = set(STEP_KEYS) | set(TYPE_KEYS) | set(PLAYER_KEYS) | {"[", "]", "h", "a", "x", "u", "r", "+", "-", "esc"}
+ACTION_KEYS = set(STEP_KEYS) | set(TYPE_KEYS) | set(PLAYER_KEYS) | set(SERVE_LENGTH_KEYS) | {SERVE_KEY, RALLY_START_KEY, RALLY_END_KEY, "[", "]", "h", "a", "x", "u", "r", "+", "-", "esc"}
 BROWSER_KEY_HELP = (KEY_HELP[0].replace("space play/pause left", "space play/pause the clip"),) + KEY_HELP[1:-1] + ("+ add rally here   - delete rally   1/2/3 loop speed   esc cancel   every change is saved at once",)
 
 
 def jump_to_frame(state: LabelState, frame: int) -> LabelState:
     frame = max(0, min(int(frame), state.last_frame))
     index = rally_containing(state.rallies, frame)
-    return replace(state, frame=frame, rally_index=state.rally_index if index is None else index, pending=None)
+    return at_frame(state, frame, rally_index=state.rally_index if index is None else index, pending=None)
 
 
 def go_to_rally_index(state: LabelState, index: int) -> LabelState:
     if not state.rallies:
         return state
     index = max(0, min(int(index), len(state.rallies) - 1))
-    return replace(state, rally_index=index, frame=state.rallies[index].start_frame, pending=None)
+    return at_frame(state, state.rallies[index].start_frame, rally_index=index, pending=None)
 
 
 def delete_label_at(state: LabelState, frame: int) -> LabelState:
@@ -112,7 +121,8 @@ def progress(state: LabelState) -> dict:
 
 
 def state_json(state: LabelState) -> dict:
-    span = state.rally
+    span = state.view
+    containing = rally_containing(state.rallies, state.frame)
     in_rally = (lambda frame: span is not None and span.start_frame <= frame <= span.end_frame)
     return {
         "frame": state.frame,
@@ -121,9 +131,13 @@ def state_json(state: LabelState) -> dict:
         "rally_index": state.rally_index,
         "rally": None if span is None else {"rally": span.rally, "start_frame": span.start_frame, "end_frame": span.end_frame},
         "rally_count": len(state.rallies),
-        "labels": [{"rally": label.rally, "frame": label.frame, "player": label.player, "type_group": label.type_group, "source": label.source} for label in state.labels if in_rally(label.frame)],
+        "labels": [{"rally": label.rally, "frame": label.frame, "player": label.player, "type_group": label.type_group, "type_detail": label.type_detail, "source": label.source} for label in state.labels if in_rally(label.frame)],
         "proposals": [{"frame": proposal.frame, "hitter": proposal.hitter} for proposal in state.proposals if in_rally(proposal.frame)],
-        "pending": None if state.pending is None else {"frame": state.pending.frame, "source": state.pending.source, "player": state.pending.player},
+        "segment_count": len(state.segments),
+        "blank": state.blank,
+        "user_rallies": [[rally.rally, rally.start_frame, rally.end_frame] for rally in state.rallies if span is not None and rally.end_frame >= span.start_frame and rally.start_frame <= span.end_frame] if state.segments else [],
+        "user_rally": None if containing is None else [state.rallies[containing].rally, state.rallies[containing].start_frame, state.rallies[containing].end_frame],
+        "pending": None if state.pending is None else {"frame": state.pending.frame, "source": state.pending.source, "player": state.pending.player, "choosing_serve_length": state.pending.choosing_serve_length},
         "dirty": state.dirty,
         "can_undo": bool(state.history),
         "progress": progress(state),
@@ -162,17 +176,15 @@ def clip_command(video_path: Path, start_frame: int, end_frame: int, fps: float,
 
 
 class LabelSession:
-    def __init__(self, video_path: Path, labels_file: Path, rallies_file: Path, players_dir: Path = PLAYERS_DIR, hits_dir: Path = HITS_DIR):
+    def __init__(self, video_path: Path, labels_file: Path, rallies_file: Path, players_dir: Path = PLAYERS_DIR, hits_dir: Path = HITS_DIR, blank: bool = False, segment_seconds: float | None = None):
         self.video_path = Path(video_path)
         self.labels_file, self.rallies_file = Path(labels_file), Path(rallies_file)
+        self.blank = blank
         last_frame, fps = video_last_frame_and_fps(self.video_path)
-        hits_file, rallies_source = output_paths(self.video_path, 0, last_frame, hits_dir)
-        if not hits_file.is_file() or not rallies_source.is_file():
-            raise FileNotFoundError(f"hit files not found: {hits_file}, {rallies_source} (run: python -m vision.hits {video_path} --start 0 --end {last_frame})")
-        self.hits_table, self.rallies_table = pd.read_csv(hits_file), pd.read_csv(rallies_source)
+        self.hits_table, self.rallies_table = detector_tables(self.video_path, last_frame, hits_dir, blank)
         labels = pd.read_csv(self.labels_file) if self.labels_file.is_file() else None
         label_rallies = pd.read_csv(self.rallies_file) if self.rallies_file.is_file() else None
-        self.state = initial_state(self.hits_table, self.rallies_table, last_frame, fps, labels, label_rallies)
+        self.state = initial_state(self.hits_table, self.rallies_table, last_frame, fps, labels, label_rallies, segment_seconds, blank)
         self.tracks = load_tracks(self.video_path, 0, last_frame, players_dir)
         self.lock = threading.Lock()
         self.clip_dir = Path(tempfile.mkdtemp(prefix="label_ui_clips_"))
@@ -198,7 +210,7 @@ class LabelSession:
         if frame is None:
             raise ValueError(f"could not read frame {frame_index}")
         if self.tracks is not None:
-            frame = draw_tracking_overlay(frame, frame_state(int(frame_index), self.tracks[0], self.tracks[1], self.hits_table, self.rallies_table))
+            frame = draw_tracking_overlay(frame, overlay_state(int(frame_index), self.tracks, self.hits_table, self.rallies_table, self.blank))
         ok, encoded = cv2.imencode(".jpg", scaled(frame, LEFT_PANEL_WIDTH), [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         return encoded.tobytes()
 
@@ -336,6 +348,8 @@ button{background:#333;color:#eee;border:1px solid #555;border-radius:4px;paddin
 button:hover{background:#444}.pending{color:#f6f;font-weight:bold}
 table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px solid #333}tr.row:hover{background:#222;cursor:pointer}
 .small{color:#aaa;font-size:12px}
+.serveprompt{background:#f6f;color:#111;padding:2px 8px;border-radius:4px}
+.rblock{position:absolute;top:0;height:44px;background:#2f5f3f}
 </style></head><body>
 <header><b>Label hits</b><span id="status"></span><span id="progress" class="small"></span><span id="pending" class="pending"></span></header>
 <main>
@@ -343,16 +357,17 @@ table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px s
 <div id="timeline" title="click to jump"></div>
 <div id="buttons">
 <div><button data-key="<">-10</button><button data-key=",">-1</button><button data-key=".">+1</button><button data-key=">">+10</button>
-<button data-key="[">prev rally</button><button data-key="]">next rally</button></div>
-<div><button data-key="h">hit (h)</button><button data-key="a">accept proposal (a)</button><button data-key="m">me (m)</button><button data-key="o">opp (o)</button>
-<button data-key="s">serve</button><button data-key="c">clear</button><button data-key="d">drop</button><button data-key="k">smash</button>
-<button data-key="n">net</button><button data-key="l">lift</button><button data-key="v">drive</button><button data-key="?">unknown</button></div>
-<div><button data-key="x">delete nearest (x)</button><button data-key="u">undo (u)</button><button data-key="r">rally start/end here (r)</button>
-<button data-key="+">add rally (+)</button><button data-key="-">remove rally (-)</button><button data-key="esc">cancel (esc)</button></div>
+<button data-key="[" id="prev">prev rally</button><button data-key="]" id="next">next rally</button></div>
+<div><button data-key="b">rally starts here (b)</button><button data-key="e">rally ends here (e)</button></div>
+<div><button data-key="h">hit (h)</button><button data-key="a" class="detector">accept proposal (a)</button><button data-key="m">me (m)</button><button data-key="o">opp (o)</button>
+<button data-keys='["s","s"]'>serve short (s s)</button><button data-keys='["s","l"]'>serve long (s l)</button><button data-key="c">clear (c)</button><button data-key="d">drop (d)</button><button data-key="k">smash (k)</button>
+<button data-key="n">net (n)</button><button data-key="t">return net (t)</button><button data-key="l">lift (l)</button><button data-key="v">drive (v)</button><button data-key="p">push (p)</button><button data-key="?">unknown (?)</button></div>
+<div><button data-key="x">delete nearest (x)</button><button data-key="u">undo (u)</button><button data-key="r" class="detector">rally start/end here (r)</button>
+<button data-key="+" class="detector">add rally (+)</button><button data-key="-">remove rally (-)</button><button data-key="esc">cancel (esc)</button></div>
 <div class="small" id="help"></div></div></section>
 <section id="right"><video id="clip" muted loop playsinline autoplay></video><div id="cliptrack"></div>
 <div>loop speed <button data-speed="0.25">0.25x</button><button data-speed="0.5">0.5x</button><button data-speed="1">1x</button></div>
-<h4>Hits in this rally</h4><table id="hits"></table></section>
+<h4 id="hitshead">Hits in this rally</h4><table id="hits"></table></section>
 </main>
 <script>
 let state=null, speed=0.5, clipKey="";
@@ -363,19 +378,27 @@ async function post(action){const r=await fetch("/api/action",{method:"POST",bod
 function x(frame,width){const s=state.rally;return s?Math.round((frame-s.start_frame)/Math.max(s.end_frame-s.start_frame,1)*(width-2)):0;}
 function render(s){if(s.error){alert(s.error);return;}state=s;
  $("frame").src="/frame.jpg?f="+s.frame;
- const r=s.rally;$("status").textContent="f"+s.frame+"  "+(r?"rally "+r.rally+" of "+s.rally_count+" ["+r.start_frame+"-"+r.end_frame+"]":"no rally")+(s.dirty?" (unsaved)":" (saved)");
+ const r=s.rally,t0=s.frame/s.fps,clock=Math.floor(t0/60)+":"+String(Math.floor(t0%60)).padStart(2,"0"),u=s.user_rally;
+ const where=s.segment_count?"segment "+r.rally+" of "+s.segment_count+" ["+r.start_frame+"-"+r.end_frame+"]  "+(u?"rally "+u[0]+" ["+u[1]+"-"+u[2]+"]":"no rally here")+" ("+s.rally_count+" rallies)":(r?"rally "+r.rally+" of "+s.rally_count+" ["+r.start_frame+"-"+r.end_frame+"]":"no rally");
+ $("status").textContent=(s.blank?"BLANK  ":"")+"f"+s.frame+" ("+clock+")  "+where+(s.dirty?" (unsaved)":" (saved)");
+ document.querySelectorAll("button.detector").forEach(b=>b.hidden=s.blank);
+ $("hitshead").textContent=s.segment_count?"Hits in this segment":"Hits in this rally";
+ $("prev").textContent=s.segment_count?"prev segment ([)":"prev rally";$("next").textContent=s.segment_count?"next segment (])":"next rally";
  $("progress").textContent=s.progress.rallies_labelled+" of "+s.progress.rallies+" rallies labelled, "+s.progress.hits_labelled+" hits";
- $("pending").textContent=s.pending?("HIT at f"+s.pending.frame+(s.pending.player?" by "+s.pending.player+": pick a type":": pick me or opp")):"";
+ const p=s.pending;$("pending").className=p&&p.choosing_serve_length?"pending serveprompt":"pending";
+ $("pending").textContent=p?("HIT at f"+p.frame+(!p.player?": pick me or opp":p.choosing_serve_length?" by "+p.player+": SERVE, press s for SHORT or l for LONG (esc cancels)":" by "+p.player+": pick a type")):"";
  const t=$("timeline"),w=t.clientWidth;t.innerHTML="";
+ s.user_rallies.forEach(u=>{const d=document.createElement("div");d.className="rblock";const a=x(Math.max(u[1],r.start_frame),w),b=x(Math.min(u[2],r.end_frame),w);d.style.left=a+"px";d.style.width=Math.max(2,b-a)+"px";d.title="rally "+u[0]+" ["+u[1]+"-"+u[2]+"]";t.appendChild(d);});
  s.proposals.forEach(p=>{const d=document.createElement("div");d.className="tick";d.style.left=x(p.frame,w)+"px";d.title="proposal f"+p.frame+" "+p.hitter;t.appendChild(d);});
- s.labels.forEach(l=>{const d=document.createElement("div");d.className="lab";d.style.left=x(l.frame,w)+"px";d.title=l.frame+" "+l.player+" "+l.type_group;t.appendChild(d);});
+ s.labels.forEach(l=>{const d=document.createElement("div");d.className="lab";d.style.left=x(l.frame,w)+"px";d.title=l.frame+" "+l.player+" "+(l.type_detail||l.type_group);t.appendChild(d);});
  if(r&&s.frame>=r.start_frame&&s.frame<=r.end_frame){const c=document.createElement("div");c.className="cur";c.style.left=x(s.frame,w)+"px";t.appendChild(c);}
- const rows=s.labels.map(l=>"<tr class='row' data-frame='"+l.frame+"'><td>f"+l.frame+"</td><td>"+l.player+"</td><td>"+l.type_group+"</td><td class='small'>"+l.source+"</td><td><button data-delete='"+l.frame+"'>delete</button></td></tr>");
+ const rows=s.labels.map(l=>"<tr class='row' data-frame='"+l.frame+"'><td>f"+l.frame+"</td><td>"+l.player+"</td><td>"+(l.type_detail||l.type_group)+"</td><td class='small'>"+l.source+"</td><td><button data-delete='"+l.frame+"'>delete</button></td></tr>");
  $("hits").innerHTML=rows.join("")||"<tr><td class='small'>none yet</td></tr>";
  if(r){const key=r.start_frame+"-"+r.end_frame;if(key!==clipKey){clipKey=key;$("clip").src="/clip.mp4?start="+r.start_frame+"&end="+r.end_frame;$("clip").playbackRate=speed;}}
 }
 $("timeline").addEventListener("click",e=>{if(!state||!state.rally)return;const r=state.rally,w=e.currentTarget.clientWidth;post({type:"jump",frame:Math.round(r.start_frame+e.offsetX/(w-2)*(r.end_frame-r.start_frame))});});
-document.addEventListener("click",e=>{const b=e.target;if(b.dataset.key)post({type:"key",key:b.dataset.key});
+document.addEventListener("click",async e=>{const b=e.target;if(b.dataset.key)post({type:"key",key:b.dataset.key});
+ if(b.dataset.keys){for(const k of JSON.parse(b.dataset.keys))await post({type:"key",key:k});}
  if(b.dataset.speed){speed=parseFloat(b.dataset.speed);$("clip").playbackRate=speed;}
  if(b.dataset.delete){e.stopPropagation();post({type:"delete",frame:parseInt(b.dataset.delete)});return;}
  const row=b.closest&&b.closest("tr.row");if(row&&!b.dataset.delete)post({type:"jump",frame:parseInt(row.dataset.frame)});});
@@ -398,6 +421,8 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--no-browser", action="store_true", help="don't open the browser")
     parser.add_argument("--players-dir", type=Path, default=PLAYERS_DIR, help="root of the tracking files for the overlay (default data/players)")
     parser.add_argument("--hits-dir", type=Path, default=HITS_DIR, help="root of the hits/rallies files (default data/hits)")
+    parser.add_argument("--blank", action="store_true", help="show nothing the detector inferred: no detected rallies, no hit proposals, no inferred serves, no hit flash; no hits file needed. Tracking boxes stay; you mark rallies with b / e and move by --segment-seconds segments")
+    parser.add_argument("--segment-seconds", type=float, help=f"move through the video in back-to-back segments of this many seconds ([ ] previous/next; default {DEFAULT_SEGMENT_SECONDS:g} with --blank); segments are never saved")
     return parser.parse_args(arguments)
 
 
@@ -408,7 +433,7 @@ def main(arguments: list[str]) -> int:
         labels_file = Path(parsed.labels)
         rallies_file = labels_file.with_name(labels_file.stem + "_rallies.csv")
     try:
-        session = LabelSession(parsed.video, labels_file, rallies_file, parsed.players_dir, parsed.hits_dir)
+        session = LabelSession(parsed.video, labels_file, rallies_file, parsed.players_dir, parsed.hits_dir, parsed.blank, segment_seconds_of(parsed.blank, parsed.segment_seconds))
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

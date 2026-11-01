@@ -149,7 +149,7 @@ the zones and `is_cross`.
 >>> {key: row[key] for key in ("player", "hit_x", "hit_y", "landing_x", "landing_y", "opponent_y", "hit_zone", "landing_zone", "is_cross")}
 {'player': 'me', 'hit_x': 3.0, 'hit_y': 2.0, 'landing_x': 2.5, 'landing_y': 10.0, 'opponent_y': 11.0, 'hit_zone': 'rear_backhand', 'landing_zone': 'mid_forehand', 'is_cross': False}
 >>> len(row), row["source"], row["type_group"], row["roundscore_me"]
-(28, 'own', None, None)
+(30, 'own', None, None)
 
 ```
 
@@ -222,7 +222,7 @@ pandas types (`Int64`, `float64`, `boolean`, `object`).
 ('Int64', 'float64', 'boolean', 'object')
 >>> frame = schema_frame(rows)
 >>> frame.shape, list(frame.columns[:4])
-((2, 28), ['source', 'match_id', 'set_no', 'rally'])
+((2, 30), ['source', 'match_id', 'set_no', 'rally'])
 >>> frame.dtypes[["set_no", "fps", "player", "backhand", "is_cross"]].astype(str).to_dict()
 {'set_no': 'Int64', 'fps': 'float64', 'player': 'object', 'backhand': 'boolean', 'is_cross': 'boolean'}
 

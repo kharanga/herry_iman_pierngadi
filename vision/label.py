@@ -10,20 +10,26 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from analytics.shot_types import TYPE_GROUP_BY_TYPE_DETAIL
 from vision.alignment import open_video, read_frame
 from vision.court import video_id, window_was_closed
-from vision.hits import HITS_DIR, output_paths
+from vision.hits import HIT_COLUMNS, HITS_DIR, output_paths
+from vision.hits import RALLY_COLUMNS as DETECTED_RALLY_COLUMNS
 from vision.overlay import draw_tracking_overlay, frame_state, put_text
 from vision.players import PLAYERS, PLAYERS_DIR, boxes_path
 from vision.players import positions_path as player_positions_path
 
 LABELS_DIR = Path("data/labels")
-LABEL_COLUMNS = ["rally", "frame_num", "player", "type_group", "source"]
+LABEL_COLUMNS = ["rally", "frame_num", "player", "type_group", "type_detail", "source"]
 RALLY_COLUMNS = ["rally", "start_frame", "end_frame"]
 SOURCE_HAND, SOURCE_ACCEPTED = "hand", "accepted"
-TYPE_KEYS = {"s": "serve", "c": "clear", "d": "drop", "k": "smash", "n": "net", "l": "lift", "v": "drive", "?": "unknown"}
+TYPE_KEYS = {"c": "clear", "d": "drop", "k": "smash", "n": "net", "t": "return_net", "l": "lift", "v": "drive", "p": "push", "?": "unknown"}
+SERVE_KEY = "s"
+SERVE_LENGTH_KEYS = {"s": "serve_short", "l": "serve_long"}
 PLAYER_KEYS = {"m": "me", "o": "opp"}
 STEP_KEYS = {",": -1, ".": 1, "<": -10, ">": 10}
+RALLY_START_KEY, RALLY_END_KEY = "b", "e"
+DEFAULT_SEGMENT_SECONDS = 60.0
 ARROW_KEY_CODES = {2: -1, 3: 1, 81: -1, 83: 1}
 NEW_RALLY_SECONDS = 2.0
 PROPOSAL_MAX_DISTANCE_FRAMES = 60
@@ -33,14 +39,16 @@ LOOP_MAX_FRAMES = 900
 TIMELINE_HEIGHT = 48
 KEY_HELP = (
     "space play/pause left   , . one frame   < > ten frames (arrows too)   [ ] previous/next rally",
-    "h hit here, then m/o hitter + s serve c clear d drop k smash n net l lift v drive ? unknown",
+    "h hit here, then m/o hitter + s serve (then s short / l long) c clear d drop k smash n net t return net l lift v drive p push ? unknown",
     "a accept nearest proposal (then hitter + type)   x delete nearest label   u undo   r rally start/end here",
+    "b rally starts here   e rally ends here   (with --blank: [ ] previous/next segment)",
     "+ add rally here   - delete rally   1/2/3 loop speed   w write   q write and quit   esc quit without writing",
 )
 COLOR_LABEL_BGR = (0, 220, 0)
 COLOR_PROPOSAL_BGR = (0, 200, 255)
 COLOR_CURSOR_BGR = (255, 255, 255)
 COLOR_PENDING_BGR = (255, 0, 255)
+COLOR_RALLY_BGR = (60, 100, 60)
 
 
 @dataclass(frozen=True)
@@ -50,6 +58,7 @@ class HitLabel:
     player: str
     type_group: str
     source: str
+    type_detail: str = ""
 
 
 @dataclass(frozen=True)
@@ -70,6 +79,7 @@ class PendingHit:
     frame: int
     source: str
     player: str | None = None
+    choosing_serve_length: bool = False
 
 
 @dataclass(frozen=True)
@@ -84,10 +94,17 @@ class LabelState:
     pending: PendingHit | None = None
     history: tuple[tuple[tuple[HitLabel, ...], tuple[RallySpan, ...]], ...] = ()
     dirty: bool = False
+    segments: tuple[RallySpan, ...] = ()
+    segment_index: int = 0
+    blank: bool = False
 
     @property
     def rally(self) -> RallySpan | None:
         return self.rallies[self.rally_index] if self.rallies else None
+
+    @property
+    def view(self) -> RallySpan | None:
+        return self.segments[self.segment_index] if self.segments else self.rally
 
 
 def renumbered(rallies) -> tuple[RallySpan, ...]:
@@ -119,15 +136,41 @@ def clamp_frame(frame: int, last_frame: int) -> int:
     return max(0, min(int(frame), int(last_frame)))
 
 
+def segment_spans(last_frame: int, fps: float, segment_seconds: float = DEFAULT_SEGMENT_SECONDS) -> tuple[RallySpan, ...]:
+    length = max(1, int(round(segment_seconds * fps)))
+    return tuple(RallySpan(number, start, min(start + length, last_frame + 1) - 1) for number, start in enumerate(range(0, last_frame + 1, length), start=1))
+
+
+def following_frame(state: LabelState) -> LabelState:
+    if not state.segments:
+        return state
+    segment_index = rally_containing(state.segments, state.frame)
+    rally_index = rally_containing(state.rallies, state.frame)
+    return replace(
+        state,
+        segment_index=state.segment_index if segment_index is None else segment_index,
+        rally_index=state.rally_index if rally_index is None else rally_index,
+    )
+
+
+def at_frame(state: LabelState, frame: int, **changes) -> LabelState:
+    return following_frame(replace(state, frame=clamp_frame(frame, state.last_frame), **changes))
+
+
 def step(state: LabelState, frames: int) -> LabelState:
-    return replace(state, frame=clamp_frame(state.frame + frames, state.last_frame))
+    return at_frame(state, state.frame + frames)
+
+
+def go_to_segment(state: LabelState, segment_index: int) -> LabelState:
+    index = max(0, min(segment_index, len(state.segments) - 1))
+    return at_frame(state, state.segments[index].start_frame, segment_index=index, pending=None)
 
 
 def go_to_rally(state: LabelState, rally_index: int) -> LabelState:
     if not state.rallies:
         return state
     index = max(0, min(rally_index, len(state.rallies) - 1))
-    return replace(state, rally_index=index, frame=state.rallies[index].start_frame, pending=None)
+    return at_frame(state, state.rallies[index].start_frame, rally_index=index, pending=None)
 
 
 def nearest_index(frames, frame: int) -> int | None:
@@ -157,7 +200,7 @@ def accept_nearest_proposal(state: LabelState) -> LabelState:
     proposal = nearest_proposal(state)
     if proposal is None:
         return state
-    return replace(state, frame=proposal.frame, pending=PendingHit(proposal.frame, SOURCE_ACCEPTED, proposal.hitter))
+    return at_frame(state, proposal.frame, pending=PendingHit(proposal.frame, SOURCE_ACCEPTED, proposal.hitter))
 
 
 def set_pending_player(state: LabelState, player: str) -> LabelState:
@@ -171,12 +214,39 @@ def with_label(state: LabelState, label: HitLabel) -> LabelState:
     return replace(remembered(state), labels=tuple(sorted(others + (label,), key=lambda item: item.frame)), pending=None, dirty=True)
 
 
-def set_pending_type(state: LabelState, type_group: str) -> LabelState:
+def group_and_detail(type_name: str) -> tuple[str, str]:
+    if type_name in TYPE_GROUP_BY_TYPE_DETAIL:
+        return TYPE_GROUP_BY_TYPE_DETAIL[type_name], type_name
+    return type_name, ""
+
+
+def set_pending_type(state: LabelState, type_name: str) -> LabelState:
     if state.pending is None or state.pending.player is None:
         return state
     rally_index = rally_containing(state.rallies, state.pending.frame)
-    rally_number = state.rallies[rally_index].rally if rally_index is not None else (state.rally.rally if state.rally else 0)
-    return with_label(state, HitLabel(rally_number, state.pending.frame, state.pending.player, type_group, state.pending.source))
+    rally_number = state.rallies[rally_index].rally if rally_index is not None else (state.rally.rally if state.rally and not state.segments else 0)
+    type_group, type_detail = group_and_detail(type_name)
+    return with_label(state, HitLabel(rally_number, state.pending.frame, state.pending.player, type_group, state.pending.source, type_detail))
+
+
+def ask_serve_length(state: LabelState) -> LabelState:
+    if state.pending is None or state.pending.player is None:
+        return state
+    return replace(state, pending=replace(state.pending, choosing_serve_length=True))
+
+
+def pending_key(state: LabelState, key: str) -> LabelState:
+    if key == "esc":
+        return cancel_pending(state)
+    if state.pending.choosing_serve_length:
+        return set_pending_type(state, SERVE_LENGTH_KEYS[key]) if key in SERVE_LENGTH_KEYS else state
+    if key in PLAYER_KEYS:
+        return set_pending_player(state, PLAYER_KEYS[key])
+    if key == SERVE_KEY:
+        return ask_serve_length(state)
+    if key in TYPE_KEYS:
+        return set_pending_type(state, TYPE_KEYS[key])
+    return state
 
 
 def cancel_pending(state: LabelState) -> LabelState:
@@ -222,39 +292,85 @@ def remove_rally(state: LabelState) -> LabelState:
         return state
     rallies = renumbered(state.rallies[: state.rally_index] + state.rallies[state.rally_index + 1 :])
     index = min(state.rally_index, max(len(rallies) - 1, 0))
-    frame = rallies[index].start_frame if rallies else state.frame
-    return replace(remembered(state), rallies=rallies, labels=labels_relabelled(state.labels, rallies), rally_index=index, frame=frame, pending=None, dirty=True)
+    frame = rallies[index].start_frame if rallies and not state.segments else state.frame
+    return at_frame(remembered(state), frame, rallies=rallies, labels=labels_relabelled(state.labels, rallies), rally_index=index, pending=None, dirty=True)
+
+
+def with_rallies(state: LabelState, rallies, focus_frame: int) -> LabelState:
+    rallies = renumbered(rallies)
+    index = rally_containing(rallies, focus_frame)
+    return replace(remembered(state), rallies=rallies, labels=labels_relabelled(state.labels, rallies), rally_index=0 if index is None else index, dirty=True)
+
+
+def mark_rally_start(state: LabelState) -> LabelState:
+    frame = state.frame
+    index = rally_containing(state.rallies, frame)
+    if index is not None:
+        moved = replace(state.rallies[index], start_frame=frame)
+        return with_rallies(state, state.rallies[:index] + (moved,) + state.rallies[index + 1 :], frame)
+    later_starts = [span.start_frame for span in state.rallies if span.start_frame > frame]
+    end_frame = min(later_starts) - 1 if later_starts else state.last_frame
+    return with_rallies(state, state.rallies + (RallySpan(0, frame, end_frame),), frame)
+
+
+def mark_rally_end(state: LabelState) -> LabelState:
+    frame = state.frame
+    index = rally_containing(state.rallies, frame)
+    if index is None:
+        earlier = [position for position, span in enumerate(state.rallies) if span.end_frame < frame]
+        if not earlier:
+            return state
+        index = max(earlier, key=lambda position: state.rallies[position].end_frame)
+    shortened = replace(state.rallies[index], end_frame=frame)
+    return with_rallies(state, state.rallies[:index] + (shortened,) + state.rallies[index + 1 :], frame)
 
 
 def handle_key(state: LabelState, key: str) -> LabelState:
     if state.pending is not None:
-        if key in PLAYER_KEYS:
-            return set_pending_player(state, PLAYER_KEYS[key])
-        if key in TYPE_KEYS:
-            return set_pending_type(state, TYPE_KEYS[key])
-        if key == "esc":
-            return cancel_pending(state)
-        return state
+        return pending_key(state, key)
     if key in STEP_KEYS:
         return step(state, STEP_KEYS[key])
-    if key == "[":
-        return go_to_rally(state, state.rally_index - 1)
-    if key == "]":
-        return go_to_rally(state, state.rally_index + 1)
-    actions = {"h": begin_hit, "a": accept_nearest_proposal, "x": delete_nearest_label, "u": undo, "r": set_rally_bound, "+": add_rally, "-": remove_rally}
+    if key in ("[", "]"):
+        offset = -1 if key == "[" else 1
+        return go_to_segment(state, state.segment_index + offset) if state.segments else go_to_rally(state, state.rally_index + offset)
+    if state.segments and key in ("r", "-"):
+        index = rally_containing(state.rallies, state.frame)
+        if index is None:
+            return state
+        state = replace(state, rally_index=index)
+    actions = {
+        "h": begin_hit,
+        "a": accept_nearest_proposal,
+        "x": delete_nearest_label,
+        "u": undo,
+        "r": set_rally_bound,
+        "+": add_rally,
+        "-": remove_rally,
+        RALLY_START_KEY: mark_rally_start,
+        RALLY_END_KEY: mark_rally_end,
+    }
     return actions[key](state) if key in actions else state
 
 
 def labels_frame(state: LabelState) -> pd.DataFrame:
-    return pd.DataFrame([(label.rally, label.frame, label.player, label.type_group, label.source) for label in state.labels], columns=LABEL_COLUMNS)
+    return pd.DataFrame([(label.rally, label.frame, label.player, label.type_group, label.type_detail, label.source) for label in state.labels], columns=LABEL_COLUMNS)
 
 
 def rallies_frame(state: LabelState) -> pd.DataFrame:
     return pd.DataFrame([(span.rally, span.start_frame, span.end_frame) for span in state.rallies], columns=RALLY_COLUMNS)
 
 
+def detail_of(value) -> str:
+    return "" if value is None or pd.isna(value) else str(value)
+
+
 def labels_from_frame(table: pd.DataFrame) -> tuple[HitLabel, ...]:
-    return tuple(sorted((HitLabel(int(row.rally), int(row.frame_num), str(row.player), str(row.type_group), str(row.source)) for row in table.itertuples()), key=lambda label: label.frame))
+    details = table["type_detail"] if "type_detail" in table.columns else pd.Series([""] * len(table), index=table.index)
+    labels = (
+        HitLabel(int(row.rally), int(row.frame_num), str(row.player), str(row.type_group), str(row.source), detail_of(detail))
+        for row, detail in zip(table.itertuples(), details)
+    )
+    return tuple(sorted(labels, key=lambda label: label.frame))
 
 
 def rallies_from_frame(table: pd.DataFrame) -> tuple[RallySpan, ...]:
@@ -286,11 +402,51 @@ def save_labels(state: LabelState, labels_file: Path, rallies_file: Path) -> Lab
     return replace(state, dirty=False)
 
 
-def initial_state(hits: pd.DataFrame, rallies: pd.DataFrame, last_frame: int, fps: float, labels: pd.DataFrame | None = None, label_rallies: pd.DataFrame | None = None) -> LabelState:
+def initial_state(
+    hits: pd.DataFrame,
+    rallies: pd.DataFrame,
+    last_frame: int,
+    fps: float,
+    labels: pd.DataFrame | None = None,
+    label_rallies: pd.DataFrame | None = None,
+    segment_seconds: float | None = None,
+    blank: bool = False,
+) -> LabelState:
     spans = rallies_from_frame(label_rallies) if label_rallies is not None and len(label_rallies) else rallies_from_frame(rallies)
     known = labels_from_frame(labels) if labels is not None else ()
-    state = LabelState(known, spans, proposals_from_hits(hits), 0, spans[0].start_frame if spans else 0, int(last_frame), float(fps))
-    return state
+    segments = segment_spans(int(last_frame), float(fps), segment_seconds) if segment_seconds else ()
+    first_frame = 0 if segments else (spans[0].start_frame if spans else 0)
+    return following_frame(LabelState(known, spans, proposals_from_hits(hits), 0, first_frame, int(last_frame), float(fps), segments=segments, blank=blank))
+
+
+def pending_prompt(pending: PendingHit) -> str:
+    if pending.player is None:
+        return ": press m/o"
+    if pending.choosing_serve_length:
+        return f" by {pending.player}: SERVE, press s for SHORT or l for LONG (esc cancels)"
+    return f" by {pending.player}: press a type key"
+
+
+def detector_tables(video_path: Path, last_frame: int, hits_dir: Path = HITS_DIR, blank: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if blank:
+        return pd.DataFrame(columns=HIT_COLUMNS), pd.DataFrame(columns=DETECTED_RALLY_COLUMNS)
+    hits_file, rallies_source = output_paths(video_path, 0, last_frame, hits_dir)
+    if not hits_file.is_file() or not rallies_source.is_file():
+        raise FileNotFoundError(f"hit files not found: {hits_file}, {rallies_source} (run: python -m vision.hits {video_path} --start 0 --end {last_frame}, or label with --blank)")
+    return pd.read_csv(hits_file), pd.read_csv(rallies_source)
+
+
+def overlay_state(frame_index: int, tracks: tuple[pd.DataFrame, pd.DataFrame], hits: pd.DataFrame, rallies: pd.DataFrame, blank: bool = False):
+    state = frame_state(frame_index, tracks[0], tracks[1], hits, rallies)
+    return replace(state, rally_label="", shot_count=None) if blank else state
+
+
+def segment_seconds_of(blank: bool, segment_seconds: float | None) -> float | None:
+    if segment_seconds is not None:
+        if segment_seconds <= 0:
+            raise ValueError(f"--segment-seconds must be positive, got {segment_seconds:g}")
+        return segment_seconds
+    return DEFAULT_SEGMENT_SECONDS if blank else None
 
 
 def video_last_frame_and_fps(video_path: Path) -> tuple[int, float]:
@@ -316,10 +472,16 @@ def timeline_x(frame: int, span: RallySpan, width: int) -> int:
 
 def draw_timeline(state: LabelState, width: int, height: int = TIMELINE_HEIGHT) -> np.ndarray:
     bar = np.full((height, width, 3), (40, 40, 40), dtype=np.uint8)
-    span = state.rally
+    span = state.view
     if span is None:
         put_text(bar, "no rally: press + to add one here", (8, 30), 0.6)
         return bar
+    if state.segments:
+        for rally in state.rallies:
+            if rally.end_frame >= span.start_frame and rally.start_frame <= span.end_frame:
+                left_x = timeline_x(max(rally.start_frame, span.start_frame), span, width)
+                right_x = timeline_x(min(rally.end_frame, span.end_frame), span, width)
+                cv2.rectangle(bar, (left_x, 2), (max(right_x, left_x + 1), height - 3), COLOR_RALLY_BGR, -1)
     cv2.line(bar, (0, height // 2), (width - 1, height // 2), (120, 120, 120), 1)
     for proposal in state.proposals:
         if span.start_frame <= proposal.frame <= span.end_frame:
@@ -336,14 +498,21 @@ def draw_timeline(state: LabelState, width: int, height: int = TIMELINE_HEIGHT) 
     return bar
 
 
+def segment_text(state: LabelState) -> str:
+    segment = state.view
+    index = rally_containing(state.rallies, state.frame)
+    rally = f"rally {state.rallies[index].rally} [{state.rallies[index].start_frame}-{state.rallies[index].end_frame}]" if index is not None else "no rally here"
+    return f"segment {segment.rally} of {len(state.segments)} [{segment.start_frame}-{segment.end_frame}]  {rally} ({len(state.rallies)} rallies)"
+
+
 def status_line(state: LabelState) -> str:
-    span = state.rally
-    rally_text = f"rally {span.rally} of {len(state.rallies)} [{span.start_frame}-{span.end_frame}]" if span else "no rally"
+    span = state.view
+    rally_text = segment_text(state) if state.segments else (f"rally {span.rally} of {len(state.rallies)} [{span.start_frame}-{span.end_frame}]" if span else "no rally")
     inside = [label for label in state.labels if span and span.start_frame <= label.frame <= span.end_frame]
     pending = ""
     if state.pending is not None:
-        pending = f"   HIT at f{state.pending.frame}: press m/o" if state.pending.player is None else f"   HIT at f{state.pending.frame} by {state.pending.player}: press a type key"
-    return f"f{state.frame}  {rally_text}  labels in rally: {len(inside)}  total: {len(state.labels)}{'  (unsaved)' if state.dirty else ''}{pending}"
+        pending = f"   HIT at f{state.pending.frame}{pending_prompt(state.pending)}"
+    return f"f{state.frame}  {rally_text}  labels in {'segment' if state.segments else 'rally'}: {len(inside)}  total: {len(state.labels)}{'  (unsaved)' if state.dirty else ''}{pending}"
 
 
 def compose_panels(left: np.ndarray, right: np.ndarray, timeline: np.ndarray, status: str, help_lines=KEY_HELP) -> np.ndarray:
@@ -430,17 +599,15 @@ def label_video(
     players_dir: Path = PLAYERS_DIR,
     hits_dir: Path = HITS_DIR,
     window_name: str = "label hits",
+    blank: bool = False,
+    segment_seconds: float | None = None,
 ) -> int:
     last_frame, fps = video_last_frame_and_fps(video_path)
-    hits_file, rallies_source = output_paths(video_path, 0, last_frame, hits_dir)
-    if not hits_file.is_file() or not rallies_source.is_file():
-        raise FileNotFoundError(f"hit files not found: {hits_file}, {rallies_source} (run: python -m vision.hits {video_path} --start 0 --end {last_frame})")
+    hits_table, rallies_table = detector_tables(video_path, last_frame, hits_dir, blank)
     labels = pd.read_csv(labels_file) if Path(labels_file).is_file() else None
     label_rallies = pd.read_csv(rallies_file) if Path(rallies_file).is_file() else None
-    state = initial_state(pd.read_csv(hits_file), pd.read_csv(rallies_source), last_frame, fps, labels, label_rallies)
+    state = initial_state(hits_table, rallies_table, last_frame, fps, labels, label_rallies, segment_seconds, blank)
     tracks = load_tracks(video_path, 0, last_frame, players_dir)
-    hits_table = pd.read_csv(hits_file)
-    rallies_table = pd.read_csv(rallies_source)
     for line in KEY_HELP:
         print(line)
     capture = open_video(Path(video_path))
@@ -450,8 +617,8 @@ def label_video(
     left_cache: tuple[int, np.ndarray] | None = None
     try:
         while True:
-            if state.rally != loop_rally:
-                loop_rally = state.rally
+            if state.view != loop_rally:
+                loop_rally = state.view
                 loop_frames, loop_indices = read_loop_frames(capture, loop_rally) if loop_rally else ([], [])
                 loop_started = time.monotonic()
             if left_cache is None or left_cache[0] != state.frame:
@@ -459,7 +626,7 @@ def label_video(
                 if frame is None:
                     frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
                 if tracks is not None:
-                    frame = draw_tracking_overlay(frame, frame_state(state.frame, tracks[0], tracks[1], hits_table, rallies_table))
+                    frame = draw_tracking_overlay(frame, overlay_state(state.frame, tracks, hits_table, rallies_table, blank))
                 left_cache = (state.frame, scaled(frame, LEFT_PANEL_WIDTH))
             left = left_cache[1].copy()
             if state.pending is not None:
@@ -504,6 +671,8 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--labels", type=Path, help="labels CSV to read and write (default data/labels/<video id>.csv; the rallies file sits next to it)")
     parser.add_argument("--players-dir", type=Path, default=PLAYERS_DIR, help="root of the player tracking files for the overlay (default data/players)")
     parser.add_argument("--hits-dir", type=Path, default=HITS_DIR, help="root of the hits/rallies files that give the rallies and proposals (default data/hits)")
+    parser.add_argument("--blank", action="store_true", help="show nothing the detector inferred (no detected rallies, proposals, inferred serves or hit flash); no hits file needed; mark rallies with b / e")
+    parser.add_argument("--segment-seconds", type=float, help=f"move through the video in back-to-back segments of this many seconds (default {DEFAULT_SEGMENT_SECONDS:g} with --blank); never saved")
     return parser.parse_args(arguments)
 
 
@@ -514,7 +683,10 @@ def main(arguments: list[str]) -> int:
         labels_file = Path(parsed.labels)
         rallies_file = labels_file.with_name(labels_file.stem + "_rallies.csv")
     try:
-        return label_video(parsed.video, labels_file, rallies_file, parsed.players_dir, parsed.hits_dir, window_name=f"label hits: {parsed.match_id}")
+        return label_video(
+            parsed.video, labels_file, rallies_file, parsed.players_dir, parsed.hits_dir, window_name=f"label hits: {parsed.match_id}",
+            blank=parsed.blank, segment_seconds=segment_seconds_of(parsed.blank, parsed.segment_seconds),
+        )
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
