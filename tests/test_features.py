@@ -331,9 +331,9 @@ def test_shipped_rows_keep_the_contract(shipped_own_rows):
 
 
 PLAYER_ONLY_VERSION = {
-    "accuracy": (92, 116), "hit": 1.05, "landing": 1.06, "zones": (0.699, 0.700, 0.922),
-    "groups": {"net": (36, 38), "smash": (14, 15), "clear": (6, 7), "lift": (13, 19), "drive": (11, 19), "drop": (12, 16), "serve": (0, 2)},
-    "by_set": {"sets 1-2": (60, 74), "set 3": (32, 42)},
+    "accuracy": (90, 116), "hit": 1.05, "landing": 1.06, "zones": (0.699, 0.700, 0.922),
+    "groups": {"net": (36, 38), "smash": (14, 15), "clear": (6, 7), "lift": (14, 19), "drive": (10, 19), "drop": (10, 16), "serve": (0, 2)},
+    "by_set": {"sets 1-2": (61, 74), "set 3": (29, 42)},
 }
 
 
@@ -373,22 +373,22 @@ def test_player_only_rows_after_prediction_match_the_no_shuttle_doc(tmp_path):
     last_shots = rows.groupby(["set_no", "rally"])["ball_round"].transform("max") == rows["ball_round"]
     assert rows.loc[last_shots, "type_pred"].isna().all() and rows.loc[last_shots, "landing_x"].isna().all()
     assert rows[rows["ball_round"] == 1]["type_pred"].fillna("none").value_counts().to_dict() == {"none": 6, "serve": 1}
-    assert rows[rows["ball_round"] == 2]["type_pred"].value_counts().to_dict() == {"net": 3, "drive": 3, "clear": 1}
-    assert rows["type_pred"].fillna("none").value_counts().to_dict() == {"net": 41, "lift": 18, "smash": 17, "drive": 14, "clear": 14, "drop": 14, "none": 13, "serve": 1}
+    assert rows[rows["ball_round"] == 2]["type_pred"].value_counts().to_dict() == {"drive": 4, "net": 2, "clear": 1}
+    assert rows["type_pred"].fillna("none").value_counts().to_dict() == {"net": 40, "lift": 21, "smash": 18, "drive": 15, "clear": 13, "drop": 11, "none": 13, "serve": 1}
     assert int(rows[rows["ball_round"] == 1]["hit_x"].isna().sum()) == 6
     doc = re.sub(r"\s+", " ", (PROJECT_ROOT / "docs" / "results" / "no_shuttle.md").read_text())
     assert "| Own rows on the 5 ranges | 126 (8 rallies, one a pickup) | 125 (7 rallies) | 132 (7 rallies, 7 serves) |" in doc
-    assert "net 41, lift 18, smash 17, drive 14, clear 14, drop 14, serve 1, none 13" in doc
+    assert "net 40, lift 21, smash 18, drive 15, clear 13, drop 11, serve 1, none 13" in doc
 
 
 def test_results_doc_states_the_player_only_numbers(shipped_own_rows):
     doc = re.sub(r"\s+", " ", RESULTS_PATH.read_text())
     right, total = PLAYER_ONLY_VERSION["accuracy"]
     assert f"{right} of {total} = {100 * right / total:.1f}%" in doc
-    assert "| **Feet-only classifier on tracked positions, this match** | **92 of 116 = 79.3%** |" in doc
+    assert "| **Feet-only classifier on tracked positions, this match** | **90 of 116 = 77.6%** |" in doc
     for group, (correct, count) in PLAYER_ONLY_VERSION["groups"].items():
         assert f"| {group} | {correct} of {count} |" in doc, group
-    assert "By set: sets 1-2 60 of 74, set 3 32 of 42" in doc
+    assert "By set: sets 1-2 61 of 74, set 3 29 of 42" in doc
     assert "hit point is a median 1.05 m off (mean 1.10), the landing point 1.06 m (mean 1.14)" in doc
     assert "`hit_zone` 69.9%, `landing_zone` 70.0%, `is_cross` 92.2%" in doc
     assert "Hitter agreement with the labels is 123 of 123" in doc and "a median 0.57 m off (mean 0.68)" in doc
@@ -409,7 +409,7 @@ def test_results_doc_row_counts_match_the_shipped_rows(shipped_own_rows):
     not_over_net = int((shipped_own_rows["landing_zone"] == "not_over_net").sum())
     documented = re.search(r"(\d+) of the (\d+) rows have\s+`not_over_net`", doc)
     assert documented and (int(documented.group(1)), int(documented.group(2))) == (not_over_net, len(shipped_own_rows)) == (0, 132)
-    assert "92 of 116 = 79.3%" in doc and "119 rows" in doc and "123 of 123" in doc and "median 0.57 m" in doc
+    assert "90 of 116 = 77.6%" in doc and "119 rows" in doc and "123 of 123" in doc and "median 0.57 m" in doc
 
 
 def test_results_doc_spot_check_tally_matches_the_sampled_rows(shipped_own_rows):
@@ -477,7 +477,7 @@ def test_command_requires_a_range_or_spot_check(tmp_path):
 def test_spot_check_regenerates_the_shipped_images_and_the_documented_counts(shipped_own_rows, tmp_path):
     result = spot_check(REAL_VIDEO_PATH, "match_tracked", REAL_DATABASE_PATH, AXELSEN_GINTING, checks_dir=tmp_path / "checks")
     assert result["not_over_net"] == {"rows": 132, "not_over_net": 0, "followed_by_same_player": 0, "rally_end_rest_point": 0, "other": 0}
-    assert result["sample"] == {"rows": 20, "right": 15, "wrong": 4, "without_label": 0, "without_prediction": 1}
+    assert result["sample"] == {"rows": 20, "right": 14, "wrong": 5, "without_label": 0, "without_prediction": 1}
     doc = RESULTS_PATH.read_text()
     assert ", ".join(str(frame) for frame in result["sample_frames"]) in re.sub(r"\s+", " ", doc)
     assert [path.name for path in result["sheets"]] == [f"match_tracked_spot_check_{index}.jpg" for index in range(4)] + ["match_tracked_label_vs_feet.jpg"]

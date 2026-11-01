@@ -70,29 +70,29 @@ than `unknown`.
 
 | | Accuracy |
 |---|---|
-| Feet-only classifier on ShuttleSet's labelled positions (held out, `docs/results/classifier_feet.md`) | **86.5%** |
-| **Feet-only classifier on tracked positions, this match** | **92 of 116 = 79.3%** |
+| Feet-only classifier on ShuttleSet's labelled positions (held out, `docs/results/classifier_feet.md`) | **86.3%** |
+| **Feet-only classifier on tracked positions, this match** | **90 of 116 = 77.6%** |
 
 | Labelled | Correct | Mistaken for |
 |---|---|---|
-| net | 36 of 38 | drive 1, drop 1 |
+| net | 36 of 38 | drive 2 |
 | smash | 14 of 15 | drop 1 |
 | clear | 6 of 7 | smash 1 |
-| lift | 13 of 19 | clear 5, drive 1 |
-| drive | 11 of 19 | lift 5, net 3 |
-| drop | 12 of 16 | smash 2, net 1, clear 1 |
+| lift | 14 of 19 | clear 4, drive 1 |
+| drive | 10 of 19 | lift 7, net 2 |
+| drop | 10 of 16 | smash 3, net 1, clear 1, drive 1 |
 | serve | 0 of 2 | clear 1, net 1 |
 
-By set: sets 1-2 60 of 74, set 3 32 of 42. These are the predictions of the classifier
-trained on the ten shot labels (serve short / long, net, return net, drive, push, clear,
-drop, smash, lift), scored at group level. The total is the same 92 of 116 as with the
-earlier group-level model; drops gained 2 (10 to 12), and lifts and nets each lost 1. Net shots, smashes and clears are nearly all
+By set: sets 1-2 61 of 74, set 3 29 of 42. These are the predictions of the classifier
+trained on the eight shot labels (serve short / long, net, drive, clear, drop, smash,
+lift), scored at group level. The total is 90 of 116, 2 fewer than the 92 of the earlier
+models: drops lost 2 (12 to 10) and drives 1, and lifts gained 1. Net shots, smashes and clears are nearly all
 right; drives and lifts confuse each other, drops spread. The two labelled serves that
 were judged are the real serves that the movement detector itself found on these
 ranges (it was trained on them), which the inferred serve row then pushed to
 `ball_round` 2, where the classifier types them as a return (`docs/results/no_shuttle.md`).
 
-This is 13 points above the 66% of the shuttle-based rows, and the reason is the hit
+This is 12 points above the 66% of the shuttle-based rows, and the reason is the hit
 sequence, not the positions: the movement detector's hits alternate players by
 construction, so no row has the same player twice in a row, the landing is always the
 opponent's reply, and 0 of the 132 rows have `not_over_net` as their landing zone (it
@@ -107,7 +107,7 @@ under the racket contact, about 1 m in front of the feet on a reaching shot) the
 hit point is a median 1.05 m off (mean 1.10), the landing point 1.06 m (mean 1.14).
 Zone agreement with the labels: `hit_zone` 69.9%, `landing_zone` 70.0%, `is_cross`
 92.2% (with the earlier nine-zone layout and its 1 m middle column: 61.8%, 64.2% and
-90.5%; the wider zones forgive more of the feet-to-contact gap). The gap to the 86.5% held-out figure is what the feet convention and the
+90.5%; the wider zones forgive more of the feet-to-contact gap). The gap to the 86.3% held-out figure is what the feet convention and the
 tracking error cost; `docs/results/classifier_feet.md` has the timing-jitter table for
 the frame offsets of detected hits.
 
@@ -123,11 +123,11 @@ frame with the landing point (red, the receiver's feet), with the row's player,
 In all 20 the hit marker is on the hitter's feet and, where there is a next hit, the
 landing marker is on the receiver's feet at that frame (that is the definition).
 Hitter, zones and `is_cross` read correctly for the position in every tile.
-Predictions in the sample: 15 right, 4 wrong, 0 without a label and 1 without a
+Predictions in the sample: 14 right, 5 wrong, 0 without a label and 1 without a
 prediction (17335, the last shot of its rally, no landing point), as counted by
-`sample_tally`. The 4
+`sample_tally`. The 5
 wrong: 14327 smash predicted drop, 81488 net predicted drive, 81806 lift predicted
-clear, 114811 lift predicted clear.
+clear, 107647 drive predicted lift, 114811 lift predicted clear.
 
 `data/checks/features/match_tracked_label_vs_feet.jpg` (6 matched rows, the labelled
 hit pixel in red and the tracked feet in yellow on the same frame) shows the convention

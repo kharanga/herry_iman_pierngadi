@@ -136,6 +136,8 @@ split-off type.
   Cross-court net shots stay as the straight/cross count, not a type.
 - For club labelling, this means labelling the 7 groups plus *serve short/long* and *net: return or not*.
   Labelling the rest by type gives the classifier nothing it can learn from the feet.
+- **What shipped:** only short vs long service. I label return nets as net shots and don't use push, so the
+  shipped classifier has 8 labels (`docs/results/classifier_feet.md`); the measurement above stays as the record.
 
 ## Caveats
 - All of this is ShuttleSet: true feet positions at exact hit frames. On club footage the feet come from

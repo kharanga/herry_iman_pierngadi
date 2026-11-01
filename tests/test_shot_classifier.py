@@ -34,7 +34,7 @@ GROUP_SHOT_PATTERNS = {
 }
 
 
-SYNTHETIC_DETAIL_OF_GROUP = {"serve": "serve_short", "clear": "clear", "drop": "drop", "smash": "smash", "net": "return_net", "lift": "lift", "drive": "push"}
+SYNTHETIC_DETAIL_OF_GROUP = {"serve": "serve_short", "clear": "clear", "drop": "drop", "smash": "smash", "net": "net", "lift": "lift", "drive": "drive"}
 
 
 def synthetic_shot_rows(match_count: int, shots_per_group: int, random_seed: int = 0) -> list[dict]:
@@ -539,7 +539,8 @@ def test_training_learns_the_labels_and_scores_folds_as_groups(trained_synthetic
     assert model["trained_label"] == "type_detail" and report["trained_label"] == "type_detail"
     assert set(model["labels"]) == set(SYNTHETIC_DETAIL_OF_GROUP.values())
     assert set(model["groups"]) == set(SYNTHETIC_DETAIL_OF_GROUP)
-    assert report["detail_counts"]["serve_short"] == 5 * 12 and report["detail_counts"]["serve_long"] == 0 and report["detail_counts"]["net"] == 0
+    assert report["detail_counts"]["serve_short"] == 5 * 12 and report["detail_counts"]["serve_long"] == 0 and report["detail_counts"]["net"] == 5 * 12
+    assert set(report["detail_counts"]) == {"serve_short", "serve_long", "net", "drive", "clear", "drop", "smash", "lift"}
     assert sum(report["detail_counts"].values()) == report["training_shots"]
     assert set(report["per_group"]) == set(TRAINED_GROUPS)
     assert set(report["detail"]["per_detail"]) == set(report["detail"]["labels"])

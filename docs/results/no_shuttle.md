@@ -75,16 +75,16 @@ labels; it follows from alternation.
 for the six-zone layout) on the same rows, before and after the serve rows (the
 "before" column is from the model before that retraining; one drive moved from lift to
 clear with it). The "with serve rows" predictions are re-run with the classifier trained
-on the ten shot labels, scored at group level. The "rows whose prediction changed"
+on the eight shot labels, scored at group level. The "rows whose prediction changed"
 count compares the two columns as they were first measured, with the earlier
 group-level model:
 
 | | Without serve rows | With serve rows |
 |---|---|---|
 | `ball_round` 1 predicted as | serve 5, lift 1, drive 1 (the returns, mislabelled) | serve 1, unpredicted 6 (the serve rows) |
-| The returns (now `ball_round` 2) predicted as | | net 3, drive 3, clear 1 |
+| The returns (now `ball_round` 2) predicted as | | drive 4, net 2, clear 1 |
 | Rows whose prediction changed | | 9 of 125 detected rows: the 6 returns, 1 at `ball_round` 4, 2 at 24 (features of the previous shot) |
-| Overall predictions | net 38, lift 23, smash 17, drive 12, clear 12, drop 11, serve 5, none 7 | net 41, lift 18, smash 17, drive 14, clear 14, drop 14, serve 1, none 13 |
+| Overall predictions | net 38, lift 23, smash 17, drive 12, clear 12, drop 11, serve 5, none 7 | net 40, lift 21, smash 18, drive 15, clear 13, drop 11, serve 1, none 13 |
 
 Without the serve row the classifier called 5 of the 7 returns a serve (`ball_round` 1
 is almost always a serve in ShuttleSet, and the model learned it). With the serve row

@@ -27,9 +27,9 @@ shows that player's shot: the hit-from zone in yellow, the landing zone in red a
 me at the bottom. Bullets whose shot types
 came from the classifier carry a "predicted shot types" tag.
 
-For `match_tracked`: 67 bullets for the opponent and 66 for me, under
+For `match_tracked`: 68 bullets for the opponent and 67 for me, under
 Shots by court zone, Replies to the other player's shot, Serves (opponent) and Shots by court zone, Replies to the other player's shot (me);
-178.8 KB of HTML; 133 bullets from predictions only, 0 mixed. (My serve rows on the broadcast have no
+181.0 KB of HTML; 135 bullets from predictions only, 0 mixed. (My serve rows on the broadcast have no
 position, so no serve bullets for me; see `docs/results/no_shuttle.md`.)
 
 ## Checks
@@ -37,12 +37,12 @@ position, so no serve bullets for me; see `docs/results/no_shuttle.md`.)
 | Check | Result |
 |---|---|
 | Builds for my tracked match | `report.serve match_tracked --me me --no-serve` writes the page |
-| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 19.3 s in one process |
+| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 16.9 s in one process |
 | Every habit shown, no cap | each page lists every entry of both players: 255 to 651 bullets a page (median 465) |
-| Every bullet has a count | all 40,851 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
+| Every bullet has a count | all 40,849 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
 | No comparison with pros | 0 of 89 pages mention pros (0 found) |
-| Diagrams | 5,189 bullets (zone and serve placement) get a shaded zone; 33,422 reply bullets get hit-from and landing zones with an arrow |
-| Reply bullets name the other player | 33,422 of 33,422 reply bullets name the player; 0 say "the other player" |
+| Diagrams | 5,185 bullets (zone and serve placement) get a shaded zone; 33,424 reply bullets get hit-from and landing zones with an arrow |
+| Reply bullets name the other player | 33,424 of 33,424 reply bullets name the player; 0 say "the other player" |
 | Page size | ShuttleSet 317 to 844 KB (median 595 KB), nothing external (inline CSS and SVG, no scripts) |
 | Only the report is served | the server serves a temporary folder holding a copy of the page and nothing else |
 

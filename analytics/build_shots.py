@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from analytics.court import apply_homography, shot_geometry, shuttleset_pixel_to_court_homography
-from analytics.shot_types import group_of_detail, type_detail_for
+from analytics.shot_types import TYPE_DETAIL_BY_RETIRED_TYPE_DETAIL, group_of_detail, type_detail_for
 
 DATABASE_PATH = Path("data/scout.duckdb")
 SCHEMA_PATH = Path(__file__).resolve().parent / "schema.sql"
@@ -310,6 +310,7 @@ def with_groups_from_details(own_rows: pd.DataFrame) -> pd.DataFrame:
     for detail_column in DETAIL_COLUMNS:
         if detail_column not in rows:
             rows[detail_column] = pd.Series([None] * len(rows), index=rows.index, dtype="object")
+        rows[detail_column] = rows[detail_column].replace(TYPE_DETAIL_BY_RETIRED_TYPE_DETAIL)
     rows["type_group"] = group_or_kept(rows["type_detail"], rows["type_group"])
     rows["type_pred"] = group_or_kept(rows["type_detail_pred"], rows["type_pred"])
     return rows

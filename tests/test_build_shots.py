@@ -32,7 +32,7 @@ from analytics.court import (
     shot_geometry,
     zone_in_near_half,
 )
-from analytics.shot_types import SHOT_TYPE_DETAILS, SHOT_TYPE_GROUPS, TYPE_GROUP_BY_TYPE_DETAIL, TYPE_GROUP_BY_TYPE_EN, UnmappedShotTypeError, group_of_detail, type_detail_for, type_group_for
+from analytics.shot_types import TYPE_DETAIL_BY_RETIRED_TYPE_DETAIL, SHOT_TYPE_DETAILS, SHOT_TYPE_GROUPS, TYPE_GROUP_BY_TYPE_DETAIL, TYPE_GROUP_BY_TYPE_EN, UnmappedShotTypeError, group_of_detail, type_detail_for, type_group_for
 from ingest.label_translations import SHOT_TYPE_ENGLISH_BY_CHINESE
 from ingest.load_shuttleset import SHUTTLESET_SET_DIR, build_database
 
@@ -82,10 +82,8 @@ DETAIL_COLUMN_NAMES = ("type_detail", "type_detail_pred")
 CONTRACT_TYPE_DETAILS = {
     "serve_short": {"short service"},
     "serve_long": {"long service"},
-    "net": {"net shot", "cross-court net shot", "rush"},
-    "return_net": {"return net"},
-    "drive": {"drive", "driven flight", "back-court drive", "defensive return drive"},
-    "push": {"push"},
+    "net": {"net shot", "return net", "cross-court net shot", "rush"},
+    "drive": {"drive", "driven flight", "back-court drive", "push", "defensive return drive"},
     "clear": {"clear"},
     "drop": {"drop", "passive drop"},
     "smash": {"smash", "wrist smash"},
@@ -676,7 +674,7 @@ def test_rebuild_of_a_nine_zone_table_keeps_own_rows_with_zones_rederived(built_
 def test_type_detail_map_equals_the_contract_and_every_detail_sits_in_its_group():
     details_from_map = {detail: {type_en for type_en in TYPE_GROUP_BY_TYPE_EN if type_detail_for(type_en) == detail} for detail in SHOT_TYPE_DETAILS}
     assert details_from_map == CONTRACT_TYPE_DETAILS
-    assert len(SHOT_TYPE_DETAILS) == 11 and set(TYPE_GROUP_BY_TYPE_DETAIL) == set(SHOT_TYPE_DETAILS)
+    assert len(SHOT_TYPE_DETAILS) == 9 and set(TYPE_GROUP_BY_TYPE_DETAIL) == set(SHOT_TYPE_DETAILS)
     for detail, type_names in CONTRACT_TYPE_DETAILS.items():
         assert {type_group_for(type_en) for type_en in type_names} == {group_of_detail(detail)}
     assert type_detail_for(None) is None and group_of_detail(None) is None and group_of_detail(float("nan")) is None
@@ -726,13 +724,13 @@ def test_rebuild_rederives_own_groups_from_their_details(built_database, tmp_pat
     connection = duckdb.connect(str(rebuilt_path))
     connection.execute(
         "INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, type_detail, type_group, type_detail_pred, type_pred) VALUES "
-        "('own', 'my_game', 1, 1, 1, 'me', 'serve_long', 'clear', 'push', 'net'), "
+        "('own', 'my_game', 1, 1, 1, 'me', 'serve_long', 'clear', 'drive', 'net'), "
         "('own', 'my_game', 1, 1, 2, 'opp', NULL, 'lift', NULL, 'drop')"
     )
     connection.close()
     build_shots(rebuilt_path)
     assert fetch_all(rebuilt_path, "SELECT shots.type_detail, shots.type_group, shots.type_detail_pred, shots.type_pred FROM shots WHERE shots.source = 'own' ORDER BY shots.ball_round") == [
-        ("serve_long", "serve", "push", "drive"),
+        ("serve_long", "serve", "drive", "drive"),
         (None, "lift", None, "drop"),
     ]
 
@@ -761,3 +759,32 @@ def test_build_shots_refuses_a_missing_database_and_creates_nothing(tmp_path, ca
     assert main([str(missing)]) == 1
     assert "database not found" in capsys.readouterr().err
     assert list(tmp_path.iterdir()) == []
+
+
+@requires_shuttleset
+def test_rebuild_rewrites_retired_labels_of_kept_own_rows(built_database, tmp_path):
+    database_path, _ = built_database
+    rebuilt_path = tmp_path / "retired.duckdb"
+    shutil.copy(database_path, rebuilt_path)
+    connection = duckdb.connect(str(rebuilt_path))
+    connection.execute("CREATE TABLE kept AS SELECT * FROM shots")
+    connection.execute("DROP TABLE shots")
+    connection.execute("ALTER TABLE kept RENAME TO shots")
+    connection.execute(
+        "INSERT INTO shots (source, match_id, set_no, rally, ball_round, player, type_detail, type_group, type_detail_pred, type_pred, type_conf) VALUES "
+        "('own', 'my_game', 1, 1, 1, 'me', NULL, NULL, 'push', 'drive', 0.6), "
+        "('own', 'my_game', 1, 1, 2, 'opp', 'return_net', 'net', 'return_net', 'net', 0.5), "
+        "('own', 'my_game', 1, 1, 3, 'me', 'push', 'drive', 'smash', 'smash', 0.9)"
+    )
+    connection.close()
+    summary = build_shots(rebuilt_path)
+    assert summary["own_shots"] == 3
+    assert fetch_all(rebuilt_path, "SELECT shots.type_detail, shots.type_group, shots.type_detail_pred, shots.type_pred, shots.type_conf FROM shots WHERE shots.source = 'own' ORDER BY shots.ball_round") == [
+        (None, None, "drive", "drive", 0.6),
+        ("net", "net", "net", "net", 0.5),
+        ("drive", "drive", "smash", "smash", 0.9),
+    ]
+    assert TYPE_DETAIL_BY_RETIRED_TYPE_DETAIL == {"return_net": "net", "push": "drive"}
+    assert not set(TYPE_DETAIL_BY_RETIRED_TYPE_DETAIL) & set(SHOT_TYPE_DETAILS)
+    with pytest.raises(KeyError):
+        group_of_detail("push")

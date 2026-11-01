@@ -1,6 +1,6 @@
 # `shots/`: shot-type classifier
 
-Predicts a shot's label `type_detail` (`serve_short`, `serve_long`, `net`, `return_net`, `drive`, `push`,
+Predicts a shot's label `type_detail` (`serve_short`, `serve_long`, `net`, `drive`,
 `clear`, `drop`, `smash`, `lift`; see `shot_types.md`) and with it its `type_group` (serve, clear, drop,
 smash, net, lift, drive) from the two
 players' feet and the hit frames only, so the same model runs on my own footage, where the
@@ -207,7 +207,7 @@ True
 | `DATABASE_PATH` | `data/scout.duckdb` |
 | `MODEL_PATH` | `data/models/shot_type_classifier.joblib` |
 | `TRAINED_GROUPS` | the 7 groups except `unknown` |
-| `TRAINED_DETAILS` | the 10 labels except `unknown` |
+| `TRAINED_DETAILS` | the 8 labels except `unknown` |
 | `TRAINED_LABEL_COLUMN` | `type_detail`, the column the model learns |
 | `FOLD_COUNT` | 5 |
 | `RANDOM_SEED` | 0 |

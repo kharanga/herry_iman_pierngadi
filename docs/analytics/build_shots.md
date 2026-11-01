@@ -41,7 +41,7 @@ only the `source = 'shuttleset'` rows, so `own` rows survive it.
 | fps | DOUBLE | yes | frame rate of the match video |
 | player | VARCHAR | no | hitter: `A`/`B` (ShuttleSet) or `me`/`opp` (own) |
 | type_en | VARCHAR | yes | English shot type |
-| type_detail | VARCHAR | yes | shot label: `serve_short, serve_long, net, return_net, drive, push, clear, drop, smash, lift, unknown` (see `shot_types.md`); NULL on own rows until labelled |
+| type_detail | VARCHAR | yes | shot label: `serve_short, serve_long, net, drive, clear, drop, smash, lift, unknown` (see `shot_types.md`); NULL on own rows until labelled |
 | type_group | VARCHAR | yes | `serve, clear, drop, smash, net, lift, drive, unknown`, the group of `type_detail` |
 | type_detail_pred | VARCHAR | yes | classifier's predicted label; NULL until the classifier runs |
 | type_pred | VARCHAR | yes | the group of `type_detail_pred` |
@@ -123,7 +123,9 @@ Own rows are assumed right-handed when re-derived (handedness is not stored). Th
     `type_detail` and `type_detail_pred` (its own rows cannot be read back in full). A table from before those two
     columns keeps its own rows, with both new columns NULL; a table with the current columns but older CHECKs is
     simply recreated. Own rows are written back by column name, and their `type_group` / `type_pred` are re-derived
-    from `type_detail` / `type_detail_pred` where those are set.
+    from `type_detail` / `type_detail_pred` where those are set. Retired labels in those two columns are rewritten
+    first (`TYPE_DETAIL_BY_RETIRED_TYPE_DETAIL`: `return_net` -> `net`, `push` -> `drive`), so own rows labelled or
+    predicted before the 8-label change pass the CHECKs.
   - `analytics.shot_types.UnmappedShotTypeError` if a shot type has no group.
   - `duckdb.IOException` if the database cannot be opened, e.g. its folder does not exist.
 

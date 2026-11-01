@@ -22,15 +22,13 @@ TYPE_GROUP_BY_TYPE_EN = {
     "unknown": "unknown",
 }
 
-SHOT_TYPE_DETAILS = ("serve_short", "serve_long", "net", "return_net", "drive", "push", "clear", "drop", "smash", "lift", "unknown")
+SHOT_TYPE_DETAILS = ("serve_short", "serve_long", "net", "drive", "clear", "drop", "smash", "lift", "unknown")
 
 TYPE_GROUP_BY_TYPE_DETAIL = {
     "serve_short": "serve",
     "serve_long": "serve",
     "net": "net",
-    "return_net": "net",
     "drive": "drive",
-    "push": "drive",
     "clear": "clear",
     "drop": "drop",
     "smash": "smash",
@@ -41,9 +39,9 @@ TYPE_GROUP_BY_TYPE_DETAIL = {
 TYPE_DETAIL_BY_SPLIT_OFF_TYPE_EN = {
     "short service": "serve_short",
     "long service": "serve_long",
-    "return net": "return_net",
-    "push": "push",
 }
+
+TYPE_DETAIL_BY_RETIRED_TYPE_DETAIL = {"return_net": "net", "push": "drive"}
 
 
 class UnmappedShotTypeError(ValueError):
