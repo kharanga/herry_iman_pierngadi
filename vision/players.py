@@ -32,6 +32,16 @@ PLAYERS = ("me", "opp")
 PERSON_CLASS_ID = 0
 COURT_MARGIN_M = 1.0
 BEHIND_FAR_BASELINE_MARGIN_M = 2.0
+INSIDE_LINES_MARGIN_M = 0.3
+NET_HYSTERESIS_M = 0.5
+STILL_RADIUS_M = 0.4
+STILL_LIMIT_SECONDS = 2.0
+STILL_LIMIT_FRAMES_AT_30_FPS = 60
+TRACK_MEMORY_SECONDS = 0.5
+TRACK_MEMORY_FRAMES_AT_30_FPS = 15
+SIDE_EDGE_PX = 4
+PASSER_HEIGHT_RATIO = 1.6
+HEIGHT_MEMORY = 0.05
 DUPLICATE_BOX_MAX_IOU = 0.5
 MAX_DETECTION_WIDTH_PX = 1280
 DETECTION_BATCH_FRAMES = 8
@@ -45,7 +55,8 @@ DEFAULT_MODEL_PATH = Path("data/models/yolo11s.pt")
 PLAYERS_DIR = Path("data/players")
 TRACKING_RECORD_SUFFIX = ".tracking.json"
 CHECKS_DIR = Path("data/checks/players")
-POSITION_COLUMNS = ["frame", "player", "x_m", "y_m", "track_id", "confidence"]
+POSITION_COLUMNS = ["frame", "player", "x_m", "y_m", "track_id", "confidence", "doubtful"]
+DETECTION_COLUMNS = ["frame", "track_id", "confidence", "left", "top", "right", "bottom", "x_m", "y_m"]
 BOX_COLUMNS = ["frame", "player", "left", "top", "right", "bottom"]
 PLAYER_COLOR_BGR = {"me": (255, 160, 0), "opp": (0, 0, 255)}
 BYSTANDER_COLOR_BGR = (160, 160, 160)
@@ -56,12 +67,6 @@ class FrameDetections:
     boxes_xyxy: np.ndarray
     track_ids: np.ndarray
     confidences: np.ndarray
-
-
-@dataclass
-class PlayerTrackingState:
-    side_by_track_id: dict[int, str] = field(default_factory=dict)
-    track_id_by_player: dict[str, int] = field(default_factory=dict)
 
 
 def empty_detections() -> FrameDetections:
@@ -119,22 +124,80 @@ def is_main_view(line_sample_share: float, minimum_share: float = MAIN_VIEW_MIN_
     return line_sample_share >= minimum_share
 
 
-def sides_with_new_tracks(side_by_track_id: dict[int, str], track_ids, court_positions) -> dict[int, str]:
-    updated_sides = dict(side_by_track_id)
-    for track_id, (_, y_m) in zip(np.asarray(track_ids, dtype=int), np.asarray(court_positions).reshape(-1, 2)):
-        updated_sides.setdefault(int(track_id), side_of_court(float(y_m)))
-    return updated_sides
+def frames_for_seconds(seconds: float, fps: float) -> int:
+    return max(1, int(round(seconds * fps)))
 
 
-def chosen_detection_index(
-    candidate_indices: list[int], track_ids: np.ndarray, confidences: np.ndarray, previous_track_id: int | None
-) -> int | None:
-    if not candidate_indices:
-        return None
-    for index in candidate_indices:
-        if int(track_ids[index]) == previous_track_id:
-            return index
-    return max(candidate_indices, key=lambda index: float(confidences[index]))
+def inside_lines_mask(court_positions, margin_m: float = INSIDE_LINES_MARGIN_M) -> np.ndarray:
+    positions = np.asarray(court_positions, dtype=float).reshape(-1, 2)
+    return (positions[:, 0] >= -margin_m) & (positions[:, 0] <= COURT_WIDTH_M + margin_m) & (positions[:, 1] >= -margin_m) & (positions[:, 1] <= COURT_LENGTH_M + margin_m)
+
+
+def side_with_hysteresis(y_m: float, previous_side: str | None, hysteresis_m: float = NET_HYSTERESIS_M) -> str:
+    if previous_side is not None and abs(y_m - NET_Y_M) < hysteresis_m:
+        return previous_side
+    return side_of_court(y_m)
+
+
+def updated_anchors(anchors: dict[int, tuple[float, float, int]], track_ids, court_positions, frame_index: int, radius_m: float = STILL_RADIUS_M) -> dict[int, tuple[float, float, int]]:
+    updated = {}
+    for track_id, (x_m, y_m) in zip(np.asarray(track_ids, dtype=int), np.asarray(court_positions, dtype=float).reshape(-1, 2)):
+        anchor = anchors.get(int(track_id))
+        if anchor is None or np.hypot(x_m - anchor[0], y_m - anchor[1]) > radius_m:
+            anchor = (float(x_m), float(y_m), int(frame_index))
+        updated[int(track_id)] = anchor
+    return updated
+
+
+def still_frame_counts(anchors: dict[int, tuple[float, float, int]], track_ids, frame_index: int) -> np.ndarray:
+    return np.array([frame_index - anchors[int(track_id)][2] for track_id in np.asarray(track_ids, dtype=int)], dtype=int)
+
+
+def box_heights(boxes_xyxy) -> np.ndarray:
+    boxes = np.asarray(boxes_xyxy, dtype=float).reshape(-1, 4)
+    return boxes[:, 3] - boxes[:, 1]
+
+
+def at_image_side(boxes_xyxy, frame_width: float | None, edge_px: float = SIDE_EDGE_PX) -> np.ndarray:
+    boxes = np.asarray(boxes_xyxy, dtype=float).reshape(-1, 4)
+    if frame_width is None:
+        return np.zeros(len(boxes), dtype=bool)
+    return (boxes[:, 0] <= edge_px) | (boxes[:, 2] >= frame_width - edge_px)
+
+
+def candidate_rank(inside: bool, still: bool, confidence: float) -> tuple:
+    return (bool(inside), not still, float(confidence))
+
+
+@dataclass(frozen=True)
+class PlayerChoice:
+    index: int | None
+    doubtful: bool
+
+
+def chosen_candidate(candidates: list[int], previous_index: int | None, inside: np.ndarray, still: np.ndarray, confidences: np.ndarray) -> PlayerChoice:
+    if not candidates:
+        return PlayerChoice(None, False)
+    best = max(candidates, key=lambda index: candidate_rank(inside[index], still[index], confidences[index]))
+    someone_inside = any(inside[index] for index in candidates)
+    if previous_index is not None and previous_index in candidates:
+        stale = not inside[previous_index] and still[previous_index]
+        if not (stale and inside[best] and not still[best]):
+            return PlayerChoice(previous_index, stale or (not inside[previous_index] and someone_inside))
+    return PlayerChoice(best, not inside[best] and still[best])
+
+
+@dataclass
+class PlayerTrackingState:
+    side_by_track_id: dict[int, str] = field(default_factory=dict)
+    track_id_by_player: dict[str, int] = field(default_factory=dict)
+    anchor_by_track_id: dict[int, tuple[float, float, int]] = field(default_factory=dict)
+    typical_height_by_player: dict[str, float] = field(default_factory=dict)
+    last_seen_by_track_id: dict[int, int] = field(default_factory=dict)
+
+
+def remembered_tracks(last_seen: dict[int, int], frame_index: int, memory_frames: int) -> set[int]:
+    return {track_id for track_id, seen in last_seen.items() if frame_index - seen <= memory_frames}
 
 
 def label_players(
@@ -143,20 +206,39 @@ def label_players(
     court_positions: np.ndarray,
     state: PlayerTrackingState,
     margin_m: float = COURT_MARGIN_M,
+    still_limit_frames: int = STILL_LIMIT_FRAMES_AT_30_FPS,
+    frame_width: float | None = None,
+    memory_frames: int = TRACK_MEMORY_FRAMES_AT_30_FPS,
 ) -> tuple[list[dict], PlayerTrackingState]:
     track_ids = np.asarray(detections.track_ids, dtype=int)
+    court_positions = np.asarray(court_positions, dtype=float).reshape(-1, 2)
     on_court = on_court_mask(court_positions, margin_m)
-    side_by_track_id = sides_with_new_tracks(state.side_by_track_id, track_ids[on_court], court_positions[on_court])
+    inside = inside_lines_mask(court_positions)
+    remembered = remembered_tracks(state.last_seen_by_track_id, frame_index, memory_frames)
+    kept_anchors = {track_id: anchor for track_id, anchor in state.anchor_by_track_id.items() if track_id in remembered}
+    kept_sides = {track_id: side for track_id, side in state.side_by_track_id.items() if track_id in remembered}
+    anchors = {**kept_anchors, **updated_anchors(kept_anchors, track_ids[on_court], court_positions[on_court], frame_index)}
+    still = np.zeros(len(track_ids), dtype=bool)
+    still[on_court] = still_frame_counts(anchors, track_ids[on_court], frame_index) >= still_limit_frames
+    sides = {**kept_sides, **{int(track_ids[index]): side_with_hysteresis(float(court_positions[index, 1]), kept_sides.get(int(track_ids[index]))) for index in np.flatnonzero(on_court)}}
+    last_seen = {track_id: seen for track_id, seen in state.last_seen_by_track_id.items() if track_id in remembered}
+    last_seen.update({int(track_id): int(frame_index) for track_id in track_ids[on_court]})
+    heights = box_heights(detections.boxes_xyxy)
+    edge = at_image_side(detections.boxes_xyxy, frame_width)
     track_id_by_player = dict(state.track_id_by_player)
+    typical_heights = dict(state.typical_height_by_player)
     rows = []
     for player in PLAYERS:
-        candidates = [
-            index for index in np.flatnonzero(on_court) if side_by_track_id[int(track_ids[index])] == player
-        ]
-        index = chosen_detection_index(candidates, track_ids, detections.confidences, track_id_by_player.get(player))
-        if index is None:
+        typical = typical_heights.get(player)
+        oversized = [index for index in np.flatnonzero(on_court) if sides[int(track_ids[index])] == player and typical is not None and edge[index] and heights[index] > PASSER_HEIGHT_RATIO * typical]
+        candidates = [index for index in np.flatnonzero(on_court) if sides[int(track_ids[index])] == player and index not in oversized]
+        previous = next((index for index in candidates if int(track_ids[index]) == track_id_by_player.get(player)), None)
+        choice = chosen_candidate(candidates, previous, inside, still, detections.confidences)
+        if choice.index is None:
             continue
+        index = choice.index
         track_id_by_player[player] = int(track_ids[index])
+        typical_heights[player] = float(heights[index]) if typical is None else (1 - HEIGHT_MEMORY) * typical + HEIGHT_MEMORY * float(heights[index])
         rows.append(
             {
                 "frame": frame_index,
@@ -165,9 +247,10 @@ def label_players(
                 "y_m": round(float(court_positions[index, 1]), 3),
                 "track_id": int(track_ids[index]),
                 "confidence": round(float(detections.confidences[index]), 3),
+                "doubtful": bool(choice.doubtful or oversized),
             }
         )
-    return rows, PlayerTrackingState(side_by_track_id, track_id_by_player)
+    return rows, PlayerTrackingState(sides, track_id_by_player, anchors, typical_heights, last_seen)
 
 
 def player_box_rows(detections: FrameDetections, frame_rows: list[dict]) -> list[dict]:
@@ -395,6 +478,41 @@ class TrackingRun:
     skipped_frames: list[int]
     overlay_paths: list[Path]
     boxes: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=BOX_COLUMNS))
+    detections: pd.DataFrame = field(default_factory=lambda: pd.DataFrame(columns=DETECTION_COLUMNS))
+
+
+def detection_rows(frame_index: int, detections: FrameDetections, court_positions: np.ndarray) -> list[dict]:
+    boxes = np.asarray(detections.boxes_xyxy, dtype=float).reshape(-1, 4)
+    positions = np.asarray(court_positions, dtype=float).reshape(-1, 2)
+    return [
+        {
+            "frame": frame_index,
+            "track_id": int(track_id),
+            "confidence": round(float(confidence), 3),
+            **dict(zip(BOX_COLUMNS[2:], (round(float(value), 1) for value in box))),
+            "x_m": round(float(position[0]), 3),
+            "y_m": round(float(position[1]), 3),
+        }
+        for track_id, confidence, box, position in zip(detections.track_ids, detections.confidences, boxes, positions)
+    ]
+
+
+def detections_of_frame(table: pd.DataFrame) -> tuple[FrameDetections, np.ndarray]:
+    boxes = table[BOX_COLUMNS[2:]].to_numpy(dtype=float).reshape(-1, 4)
+    return FrameDetections(boxes, table["track_id"].to_numpy(dtype=int), table["confidence"].to_numpy(dtype=float)), table[["x_m", "y_m"]].to_numpy(dtype=float).reshape(-1, 2)
+
+
+def players_from_detections(table: pd.DataFrame, fps: float, frame_width: float | None) -> tuple[pd.DataFrame, pd.DataFrame]:
+    state = PlayerTrackingState()
+    still_limit = frames_for_seconds(STILL_LIMIT_SECONDS, fps)
+    memory = frames_for_seconds(TRACK_MEMORY_SECONDS, fps)
+    rows, box_rows = [], []
+    for frame_index, frame_table in table.sort_values(["frame", "track_id"]).groupby("frame", sort=True):
+        detections, court_positions = detections_of_frame(frame_table)
+        frame_rows, state = label_players(int(frame_index), detections, court_positions, state, still_limit_frames=still_limit, frame_width=frame_width, memory_frames=memory)
+        rows.extend(frame_rows)
+        box_rows.extend(player_box_rows(detections, frame_rows))
+    return pd.DataFrame(rows, columns=POSITION_COLUMNS), pd.DataFrame(box_rows, columns=BOX_COLUMNS)
 
 
 def track_players(
@@ -420,8 +538,12 @@ def track_players(
     device = device or default_device()
     capture = open_video(Path(video_path))
     warm_up_tracker(tracker, frame_shape_of_capture(capture), device)
+    video_fps = capture.get(cv2.CAP_PROP_FPS)
+    still_limit = frames_for_seconds(STILL_LIMIT_SECONDS, video_fps)
+    memory = frames_for_seconds(TRACK_MEMORY_SECONDS, video_fps)
+    frame_width = float(capture.get(cv2.CAP_PROP_FRAME_WIDTH))
     state = PlayerTrackingState()
-    rows, box_rows, main_view_frames, skipped_frames, overlay_paths = [], [], [], [], []
+    rows, box_rows, detection_table_rows, main_view_frames, skipped_frames, overlay_paths = [], [], [], [], [], []
     try:
         viewed_frames = frames_with_view(frames_in_range(capture, start_frame, end_frame, frame_stride), homography, minimum_share)
         for chunk in prefetched(chunked(viewed_frames, batch_frames)):
@@ -431,7 +553,8 @@ def track_players(
             detections_per_frame = track_people(tracker, [frame for _, frame in main_view_chunk], device)
             for (frame_index, frame), detections in zip(main_view_chunk, detections_per_frame):
                 court_positions = court_positions_of_feet(homography, detections.boxes_xyxy)
-                frame_rows, state = label_players(frame_index, detections, court_positions, state)
+                frame_rows, state = label_players(frame_index, detections, court_positions, state, still_limit_frames=still_limit, frame_width=frame_width, memory_frames=memory)
+                detection_table_rows.extend(detection_rows(frame_index, detections, court_positions))
                 rows.extend(frame_rows)
                 box_rows.extend(player_box_rows(detections, frame_rows))
                 if frame_index in overlay_frames:
@@ -447,6 +570,7 @@ def track_players(
         skipped_frames,
         overlay_paths,
         pd.DataFrame(box_rows, columns=BOX_COLUMNS),
+        pd.DataFrame(detection_table_rows, columns=DETECTION_COLUMNS),
     )
 
 
@@ -477,6 +601,10 @@ def positions_path(video_path: Path, start_frame: int, end_frame: int, players_d
 
 def boxes_path(video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR) -> Path:
     return players_dir / video_id(video_path) / f"boxes_{start_frame}_{end_frame}.csv"
+
+
+def detections_path(video_path: Path, start_frame: int, end_frame: int, players_dir: Path = PLAYERS_DIR) -> Path:
+    return players_dir / video_id(video_path) / f"detections_{start_frame}_{end_frame}.csv"
 
 
 def is_default_dir(directory: Path | None, default: Path) -> bool:
@@ -578,6 +706,7 @@ def track_stretches(
     frames = 0
     for start_frame, end_frame in pending:
         run = track_players(video_path, start_frame, end_frame, calibration_file, model_path, device=device, batch_frames=batch_frames, tracker=tracker)
+        save_positions(run.detections, detections_path(video_path, start_frame, end_frame, players_dir))
         save_positions(run.boxes, boxes_path(video_path, start_frame, end_frame, players_dir))
         write_tracking_record(save_positions(run.positions, positions_path(video_path, start_frame, end_frame, players_dir)), record)
         frames += end_frame - start_frame + 1
@@ -599,6 +728,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
         help="track one labeled rally: its first to last hit frame, plus --padding frames each side",
     )
     parser.add_argument("--stretches", type=Path, metavar="CSV", help="track every start_frame-end_frame row of this file with one loaded model, skipping rows already tracked (python -m vision.label_offset --stretches writes it)")
+    parser.add_argument("--from-detections", action="store_true", help="don't run YOLO: choose the players again from the saved raw detections_<start>_<end>.csv and rewrite the positions and boxes files")
     parser.add_argument("--merge", action="store_true", help="with --stretches: also join the stretches' files into positions_0_<last>.csv and boxes_0_<last>.csv for the whole video (what vision.hits --start 0 and vision.label_ui read)")
     parser.add_argument("--plan-stretches", type=Path, metavar="CSV", help="write a stretches file for this video and exit: back-to-back stretches of --stretch-seconds, or --stretch-count of them spread evenly")
     parser.add_argument("--stretch-seconds", type=float, default=180.0, help="with --plan-stretches: length of each stretch (default 180)")
@@ -652,11 +782,11 @@ def video_last_frame(video_path: Path) -> int:
         capture.release()
 
 
-def merged_tables(tables: list[pd.DataFrame]) -> pd.DataFrame:
+def merged_tables(tables: list[pd.DataFrame], keys: tuple[str, str] = ("frame", "player")) -> pd.DataFrame:
     merged = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
     if merged.empty:
         return merged
-    return merged.drop_duplicates(subset=["frame", "player"], keep="first").sort_values(["frame", "player"], kind="stable").reset_index(drop=True)
+    return merged.drop_duplicates(subset=list(keys), keep="first").sort_values(list(keys), kind="stable").reset_index(drop=True)
 
 
 def merge_stretch_tracks(video_path: Path, stretches: list[tuple[int, int]], last_frame: int, players_dir: Path = PLAYERS_DIR) -> tuple[Path, Path]:
@@ -672,7 +802,28 @@ def merge_stretch_tracks(video_path: Path, stretches: list[tuple[int, int]], las
     merged_positions = save_positions(positions, positions_path(video_path, 0, last_frame, players_dir))
     merged_boxes = save_positions(boxes, boxes_path(video_path, 0, last_frame, players_dir))
     write_tracking_record(merged_positions, {**records[0], "stretches": [[int(start), int(end)] for start, end in stretches]})
+    detection_files = [detections_path(video_path, start, end, players_dir) for start, end in stretches]
+    if all(path.is_file() for path in detection_files):
+        save_positions(merged_tables([pd.read_csv(path) for path in detection_files], ("frame", "track_id")), detections_path(video_path, 0, last_frame, players_dir))
     return merged_positions, merged_boxes
+
+
+def rechoose_command(parsed: argparse.Namespace) -> int:
+    try:
+        if parsed.start is None or parsed.end is None:
+            raise ValueError("--from-detections needs --start and --end")
+        source = detections_path(parsed.video, parsed.start, parsed.end, parsed.players_dir)
+        if not source.is_file():
+            raise FileNotFoundError(f"detections file not found: {source} (tracked before raw detections were saved; track again)")
+        fps, frame_width = video_fps_and_width(parsed.video)
+        positions, boxes = players_from_detections(pd.read_csv(source), fps, frame_width)
+        positions_file = save_positions(positions, positions_path(parsed.video, parsed.start, parsed.end, parsed.players_dir))
+        print(f"saved {positions_file} ({int(positions['doubtful'].sum())} doubtful rows of {len(positions)})")
+        print(f"saved {save_positions(boxes, boxes_path(parsed.video, parsed.start, parsed.end, parsed.players_dir))}")
+    except (FileNotFoundError, OSError, ValueError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 1
+    return 0
 
 
 def stretches_command(parsed: argparse.Namespace) -> int:
@@ -709,6 +860,8 @@ def main(arguments: list[str]) -> int:
         return 2
     if parsed.plan_stretches:
         return plan_command(parsed)
+    if parsed.from_detections:
+        return rechoose_command(parsed)
     if parsed.stretches:
         return stretches_command(parsed)
     try:
@@ -739,6 +892,7 @@ def main(arguments: list[str]) -> int:
         print(line)
     print(f"saved {output_path}")
     print(f"saved {save_positions(run.boxes, boxes_path(parsed.video, start_frame, end_frame, *custom_dir))}")
+    print(f"saved {save_positions(run.detections, detections_path(parsed.video, start_frame, end_frame, *custom_dir))}")
     video_fps, frame_width = video_fps_and_width(parsed.video)
     record = tracking_record(video_fps, frame_width, parsed.frame_stride, parsed.model, parsed.device or default_device(), parsed.batch_frames)
     print(f"saved {write_tracking_record(output_path, record)} (frame stride {parsed.frame_stride}, effective fps {record['effective_fps']:g})")

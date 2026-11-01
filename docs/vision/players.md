@@ -34,18 +34,44 @@ How a frame is processed:
    foot point rises in the image and maps up to about 1 m further back. A jumping
    near player maps towards the net instead, so the near end keeps 1 m. On the
    broadcast the nearest bystanders map to `x` beyond -1.9 or 8.3 and `y` beyond 17.
-4. **Labelling.** A track's side is fixed the first time it is seen on court:
-   near half (`y < 6.7`) is `me`, far half is `opp`. Each frame, each player gets
-   the detection of the track it had in the previous frame; if that track is gone,
-   the most confident on-court track of that side.
+4. **Choosing the players.** Every frame, each on-court track's half is checked again:
+   near half (`y < 6.7`) is `me`, far half is `opp`. A track only changes half once it
+   is more than 0.5 m past the net (`NET_HYSTERESIS_M`), so feet just over the net line
+   don't flip a player, and `me` / `opp` can't stay swapped after the players change
+   ends. Among a half's tracks:
+   - the player keeps last frame's track unless that track is a **still stand-in**:
+     outside the court lines (more than `INSIDE_LINES_MARGIN_M`, 0.3 m), within 0.4 m of
+     the same spot for `STILL_LIMIT_SECONDS` (2 s) or more, while someone moving is
+     inside the lines;
+   - otherwise the best track wins: inside the lines first, then moving, then the most
+     confident. A person moving inside the court beats a line judge, umpire or spectator
+     standing still in the margin.
+   - A box at the image's side edge that is more than `PASSER_HEIGHT_RATIO` (1.6) times
+     the player's usual box height is a person passing right in front of the camera. It
+     is never taken as the player, and the player then gets no row if nobody else is
+     there.
 
-Because a track's side is fixed when it first appears, `me` and `opp` follow the
-track IDs. A player whose position is reported in the wrong half therefore shows a
-tracking error (an ID swap); it isn't hidden by re-labelling each frame.
+   A track that disappears keeps its half and its still clock for up to
+   `TRACK_MEMORY_SECONDS` (0.5 s); one that is away longer starts afresh. So a missed
+   detection or an empty frame changes nothing, and a player who comes back after a
+   long absence isn't taken as a still stand-in at once. The limits are in video
+   frames, so tracking every Nth frame gives the same seconds.
+
+   Each position row has a **`doubtful`** flag:
+   - the player is a still stand-in;
+   - or it is held outside the lines while someone is inside;
+   - or a passer-by was set aside on that half that frame.
+
+   Training can drop these rows.
+
+The raw detections of every frame (all people, with their boxes and court positions)
+are saved next to the positions as `detections_<start>_<end>.csv`. So a change to these
+rules is re-run with `--from-detections`, without YOLO.
 
 The per-frame steps (`foot_points`, `court_positions_of_feet`, `on_court_mask`,
-`side_of_court`, `court_line_sample_share`, `is_main_view`, `sides_with_new_tracks`,
-`chosen_detection_index`, `label_players`, `detections_of_result`) are pure: arrays in,
+`side_of_court`, `court_line_sample_share`, `is_main_view`, `inside_lines_mask`,
+`side_with_hysteresis`, `updated_anchors`, `chosen_candidate`, `label_players`,
+`detections_of_result`) are pure: arrays in,
 arrays or rows out. `track_people` is the thin wrapper around the YOLO call; it takes a
 list of frames and runs them as one batch. `track_players` reads the video in chunks of
 `DETECTION_BATCH_FRAMES` frames (`chunked`), runs the view check on each frame
@@ -151,6 +177,12 @@ nothing is written in those cases. `2` for invalid arguments.
 | `PERSON_CLASS_ID` | `0` | COCO class id of a person |
 | `COURT_MARGIN_M` | `1.0` | how far outside the sidelines and near baseline a foot point may be and still count as on court |
 | `BEHIND_FAR_BASELINE_MARGIN_M` | `2.0` | the same, behind the far baseline (jumping far player) |
+| `INSIDE_LINES_MARGIN_M` | `0.3` | within this of the lines counts as inside them when choosing the players |
+| `NET_HYSTERESIS_M` | `0.5` | a track changes half only once this far past the net |
+| `STILL_RADIUS_M`, `STILL_LIMIT_SECONDS` | `0.4`, `2.0` | a track that stays within 0.4 m of one spot for 2 s is still |
+| `STILL_LIMIT_FRAMES_AT_30_FPS` | `60` | `label_players`' default for the above (`track_players` scales it to the video's rate) |
+| `TRACK_MEMORY_SECONDS`, `TRACK_MEMORY_FRAMES_AT_30_FPS` | `0.5`, `15` | how long an unseen track keeps its half and still clock; `label_players`' default in frames |
+| `SIDE_EDGE_PX`, `PASSER_HEIGHT_RATIO`, `HEIGHT_MEMORY` | `4`, `1.6`, `0.05` | a box within 4 px of the image's side edge and over 1.6 times the player's usual height is a passer-by; the usual height is a running average with weight 0.05 per frame |
 | `DUPLICATE_BOX_MAX_IOU` | `0.5` | overlap above which YOLO keeps only the more confident of two boxes |
 | `MAX_DETECTION_WIDTH_PX` | `1280` | YOLO runs at the frame width, but at most this (a 1920-wide video is detected at 1280, about twice as fast) |
 | `DETECTION_BATCH_FRAMES` | `8` | frames per chunk and per YOLO call (measured best on an 8 GB M2; 30 runs out of GPU memory) |
@@ -163,7 +195,8 @@ nothing is written in those cases. `2` for invalid arguments.
 | `PLAYERS_DIR` | `Path("data/players")` | root of the position files |
 | `CHECKS_DIR` | `Path("data/checks/players")` | overlay images |
 | `TRACKING_RECORD_SUFFIX` | `".tracking.json"` | appended to the positions file name for the tracking record |
-| `POSITION_COLUMNS` | `["frame", "player", "x_m", "y_m", "track_id", "confidence"]` | columns of the position file |
+| `POSITION_COLUMNS` | `["frame", "player", "x_m", "y_m", "track_id", "confidence", "doubtful"]` | columns of the position file |
+| `DETECTION_COLUMNS` | `["frame", "track_id", "confidence", "left", "top", "right", "bottom", "x_m", "y_m"]` | columns of the raw detections file |
 | `BOX_COLUMNS` | `["frame", "player", "left", "top", "right", "bottom"]` | columns of the box file (pixels, one decimal) |
 
 ```python
@@ -171,7 +204,7 @@ nothing is written in those cases. `2` for invalid arguments.
 >>> PLAYERS, COURT_MARGIN_M, MAIN_VIEW_MIN_LINE_SAMPLE_SHARE
 (('me', 'opp'), 1.0, 0.6)
 >>> POSITION_COLUMNS
-['frame', 'player', 'x_m', 'y_m', 'track_id', 'confidence']
+['frame', 'player', 'x_m', 'y_m', 'track_id', 'confidence', 'doubtful']
 
 ```
 
@@ -182,15 +215,25 @@ The tracked people in one frame. `boxes_xyxy`: `(N, 4)` float array of
 `left, top, right, bottom` pixels; `track_ids`: `(N,)` int array; `confidences`:
 `(N,)` float array. Frozen dataclass. `empty_detections()` returns one with `N = 0`.
 
-### `PlayerTrackingState(side_by_track_id={}, track_id_by_player={})`
-What labelling remembers between frames: the side (`me`/`opp`) fixed for each
-track id, and the track id each player had last. Start with `PlayerTrackingState()`.
+### `PlayerTrackingState(side_by_track_id={}, track_id_by_player={}, anchor_by_track_id={}, typical_height_by_player={}, last_seen_by_track_id={})`
+What player choice remembers between frames:
 
-### `TrackingRun(positions, main_view_frames, skipped_frames, overlay_paths, boxes)`
-Result of `track_players`: the positions `DataFrame` (`POSITION_COLUMNS`), the
-frame indices that were tracked, the frame indices skipped by the view check, the
-overlay images written, and the labelled players' boxes (`BOX_COLUMNS`, one row per
-position row).
+- the half each track was on, for the net hysteresis;
+- the track id each player had last;
+- where each track stopped and since when (`updated_anchors`);
+- each player's usual box height;
+- the last frame each track was seen (`remembered_tracks`).
+
+Start with `PlayerTrackingState()`.
+
+### `TrackingRun(positions, main_view_frames, skipped_frames, overlay_paths, boxes, detections)`
+Result of `track_players`:
+
+- the positions `DataFrame` (`POSITION_COLUMNS`);
+- the frame indices that were tracked, and those skipped by the view check;
+- the overlay images written;
+- the chosen players' boxes (`BOX_COLUMNS`, one row per position row);
+- every raw detection (`DETECTION_COLUMNS`).
 
 ## Functions
 
@@ -317,34 +360,56 @@ ValueError: could not read the calibration frame 5 of .../court.avi
 
 ```
 
-### `sides_with_new_tracks(side_by_track_id, track_ids, court_positions) -> dict`
-Copy of `side_by_track_id` with a side added for every track id not seen before,
-from its `y`. Sides already known never change. The input dict is not modified.
+### `inside_lines_mask(court_positions, margin_m=0.3) -> ndarray`, `side_with_hysteresis(y_m, previous_side, hysteresis_m=0.5) -> str`
+Inside the court lines (within 0.3 m); the half a track is on, which only changes once
+it is more than 0.5 m past the net, so feet just over the net line don't flip a player.
 
 ```python
->>> from vision.players import sides_with_new_tracks
->>> sides_with_new_tracks({1: "opp"}, [1, 2], [[3.0, 5.0], [3.0, 2.0]])
-{1: 'opp', 2: 'me'}
+>>> from vision.players import inside_lines_mask, side_with_hysteresis
+>>> inside_lines_mask([[3.0, 2.0], [6.3, 12.0], [6.7, 12.8]]).tolist()
+[True, True, False]
+>>> side_with_hysteresis(6.9, "me"), side_with_hysteresis(7.3, "me"), side_with_hysteresis(6.9, None)
+('me', 'opp', 'opp')
 
 ```
 
-### `chosen_detection_index(candidate_indices, track_ids, confidences, previous_track_id) -> int | None`
-Which candidate detection a player gets: the one whose track id equals
-`previous_track_id`, otherwise the most confident; `None` if there are no candidates.
+### `updated_anchors(anchors, track_ids, court_positions, frame_index, radius_m=0.4) -> dict`, `still_frame_counts(anchors, track_ids, frame_index) -> ndarray`
+How long each track has stayed within 0.4 m of where it stopped: the anchor moves with
+the track whenever it leaves that radius.
 
 ```python
->>> from vision.players import chosen_detection_index
->>> track_ids, confidences = np.array([5, 7, 9]), np.array([0.6, 0.9, 0.8])
->>> chosen_detection_index([0, 1], track_ids, confidences, previous_track_id=5)
-0
->>> chosen_detection_index([0, 1], track_ids, confidences, previous_track_id=None)
-1
->>> chosen_detection_index([], track_ids, confidences, previous_track_id=5) is None
-True
+>>> from vision.players import still_frame_counts, updated_anchors
+>>> anchors = updated_anchors({}, [1, 2], [[3.0, 2.0], [6.7, 12.8]], 0)
+>>> anchors = updated_anchors(anchors, [1, 2], [[3.9, 2.0], [6.8, 12.8]], 90)
+>>> still_frame_counts(anchors, [1, 2], 90).tolist()
+[0, 90]
 
 ```
 
-### `label_players(frame_index, detections, court_positions, state, margin_m=1.0) -> (list[dict], PlayerTrackingState)`
+### `candidate_rank(inside, still, confidence)`, `PlayerChoice(index, doubtful)`, `chosen_candidate(candidates, previous_index, inside, still, confidences) -> PlayerChoice`
+Which detection of a half becomes the player:
+
+- the player keeps last frame's track, unless that track is outside the lines and
+  still while someone moving is inside the lines;
+- otherwise the best candidate wins, ranked inside the lines first, then moving, then
+  confidence. So a person moving inside the lines beats a still one in the margin.
+
+The choice is **doubtful** when it is outside the lines and still, or when it is kept
+outside the lines while someone is inside.
+
+```python
+>>> from vision.players import chosen_candidate
+>>> inside, still, confidences = np.array([True, False]), np.array([False, True]), np.array([0.6, 0.95])
+>>> chosen_candidate([0, 1], None, inside, still, confidences), chosen_candidate([0, 1], 1, inside, still, confidences)
+(PlayerChoice(index=0, doubtful=False), PlayerChoice(index=0, doubtful=False))
+>>> chosen_candidate([0, 1], 1, inside, np.array([False, False]), confidences)
+PlayerChoice(index=1, doubtful=True)
+>>> chosen_candidate([], None, inside, still, confidences)
+PlayerChoice(index=None, doubtful=False)
+
+```
+
+### `label_players(frame_index, detections, court_positions, state, margin_m=1.0, still_limit_frames=60, frame_width=None, memory_frames=15) -> (list[dict], PlayerTrackingState)`
 One frame of labelling. Inputs: the frame index, the frame's `FrameDetections`,
 their court positions (`court_positions_of_feet`) and the state from the previous
 frame. Output: up to two rows (`POSITION_COLUMNS` as keys, `me` first; a player
@@ -357,10 +422,10 @@ state is not modified.
 >>> rows, state = label_players(16900, detections, positions, PlayerTrackingState())
 >>> for row in rows:
 ...     print(row)
-{'frame': 16900, 'player': 'me', 'x_m': 3.047, 'y_m': 3.521, 'track_id': 2, 'confidence': 0.92}
-{'frame': 16900, 'player': 'opp', 'x_m': 2.944, 'y_m': 10.817, 'track_id': 1, 'confidence': 0.88}
->>> state
-PlayerTrackingState(side_by_track_id={2: 'me', 1: 'opp'}, track_id_by_player={'me': 2, 'opp': 1})
+{'frame': 16900, 'player': 'me', 'x_m': 3.047, 'y_m': 3.521, 'track_id': 2, 'confidence': 0.92, 'doubtful': False}
+{'frame': 16900, 'player': 'opp', 'x_m': 2.944, 'y_m': 10.817, 'track_id': 1, 'confidence': 0.88, 'doubtful': False}
+>>> state.side_by_track_id, state.track_id_by_player, state.typical_height_by_player
+({2: 'me', 1: 'opp'}, {'me': 2, 'opp': 1}, {'me': 144.0, 'opp': 110.0})
 
 ```
 
@@ -372,6 +437,22 @@ is a new `me` candidate, not `opp`; `opp` simply has no row until a far-side tra
 >>> near_rows, _ = label_players(16901, near_only, positions[:1], state)
 >>> [(row["player"], row["track_id"]) for row in near_rows]
 [('me', 8)]
+
+```
+
+### `remembered_tracks(last_seen, frame_index, memory_frames) -> set[int]`
+The tracks whose half and still clock are still remembered: seen within `memory_frames`.
+A gap of exactly `memory_frames` keeps them; one frame more drops them, and the track
+starts afresh when it comes back.
+
+```python
+>>> from vision.players import remembered_tracks
+>>> sorted(remembered_tracks({1: 100, 2: 85, 3: 84}, 100, 15))
+[1, 2]
+>>> one_box = FrameDetections(np.array([[0.0, 0.0, 10.0, 50.0]]), np.array([4]), np.array([0.9]))
+>>> _, seen = label_players(0, one_box, np.array([[3.0, 6.5]]), PlayerTrackingState(), memory_frames=15)
+>>> label_players(10, one_box, np.array([[3.0, 6.9]]), seen, memory_frames=15)[0][0]["player"], label_players(40, one_box, np.array([[3.0, 6.9]]), seen, memory_frames=15)[0][0]["player"]
+('me', 'opp')
 
 ```
 

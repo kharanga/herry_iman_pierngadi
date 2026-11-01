@@ -27,7 +27,17 @@ from vision.players import (
     FrameDetections,
     PlayerTrackingState,
     TrackingRun,
-    chosen_detection_index,
+    PlayerChoice,
+    at_image_side,
+    box_heights,
+    candidate_rank,
+    chosen_candidate,
+    detection_rows,
+    detections_of_frame,
+    inside_lines_mask,
+    players_from_detections,
+    still_frame_counts,
+    updated_anchors,
     court_line_sample_share,
     court_positions_of_feet,
     draw_players,
@@ -44,7 +54,7 @@ from vision.players import (
     save_positions,
     share_in_own_half,
     side_of_court,
-    sides_with_new_tracks,
+    side_with_hysteresis,
     split_frames_by_view,
     summary_lines,
     track_people,
@@ -174,19 +184,23 @@ def test_court_line_sample_share_high_on_drawn_court_and_low_on_blank_or_shifted
     assert court_line_sample_share(shifted_court, MATCH_HOMOGRAPHY) < 0.6
 
 
-def test_sides_with_new_tracks_never_changes_a_known_side_and_does_not_mutate_input():
-    known_sides = {1: "opp"}
-    updated = sides_with_new_tracks(known_sides, [1, 2, 3], [[3.0, 2.0], [3.0, 12.0], [3.0, NET_Y_M]])
-    assert updated == {1: "opp", 2: "opp", 3: "opp"}
-    assert known_sides == {1: "opp"}
-    assert sides_with_new_tracks({}, [], np.zeros((0, 2))) == {}
+def test_side_with_hysteresis_keeps_a_known_side_only_near_the_net():
+    assert side_with_hysteresis(NET_Y_M + 0.49, "me") == "me" and side_with_hysteresis(NET_Y_M - 0.49, "opp") == "opp"
+    assert side_with_hysteresis(NET_Y_M + 0.5, "me") == "opp" and side_with_hysteresis(NET_Y_M - 0.5, "opp") == "me"
+    assert side_with_hysteresis(NET_Y_M + 0.1, None) == "opp" and side_with_hysteresis(NET_Y_M, None) == side_of_court(NET_Y_M)
 
 
-def test_chosen_detection_index_prefers_previous_track_over_higher_confidence():
-    track_ids, confidences = np.array([4, 5, 6]), np.array([0.3, 0.95, 0.5])
-    assert chosen_detection_index([0, 1, 2], track_ids, confidences, previous_track_id=4) == 0
-    assert chosen_detection_index([0, 2], track_ids, confidences, previous_track_id=5) == 2
-    assert chosen_detection_index([], track_ids, confidences, previous_track_id=None) is None
+def test_chosen_candidate_keeps_the_previous_track_unless_it_is_a_still_stand_in_outside_with_someone_moving_inside():
+    inside, still, confidences = np.array([True, False, True]), np.array([False, True, False]), np.array([0.3, 0.99, 0.5])
+    assert chosen_candidate([0, 1, 2], 0, inside, still, confidences) == PlayerChoice(0, False)
+    assert chosen_candidate([0, 1, 2], 1, inside, still, confidences) == PlayerChoice(2, False)
+    assert chosen_candidate([0, 1, 2], None, inside, still, confidences) == PlayerChoice(2, False)
+    assert chosen_candidate([], None, inside, still, confidences) == PlayerChoice(None, False)
+    alone = chosen_candidate([1], 1, inside, still, confidences)
+    assert alone == PlayerChoice(1, True)
+    moving_outside = chosen_candidate([0, 1], 1, inside, np.array([True, False, False]), confidences)
+    assert moving_outside == PlayerChoice(1, True)
+    assert candidate_rank(True, True, 0.1) > candidate_rank(False, False, 0.99) and candidate_rank(True, False, 0.1) > candidate_rank(True, True, 0.99)
 
 
 def test_label_players_near_is_me_far_is_opp_and_rows_follow_position_columns():
@@ -195,7 +209,8 @@ def test_label_players_near_is_me_far_is_opp_and_rows_follow_position_columns():
     assert [(row["player"], row["track_id"]) for row in rows] == [("me", 7), ("opp", 8)]
     assert all(list(row) == POSITION_COLUMNS for row in rows)
     assert rows[0]["x_m"] == pytest.approx(3.0, abs=1e-3) and rows[0]["y_m"] == pytest.approx(2.0, abs=1e-3)
-    assert state == PlayerTrackingState({7: "me", 8: "opp"}, {"me": 7, "opp": 8})
+    assert (state.side_by_track_id, state.track_id_by_player) == ({7: "me", 8: "opp"}, {"me": 7, "opp": 8})
+    assert [row["doubtful"] for row in rows] == [False, False]
 
 
 def test_label_players_labels_by_side_not_by_detection_order():
@@ -229,13 +244,16 @@ def test_label_players_with_two_new_near_tracks_picks_most_confident():
     assert [(row["player"], row["track_id"]) for row in rows] == [("me", 4)]
 
 
-def test_label_players_track_keeps_its_side_after_crossing_the_net():
+def test_label_players_track_changes_player_only_when_it_crosses_the_net_by_more_than_the_hysteresis():
     detections, positions = detections_at([[3.0, 2.0], [3.0, 11.0]], [1, 2], [0.9, 0.9])
     _, state = label_players(100, detections, positions, PlayerTrackingState())
     crossed, crossed_positions = detections_at([[3.0, 9.0], [3.0, 4.0]], [1, 2], [0.9, 0.9])
     rows, _ = label_players(101, crossed, crossed_positions, state)
+    assert [(row["player"], row["track_id"]) for row in rows] == [("me", 2), ("opp", 1)]
+    assert share_in_own_half(pd.DataFrame(rows), "me") == 1.0
+    near_net, near_net_positions = detections_at([[3.0, NET_Y_M + 0.3], [3.0, 11.0]], [1, 2], [0.9, 0.9])
+    rows, _ = label_players(101, near_net, near_net_positions, state)
     assert [(row["player"], row["track_id"]) for row in rows] == [("me", 1), ("opp", 2)]
-    assert share_in_own_half(pd.DataFrame(rows), "me") == 0.0
 
 
 def test_label_players_empty_frame_and_one_sided_frame():
