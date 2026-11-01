@@ -332,8 +332,8 @@ def test_shipped_rows_keep_the_contract(shipped_own_rows):
 
 PLAYER_ONLY_VERSION = {
     "accuracy": (92, 116), "hit": 1.05, "landing": 1.06, "zones": (0.699, 0.700, 0.922),
-    "groups": {"net": (37, 38), "smash": (14, 15), "clear": (6, 7), "lift": (14, 19), "drive": (11, 19), "drop": (10, 16), "serve": (0, 2)},
-    "by_set": {"sets 1-2": (61, 74), "set 3": (31, 42)},
+    "groups": {"net": (36, 38), "smash": (14, 15), "clear": (6, 7), "lift": (13, 19), "drive": (11, 19), "drop": (12, 16), "serve": (0, 2)},
+    "by_set": {"sets 1-2": (60, 74), "set 3": (32, 42)},
 }
 
 
@@ -373,12 +373,12 @@ def test_player_only_rows_after_prediction_match_the_no_shuttle_doc(tmp_path):
     last_shots = rows.groupby(["set_no", "rally"])["ball_round"].transform("max") == rows["ball_round"]
     assert rows.loc[last_shots, "type_pred"].isna().all() and rows.loc[last_shots, "landing_x"].isna().all()
     assert rows[rows["ball_round"] == 1]["type_pred"].fillna("none").value_counts().to_dict() == {"none": 6, "serve": 1}
-    assert rows[rows["ball_round"] == 2]["type_pred"].value_counts().to_dict() == {"drive": 4, "net": 2, "clear": 1}
-    assert rows["type_pred"].fillna("none").value_counts().to_dict() == {"net": 41, "lift": 19, "smash": 17, "drive": 16, "none": 13, "clear": 14, "drop": 11, "serve": 1}
+    assert rows[rows["ball_round"] == 2]["type_pred"].value_counts().to_dict() == {"net": 3, "drive": 3, "clear": 1}
+    assert rows["type_pred"].fillna("none").value_counts().to_dict() == {"net": 41, "lift": 18, "smash": 17, "drive": 14, "clear": 14, "drop": 14, "none": 13, "serve": 1}
     assert int(rows[rows["ball_round"] == 1]["hit_x"].isna().sum()) == 6
     doc = re.sub(r"\s+", " ", (PROJECT_ROOT / "docs" / "results" / "no_shuttle.md").read_text())
     assert "| Own rows on the 5 ranges | 126 (8 rallies, one a pickup) | 125 (7 rallies) | 132 (7 rallies, 7 serves) |" in doc
-    assert "net 41, lift 19, smash 17, drive 16, clear 14, drop 11, serve 1, none 13" in doc
+    assert "net 41, lift 18, smash 17, drive 14, clear 14, drop 14, serve 1, none 13" in doc
 
 
 def test_results_doc_states_the_player_only_numbers(shipped_own_rows):
@@ -388,7 +388,7 @@ def test_results_doc_states_the_player_only_numbers(shipped_own_rows):
     assert "| **Feet-only classifier on tracked positions, this match** | **92 of 116 = 79.3%** |" in doc
     for group, (correct, count) in PLAYER_ONLY_VERSION["groups"].items():
         assert f"| {group} | {correct} of {count} |" in doc, group
-    assert "By set: sets 1-2 61 of 74, set 3 31 of 42" in doc
+    assert "By set: sets 1-2 60 of 74, set 3 32 of 42" in doc
     assert "hit point is a median 1.05 m off (mean 1.10), the landing point 1.06 m (mean 1.14)" in doc
     assert "`hit_zone` 69.9%, `landing_zone` 70.0%, `is_cross` 92.2%" in doc
     assert "Hitter agreement with the labels is 123 of 123" in doc and "a median 0.57 m off (mean 0.68)" in doc

@@ -75,15 +75,18 @@ than `unknown`.
 
 | Labelled | Correct | Mistaken for |
 |---|---|---|
-| net | 37 of 38 | drive 1 |
+| net | 36 of 38 | drive 1, drop 1 |
 | smash | 14 of 15 | drop 1 |
 | clear | 6 of 7 | smash 1 |
-| lift | 14 of 19 | clear 4, drive 1 |
-| drive | 11 of 19 | lift 5, net 2, clear 1 |
-| drop | 10 of 16 | smash 2, drive 2, net 1, clear 1 |
+| lift | 13 of 19 | clear 5, drive 1 |
+| drive | 11 of 19 | lift 5, net 3 |
+| drop | 12 of 16 | smash 2, net 1, clear 1 |
 | serve | 0 of 2 | clear 1, net 1 |
 
-By set: sets 1-2 61 of 74, set 3 31 of 42. Net shots, smashes and clears are nearly all
+By set: sets 1-2 60 of 74, set 3 32 of 42. These are the predictions of the classifier
+trained on the ten shot labels (serve short / long, net, return net, drive, push, clear,
+drop, smash, lift), scored at group level. The total is the same 92 of 116 as with the
+earlier group-level model; drops gained 2 (10 to 12), and lifts and nets each lost 1. Net shots, smashes and clears are nearly all
 right; drives and lifts confuse each other, drops spread. The two labelled serves that
 were judged are the real serves that the movement detector itself found on these
 ranges (it was trained on them), which the inferred serve row then pushed to
