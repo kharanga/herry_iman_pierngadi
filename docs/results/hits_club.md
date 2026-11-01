@@ -234,12 +234,54 @@ matched, 2 / 2 / 1 / 5, and 25 of the 28 checked.
   those back.
 - The ±0.25 s same-hit window was set beforehand, not tuned on set 1.
 
+## Nine + Lin + Ding (set 1 only)
+
+The scorer is refitted with the user's Chong v Ding labels added:
+- the labels are 414 hits in 47 rallies, every bound checked;
+- the tracks are Ding's re-tracked ones, with doubtful player rows dropped as for Lin;
+- Lin and Ding together carry 1/3 of the sample weight, 1/6 each, fixed in advance;
+- there is one fit, with thresholds tuned on its 11 training sources (`--save --tune`):
+  `--hit-score-min 0.55 --rally-end-score-min 0.6`;
+- there is no pro held-out run.
+
+The fit read the labels after the user's fix of rally 10, where frame 6094 is now
+`opp`, `serve_short`. The model is
+`data/models/movement_hits_nine_plus_lin_ding_tuned.joblib`.
+
+Set 1 against the relabel (172 hits), next to nine + Lin 1/3 tuned, alone and inside the
+combined detector. Detected hits unless the row says otherwise:
+
+| | Nine + Lin, alone | Nine + Lin + Ding, alone | Combined + nine + Lin | Combined + nine + Lin + Ding |
+|---|---|---|---|---|
+| Recall ±0.25 s / ±0.50 s | **80.8% / 87.8%** | 75.0% / 83.7% | 70.3% / 77.3% | 67.4% / 75.0% |
+| Precision inside rallies ±0.25 s / ±0.50 s | 74.7% / 78.6% | 71.3% / 77.4% | **76.1% / 82.1%** | 73.0% / 79.6% |
+| Hitter right ±0.25 s | 94.2% | 94.6% | 95.0% | **95.7%** |
+| Shot type, with serves (detected + inferred serves) ±0.25 s / ±0.50 s | 67.7% / 67.4% | 71.4% / 68.8% | **77.0% / 75.5%** | **77.0%** / 75.0% |
+| Shot type, labelled serves left out ±0.25 s / ±0.50 s | **78.7% / 76.7%** | 77.6% / 73.9% | 75.5% / 73.5% | 74.8% / 72.2% |
+| 8-label detail, with serves (±0.50 s) | 65.3% | 67.4% | **74.8%** | 72.8% |
+| Labelled serves (31): found / typed `serve` | 24 / 5 | 23 / 9 | 22 / **19** | 21 / **19** |
+| Matched non-serves typed `serve` ±0.25 s / ±0.50 s | 0 / 1 | 0 / 0 | 0 / 1 | 0 / 1 |
+| 32 rallies: matched; merged / split / missed / extra | 30; 2 / 4 / 1 / 7 | 28; 3 / 3 / 2 / **3** | 29; 2 / 2 / 1 / 5 | 29; 2 / 2 / 1 / 5 |
+| 28 checked: matched; start / end error, median abs | **27; 0.63 s / 1.58 s** | 26; 0.88 s / 1.62 s | 25; 1.15 s / 2.90 s | 25; 1.15 s / 2.90 s |
+
+- **On set 1, adding Ding doesn't help the hits.** Alone, it finds fewer hits (75.0%
+  against 80.8% at ±0.25 s) at a lower precision. Inside the combined detector it
+  trails by about 3 points on both.
+- **It is better on a few things.** It finds fewer rallies between points (3 extra
+  against 7), types more serves when alone (9 against 5), and has a slightly better
+  hitter. The shot type with serves is level inside the combined detector (77.0% each).
+- **Set 1 is one club video.** Ding is a different hall and camera from set 1. The test
+  games (`docs/results/club_games.md`) are the next clean check of whether Ding's labels
+  carry over.
+- Nothing was chosen on set 1. The weight split and the threshold tuning were fixed
+  beforehand or used the training sources only.
+
 ## What next
 
-- **Ding** (Chong v Ding), now re-tracked, once labelled by the user would be a second
-  club source and a second club test.
-- **The in-play model refit** on Lin's 67 rallies plus set 1's 28 checked ones, for the
-  serve problem above (planned, not started).
+- **The two test games** (`docs/results/club_games.md`), once labelled, test nine + Lin
+  and nine + Lin + Ding on footage that trained and tuned nothing.
+- **Serve rows on in-play rallies**: the in-play refit is done
+  (`docs/results/rally_in_play.md`); its rally starts still rarely carry the serve.
 
 ## How to run
 
@@ -303,3 +345,20 @@ and the combined runs with `five_ranges combined_nine_matches combined_nine_plus
 The "labelled serves left out" rows are `label_scores`' table of that name: matched with
 the inferred serve rows in, then scored on the labels whose group is not `serve`. The
 reports are `data/club_labels/report_vis028_{weights,combined}{,_checked}.md`.
+
+Nine + Lin + Ding (set 1 only):
+
+```
+.venv/bin/python -m vision.hit_training data/hit_training/matches.txt --tune $CLUB \
+  --club data/recordings/club/E6SRRmvJ6dI.mp4 data/labels/club_E6SRRmvJ6dI.csv --club-weight 0.3333333333 \
+  --save data/models/movement_hits_nine_plus_lin_ding_tuned.joblib   # about 5 min CPU
+M=data/models/movement_hits_nine_plus_lin_ding_tuned.joblib
+.venv/bin/python -m vision.movement $V --start 0 --end 26234 --model $M --hit-score-min 0.55 --rally-end-score-min 0.6 --hits-dir $D/lin_ding_tuned/hits
+.venv/bin/python -m vision.movement $V --start 0 --end 26234 --rallies-from data/models/movement_hits.joblib --model $M \
+  --hit-score-min 0.55 --rally-end-score-min 0.6 --hits-dir $D/combined_lin_ding_tuned/hits
+```
+
+Then `vision.features` and `shots.predict` per run, and `vision.label_scores` on both
+label copies with `--run` for
+`nine_plus_lin_tuned lin_ding_tuned combined_nine_plus_lin_tuned combined_lin_ding_tuned`
+(reports `data/club_labels/report_vis030{,_checked}.md`).
