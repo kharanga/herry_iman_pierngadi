@@ -612,8 +612,14 @@ def labels_from_file(labels_file: Path, start_frame: int, end_frame: int) -> pd.
     table = pd.read_csv(labels_file)
     in_range = table[(table["frame_num"] >= start_frame) & (table["frame_num"] <= end_frame)]
     return pd.DataFrame(
-        {"rally": in_range["rally"].astype(int), "frame": in_range["frame_num"].astype(int), "hitter": in_range["player"].where(in_range["player"].isin(PLAYERS)), "type": in_range["type_group"]},
-        columns=["rally", "frame", "hitter", "type"],
+        {
+            "rally": in_range["rally"].astype(int),
+            "frame": in_range["frame_num"].astype(int),
+            "hitter": in_range["player"].where(in_range["player"].isin(PLAYERS)),
+            "type": in_range["type_group"],
+            "detail": in_range["type_detail"].where(in_range["type_detail"].astype(object).map(lambda value: isinstance(value, str) and value != "")) if "type_detail" in in_range.columns else np.nan,
+        },
+        columns=["rally", "frame", "hitter", "type", "detail"],
     ).reset_index(drop=True)
 
 
@@ -627,13 +633,27 @@ def type_agreement_line(hits: pd.DataFrame, labels: pd.DataFrame, predictions: p
     return f"shot type: {agreed}/{len(judged)} matched hits with a prediction and a labelled type agree" + (f" = {agreed / len(judged):.1%}" if judged else "")
 
 
+def detail_agreement_line(hits: pd.DataFrame, labels: pd.DataFrame, predictions: pd.DataFrame, tolerance: int) -> str:
+    if "type_detail_pred" not in predictions.columns:
+        return "shot detail: no detail predictions in the database"
+    matched = match_hits(detected_hits_only(hits)["frame"].tolist(), labels["frame"].tolist(), tolerance)
+    predicted = dict(zip(predictions["frame_num"], predictions["type_detail_pred"]))
+    labelled = dict(zip(labels["frame"], labels["detail"]))
+    judged = [(predicted.get(detected), labelled[labelled_frame]) for detected, labelled_frame in matched]
+    judged = [(prediction, detail) for prediction, detail in judged if pd.notna(prediction) and pd.notna(detail) and detail != "unknown"]
+    agreed = sum(prediction == detail for prediction, detail in judged)
+    return f"shot detail: {agreed}/{len(judged)} matched hits with a predicted and a labelled detail agree" + (f" = {agreed / len(judged):.1%}" if judged else "")
+
+
 def own_predictions(database_path: Path, match_id: str) -> pd.DataFrame:
     import duckdb
 
     connection = duckdb.connect(str(database_path), read_only=True)
     try:
+        columns = {row[0] for row in connection.execute("SELECT column_name FROM information_schema.columns WHERE table_name = 'shots'").fetchall()}
+        detail = ", shots.type_detail_pred" if "type_detail_pred" in columns else ""
         return connection.execute(
-            "SELECT shots.frame_num, shots.type_pred FROM shots WHERE shots.source = 'own' AND shots.match_id = ? AND shots.type_pred IS NOT NULL", [match_id]
+            f"SELECT shots.frame_num, shots.type_pred{detail} FROM shots WHERE shots.source = 'own' AND shots.match_id = ? AND shots.type_pred IS NOT NULL", [match_id]
         ).df()
     finally:
         connection.close()
@@ -660,6 +680,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--hits-dir", type=Path, default=HITS_DIR, help="root of the output files (default data/hits)")
     parser.add_argument("--players-dir", type=Path, default=PLAYERS_DIR, help="root of the player tracking files (default data/players)")
     parser.add_argument("--spot-check", type=int, metavar="N", help="draw N random detected hits (before, at, after) to data/checks/hits/")
+    parser.add_argument("--in-play-model", type=Path, metavar="MODEL", help="rallies are the stretches this in-play model finds (python -m vision.in_play), instead of the gap rule; the inferred serve sits at each stretch's start")
     parser.add_argument("--no-serves", action="store_true", help="don't add an inferred serve row at the start of each rally")
     return parser.parse_args(arguments)
 
@@ -679,12 +700,20 @@ def train_command(parsed: argparse.Namespace, settings: MovementSettings) -> int
     return 0
 
 
+def detected_tables(tracks: PlayerTracks, model, in_play_model_path: Path | None, settings: MovementSettings) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if in_play_model_path is None:
+        return detect_hits(tracks, model, settings)
+    from vision.in_play import detect_hits_in_play, load_in_play_model
+
+    return detect_hits_in_play(tracks, sample_hit_scores(tracks, model, settings), load_in_play_model(in_play_model_path), settings)
+
+
 def detect_command(parsed: argparse.Namespace, settings: MovementSettings) -> int:
     if parsed.start is None or parsed.end is None:
         raise ValueError("give --start and --end")
     tracks = load_player_tracks(parsed.video, parsed.start, parsed.end, parsed.players_dir)
     settings = settings_for_tracks(parsed.video, track_frame_stride(parsed.video, parsed.start, parsed.end, parsed.players_dir), settings)
-    hits, rallies = detect_hits(tracks, load_hit_model(parsed.model), settings)
+    hits, rallies = detected_tables(tracks, load_hit_model(parsed.model), parsed.in_play_model, settings)
     labels = None
     if parsed.evaluate:
         match_folder, set_no = parsed.evaluate
@@ -709,6 +738,7 @@ def detect_command(parsed: argparse.Namespace, settings: MovementSettings) -> in
             predictions = own_predictions(parsed.database, parsed.match_id)
             for tolerance in parsed.tolerance or [MATCH_TOLERANCE_FRAMES, 2 * MATCH_TOLERANCE_FRAMES]:
                 print(f"±{tolerance}: {type_agreement_line(hits, labels, predictions, tolerance)}")
+                print(f"±{tolerance}: {detail_agreement_line(hits, labels, predictions, tolerance)}")
     print(f"saved {hits_file}")
     print(f"saved {rallies_file}")
     if parsed.spot_check:

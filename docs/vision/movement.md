@@ -64,6 +64,7 @@ pure: arrays and tables in, tables out. Only `load_player_tracks`, `load_hit_mod
 | `--players-dir` | root of the player tracking files (default `data/players`); the tracking record next to the positions file gives the frame stride, and the settings are scaled to the effective rate `video fps / stride` |
 | `--spot-check N` | draw N random detected hits (seed 1; inferred serves excluded), each as the frame 6 frames before (12 at 60 fps), the hit frame and 6 after, cropped around the hitter's box, both boxes drawn (`me` blue, `opp` red), to `data/checks/hits/<video id>_movement_spot_check_<start>_<end>.jpg` |
 | `--no-serves` | don't add an inferred serve row to each rally |
+| `--in-play-model MODEL` | rallies are the in-play stretches this model finds (`python -m vision.in_play`, `docs/vision/in_play.md`) instead of the gap rule. Hits are the hit chain inside each stretch. The inferred serve sits at the stretch's start unless the first detected hit is within 0.3 s of it. Off by default |
 | `--train` | fit the model on the `--range` ranges (labelled through `--match`) and save it to `--model` |
 | `--cross-validate` | hold out each `--range` in turn, train on the others, and print precision, recall and hitter accuracy per range and in total |
 | `--range START END SET_NO`, `--match` | a labelled range of `<video>` and the ShuttleSet match folder; the range needs its player tracking files |
@@ -469,10 +470,15 @@ over ranges and the printed line.
 Holds out each range in turn, trains on the others, detects on the held-out one and
 reports a line per range and tolerance plus the totals.
 
-### `labels_from_file(labels_file, start_frame, end_frame) -> DataFrame`, `type_agreement_line(hits, labels, predictions, tolerance) -> str`, `own_predictions(database_path, match_id) -> DataFrame`
-Hand labels as the `rally, frame, hitter, type` table the evaluation functions take (a
-`player` outside `me`/`opp` becomes a missing hitter, as for a ShuttleSet serve without
-a position); the shot-type agreement line; the `frame_num, type_pred` rows of a match.
+### `labels_from_file(labels_file, start_frame, end_frame) -> DataFrame`, `type_agreement_line(hits, labels, predictions, tolerance) -> str`, `detail_agreement_line(hits, labels, predictions, tolerance) -> str`, `own_predictions(database_path, match_id) -> DataFrame`
+Hand labels as the `rally, frame, hitter, type, detail` table the evaluation functions
+take. A `player` outside `me`/`opp` becomes a missing hitter, as for a ShuttleSet serve
+without a position, and a missing or empty `type_detail` becomes a missing detail.
+The functions give the shot-type agreement line (groups) and the detail agreement line.
+The detail line compares `type_detail_pred` with the labelled detail, where both exist
+and the label isn't `unknown`. `own_predictions` reads the `frame_num, type_pred` rows
+of a match, plus `type_detail_pred` when the `shots` table has that column.
+`--evaluate-labels` with `--database` prints both lines per tolerance.
 On a labels file built from a ShuttleSet range, `--evaluate-labels` prints exactly what
 `--evaluate` prints for that range (checked on 14201-14947: 25 matched, 100% / 96.2%,
 hitter 25/25, shot type 22/24).
@@ -482,12 +488,19 @@ hitter 25/25, shot type 22/24).
 >>> _ = pd.DataFrame({"rally": [1, 1, 1], "frame_num": [100, 130, 900], "player": ["", "me", "opp"], "type_group": ["serve", "net", "lift"], "source": "hand"}).to_csv(labels_file, index=False)
 >>> from vision.movement import labels_from_file, type_agreement_line
 >>> labels_from_file(labels_file, 0, 500)
-   rally  frame hitter   type
-0      1    100    NaN  serve
-1      1    130     me    net
+   rally  frame hitter   type detail
+0      1    100    NaN  serve    NaN
+1      1    130     me    net    NaN
 >>> found = pd.DataFrame({"rally": [1, 1], "frame": [101, 131], "hitter": ["opp", "me"], "score": [0.9, 0.8], "reach": np.nan})
 >>> type_agreement_line(found, labels_from_file(labels_file, 0, 500), pd.DataFrame({"frame_num": [101, 131], "type_pred": ["serve", "drive"]}), 5)
 'shot type: 1/2 matched hits with a prediction and a labelled type agree = 50.0%'
+>>> from vision.movement import detail_agreement_line
+>>> detailed_file = Path(tempfile.mkdtemp()) / "detailed.csv"
+>>> _ = pd.DataFrame({"rally": 1, "frame_num": [100, 130], "player": ["opp", "me"], "type_group": ["serve", "net"], "type_detail": ["serve_short", "return_net"], "source": "hand"}).to_csv(detailed_file, index=False)
+>>> detail_agreement_line(found, labels_from_file(detailed_file, 0, 500), pd.DataFrame({"frame_num": [101, 131], "type_pred": ["serve", "net"], "type_detail_pred": ["serve_short", "net"]}), 5)
+'shot detail: 1/2 matched hits with a predicted and a labelled detail agree = 50.0%'
+>>> detail_agreement_line(found, labels_from_file(detailed_file, 0, 500), pd.DataFrame({"frame_num": [101, 131], "type_pred": ["serve", "net"]}), 5)
+'shot detail: no detail predictions in the database'
 
 ```
 
