@@ -156,7 +156,7 @@ Sensitivity, at the shipped thresholds (reported only):
 
 ## What next
 
-- **Ding** (Chong v Ding), once re-tracked and labelled by the user, would be a second
+- **Ding** (Chong v Ding), now re-tracked, once labelled by the user would be a second
   club source and a second club test.
 - **The in-play model refit** on Lin's 67 rallies plus set 1's 28 checked ones, for the
   serve problem above (planned, not started).

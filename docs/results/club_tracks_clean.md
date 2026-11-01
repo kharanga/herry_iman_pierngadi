@@ -91,19 +91,26 @@ the choice on. Set 1 keeps
 its tracks, and the hit-scorer evaluation on set 1 (`docs/results/hits_club.md`) uses
 them.
 
-## Chong v Ding (`E6SRRmvJ6dI`)
+## Chong v Ding (`E6SRRmvJ6dI`, 31,800 frames)
 
-Before (the detector's 87 rallies stand in for labels until the user labels it):
+Re-tracked in full with the fixed player choice: 33 min on the GPU (MPS, batch 4), alone,
+swap guard on, no "NMS time limit" warning. The original tracks are kept in
+`data/players_before_clean/club_E6SRRmvJ6dI/`. Ding has no labels yet, so both columns
+are scored on the same 87 rallies the detector found on the original tracks
+(`data/hits/club_E6SRRmvJ6dI/rallies_0_31799.csv`).
 
-| Check | Before |
-|---|---|
-| Still stand-ins | 0 |
-| Passers-by | 60 runs, 449 player-frames, 342 inside rallies (club members walking right in front of the camera) |
-| me/opp swapped | 1,223 frames (3.8%), mostly one stretch around frames 18,600-19,800 after an end change |
-| Gaps of 0.5 s or more inside rallies | 47 runs, 1,055 player-frames, mostly a player hidden by someone passing in front of the camera |
+| Check | Before | After |
+|---|---|---|
+| Still stand-ins | 0 | 0 |
+| Passers-by (club members walking right in front of the camera) | 60 runs, 449 player-frames, 342 inside rallies | 46 runs, 298 player-frames, 219 inside rallies |
+| me/opp swapped | 1,223 frames (3.8%), mostly one stretch around frames 18,600-19,800 after an end change | **0 frames** |
+| Gaps of 0.5 s or more inside rallies | 47 runs, 1,055 player-frames (of 38,062), mostly a player hidden by someone passing in front of the camera | 39 runs, 785 player-frames (of 38,062) |
 
-The re-track comes after the hit-scorer retraining. Passer-by frames are flagged
-doubtful, not recovered.
+- The halves are re-checked every frame, which ends the swapped stretch.
+- Passer-by frames drop by a third. The ones left are flagged doubtful, not recovered.
+- Gap frames drop by a quarter.
+- The hit scorer and the rallies have not been rerun on the new tracks; that waits for
+  the user's labels.
 
 ## How to reproduce
 
@@ -113,5 +120,7 @@ doubtful, not recovered.
 .venv/bin/python -m vision.players data/recordings/club/q3pfhnvKPig.mp4 --start 0 --end 29710 --from-detections   # the choice again, after the fix
 .venv/bin/python -m vision.track_check data/recordings/club/q3pfhnvKPig.mp4 --end 29710 --labels data/labels/club_q3pfhnvKPig.csv --sheets --tag after
 .venv/bin/python -m vision.track_check data/recordings/stand_in/set1.mp4 --end 26234 --labels data/club_labels/set1_labels_relabel/stand_in_set1.csv
-.venv/bin/python -m vision.track_check data/recordings/club/E6SRRmvJ6dI.mp4 --end 31799 --rallies data/hits/club_E6SRRmvJ6dI/rallies_0_31799.csv --sheets --tag before
+.venv/bin/python -m vision.track_check data/recordings/club/E6SRRmvJ6dI.mp4 --end 31799 --rallies data/hits/club_E6SRRmvJ6dI/rallies_0_31799.csv --players-dir data/players_before_clean --sheets --tag before
+.venv/bin/python -m vision.players data/recordings/club/E6SRRmvJ6dI.mp4 --stretches data/club_games/E6SRRmvJ6dI_stretches.csv --merge --batch-frames 4
+.venv/bin/python -m vision.track_check data/recordings/club/E6SRRmvJ6dI.mp4 --end 31799 --rallies data/hits/club_E6SRRmvJ6dI/rallies_0_31799.csv --sheets --tag after
 ```
