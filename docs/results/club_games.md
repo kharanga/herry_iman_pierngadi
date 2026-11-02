@@ -145,6 +145,12 @@ are not read until then.
 
 Both were downloaded like the others: 1280x720, video only, no sign-in, no cookies.
 
+**`xBClOgrP1Hs` is an irregular file.** Read in order it has 38,179 frames, against the
+38,183 in its header. OpenCV's seeking also lands 1-2 frames past in-order reading later
+in the video (+1 at frame 5,000, +2 by 20,000). So frame numbers on this 60 fps file
+depend on how it is read. It is not used for scoring. The user labels its regular 30 fps
+copy instead (`docs/vision/halve_fps.md`).
+
 **Calibration.** The user clicked both with `--pick-points`; neither view shows the near
 baseline's far end.
 
@@ -179,6 +185,31 @@ until the test.
 **Labelling.** The user labels in blank mode on ports 8769 and 8770 (commands below).
 For `UHKzdJqgFwk` they stop after the tenth 60-second segment. The tracking boxes show
 for the tracked part only.
+
+## At 30 fps
+
+The three 60 fps videos have 30 fps copies made by keeping every second frame
+(`docs/vision/halve_fps.md`):
+- `data/recordings/stand_in/set1_30.mp4`: 13,118 frames;
+- `data/recordings/club/UHKzdJqgFwk_30.mp4`: 63,444 frames;
+- `data/recordings/club/xBClOgrP1Hs_30.mp4`: 19,090 frames at 29.97 fps.
+
+Spot checks show 30 fps frame k matching the original's frame 2k, in decode order.
+
+The copies were tracked with the cleaned player choice, raw detections saved, alone on
+the GPU with the swap guard on. There were no "NMS time limit" warnings.
+
+| Video | Tracked | Time | Still stand-ins | Passers-by | me/opp swapped | Gaps of 0.5 s or more in labelled rallies | Labelled hits with the hitter tracked and moving |
+|---|---|---|---|---|---|---|---|
+| `set1_30` | all 13,118 frames | 14 min | 0 | 0 | 0 | 2 runs, 31 player-frames | 171 of 172 |
+| `UHKzdJqgFwk_30` | frames 0-18,149 | 21 min | 1 run, 122 player-frames, outside rallies | 2 runs, 35 player-frames | 0 | 0 | 110 of 110 |
+| `xBClOgrP1Hs_30` | all 19,090 frames | 20 min | 0 | 0 | 0 | not labelled yet | not labelled yet |
+
+The user labels `xBClOgrP1Hs_30` directly:
+
+```
+.venv/bin/python -m vision.label_ui data/recordings/club/xBClOgrP1Hs_30.mp4 --match-id club_xBClOgrP1Hs_30 --blank --port 8770
+```
 
 ## How to reproduce
 

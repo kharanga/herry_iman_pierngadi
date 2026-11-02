@@ -112,6 +112,63 @@ reference, not a test.
 | Nine + Lin + Ding, alone | 98 / 230 = 42.6% | 89.0% | 72.5% | 69.5% |
 | Nine + Lin + Ding, combined | 103 / 213 = 48.4% | 87.2% | 78.5% | 75.7% |
 
+## At 30 fps
+
+The user chose to test at 30 fps, which is also the likely recording rate on the Pi. The
+60 fps videos were converted by keeping every second frame, so 30 fps frame k is 60 fps
+frame 2k (`docs/vision/halve_fps.md`). The labels were halved: a hit at frame f moves to
+f / 2 rounded half up, rally starts round down and ends round up. The calibrations were
+copied with the frame halved. All of it was then re-tracked at 30 fps (test game 1 to
+30 fps frame 18,149), with the same cleaned player choice
+(`docs/results/club_games.md`, "At 30 fps").
+
+Same candidates, settings and rule, with no tuning. The windows stay ±0.25 s and
+±0.50 s, now ±8 and ±15 frames.
+
+| Candidate | **Correct shots** | Hits found (detected) | Precision in labelled rallies (detected) | Precision, with serve rows | Hitter right | Shot type, with serves | Shot type, labelled serves left out | Serves found / typed `serve` (of 13) | Rallies matched of 13; merged / split / missed | Start / end error, median abs |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Default | 44/126 = 34.9% (31.3%) | 76.4% (70.0%) | 85.7% (81.1%) | 85.3% | 94.0% | 51.2% (51.9%) | 48.1% (47.9%) | 7 / 6 | 11; 0 / 0 / 2 | 0.70 s / 3.63 s |
+| Nine matches, alone | 49/136 = 36.0% (34.1%) | **94.5% (88.2%)** | 80.0% (77.6%) | 80.3% | 96.2% | 49.0% (50.5%) | 54.0% (54.9%) | 13 / 2 | 11; 2 / 0 / 0 | 3.17 s / 3.63 s |
+| Nine matches, combined | 49/133 = 36.8% (34.3%) | 80.9% (75.5%) | 82.4% (78.3%) | 80.7% | **96.6%** | 53.8% (55.3%) | 50.0% (51.9%) | 7 / 7 | 11; 0 / 0 / 2 | 0.70 s / 3.63 s |
+| **Nine + Lin, alone** | 50/129 = **38.8%** (**38.0%**) | 87.3% (82.7%) | 87.3% (84.3%) | 84.4% | 95.8% | 54.3% (56.3%) | **55.7% (57.3%)** | 13 / 6 | **13; 0 / 1 / 0** | **0.37 s / 1.37 s** |
+| **Nine + Lin, combined** | 49/124 = **39.5%** (36.7%) | 75.5% (71.8%) | 87.4% (84.0%) | 86.8% | 95.2% | **57.0% (58.0%)** | 53.2% (54.7%) | 7 / 7 | 11; 0 / 0 / 2 | 0.70 s / 3.63 s |
+| **Nine + Lin + Ding, alone** | 49/125 = **39.2%** (36.7%) | 89.1% (82.7%) | **90.7% (85.0%)** | 87.4% | 96.9% | 52.1% (53.4%) | 53.7% (54.5%) | 12 / 5 | **13; 0 / 1 / 0** | 0.43 s / 1.43 s |
+| **Nine + Lin + Ding, combined** | 48/123 = **39.0%** (34.9%) | 78.2% (72.7%) | 89.6% (84.2%) | **87.9%** | 96.5% | 55.2% (55.6%) | 51.2% (52.0%) | 7 / 7 | 11; 0 / 0 / 2 | 0.70 s / 3.63 s |
+
+The 8-label detail equals the group-level shot type on this game at 30 fps as well, so it
+isn't a separate column.
+
+**Applying the rule at 30 fps.** The best is nine + Lin combined (39.5%). Within 1 point
+are nine + Lin + Ding alone (39.2%), nine + Lin + Ding combined (39.0%) and nine + Lin
+alone (38.8%). The four are less than one correct shot apart, so it's a tie that goes to
+precision, and the two readings give different winners again:
+- precision on detected hits: nine + Lin + Ding alone (90.7%);
+- precision with the serve rows: nine + Lin + Ding combined (87.9%).
+
+Either way the winner is a nine + Lin + Ding scorer, which it wasn't at 60 fps. The
+choice between the two readings is still the user's.
+
+**60 fps against 30 fps:**
+- Correct shots rise at 30 fps for every candidate but nine matches combined, by 3 to 5
+  correct shots each. These are small moves on 110 hits.
+- Shot types are a few points better at 30 fps (49-57% against 45-53%).
+- The hitter is right more often (94-97% against 92-96%).
+- The default's rallies match 11 of 13 rather than 10, and end closer (3.6 s against
+  5.8 s median).
+- Nothing here says 30 fps is worse than 60 fps for this pipeline.
+
+**Set 1 at 30 fps** (reference, against the halved live labels):
+
+| Candidate | Correct shots ±0.50 s | Hits found (with serve rows) | Precision, with serve rows | Shot type, with serves | Serves found / typed `serve` (of 31) |
+|---|---|---|---|---|---|
+| Default | 99/215 = 46.0% | 83.1% | 76.9% | 74.4% | 19 / 19 |
+| Nine matches, alone | 102/246 = 41.5% | 95.3% | 68.9% | 66.2% | 28 / 4 |
+| Nine matches, combined | 101/217 = 46.5% | 85.5% | 76.6% | 73.2% | 20 / 19 |
+| Nine + Lin, alone | 94/216 = 43.5% | 89.5% | 77.8% | 69.6% | 22 / 5 |
+| Nine + Lin, combined | **97/196 = 49.5%** | 83.7% | **85.7%** | **77.0%** | 18 / 17 |
+| Nine + Lin + Ding, alone | 102/214 = 47.7% | 87.8% | 78.2% | 73.9% | 22 / 11 |
+| Nine + Lin + Ding, combined | 98/201 = 48.8% | 83.1% | 83.1% | 76.6% | 19 / 18 |
+
 ## How to run
 
 ```
@@ -138,3 +195,17 @@ set-1 runs of `docs/results/hits_club.md`: `five_ranges`, `nine_matches`,
 `combined_nine_matches`, `nine_plus_lin_tuned`, `combined_nine_plus_lin_tuned`,
 `lin_ding_tuned` and `combined_lin_ding_tuned`, under the names above. Its report is
 `data/club_test/set1_reference.md`.
+
+At 30 fps:
+
+```
+.venv/bin/python -m vision.halve_fps data/recordings/stand_in/set1.mp4 data/recordings/stand_in/set1_30.mp4 --labels data/labels/stand_in_set1.csv data/labels/stand_in_set1_30.csv
+.venv/bin/python -m vision.halve_fps data/recordings/club/UHKzdJqgFwk.mp4 data/recordings/club/UHKzdJqgFwk_30.mp4 --labels data/labels/club_UHKzdJqgFwk.csv data/labels/club_UHKzdJqgFwk_30.csv
+```
+
+Then the same candidate loop with `V=data/recordings/club/UHKzdJqgFwk_30.mp4`,
+`--match-id club_UHKzdJqgFwk_30`, `E=63443` and `T=data/club_test/UHKzdJqgFwk_30`
+(and for set 1: `set1_30.mp4`, `stand_in_set1_30`, `E=13117`,
+`T=data/club_test/stand_in_set1_30`). Then `vision.label_scores --fps 30` against
+`data/labels/club_UHKzdJqgFwk_30.csv` and `data/labels/stand_in_set1_30.csv`. The reports
+are `data/club_test/{UHKzdJqgFwk_30,stand_in_set1_30}/report.md`.
