@@ -169,7 +169,7 @@ hit detection was run.
 
 | Video | Tracked frames | Frames with `me` / `opp` | Doubtful rows | Still stand-ins | Passers-by | me/opp swapped |
 |---|---|---|---|---|---|---|
-| `UHKzdJqgFwk` | 36,300 | 36,267 / 36,275 (99.9%) | 2,722 (3.7%) | 1 run, 175 player-frames | 4 runs, 79 player-frames | 0 |
+| `UHKzdJqgFwk` | 36,300 | 36,267 / 36,275 (99.9%) | 2,722 (3.8%) | 1 run, 175 player-frames | 4 runs, 79 player-frames | 0 |
 | `xBClOgrP1Hs` | 38,183 | 38,065 / 37,844 (99.7% / 99.1%) | 198 (0.3%) | 0 | 1 run, 15 player-frames | 0 |
 
 The counts come from `vision.track_check` without labels. Gaps inside rallies need rally
