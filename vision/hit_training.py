@@ -257,7 +257,8 @@ def summary_lines(title: str, rows: pd.DataFrame, group_columns: tuple[str, ...]
 
 def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m vision.hit_training", description="Train and measure the movement hit scorer on whole ShuttleSet matches, each match held out in turn.")
-    parser.add_argument("match_list", type=Path, help="text file, one line per match: ShuttleSet match folder and video path")
+    parser.add_argument("match_list", type=Path, nargs="?", help="text file, one line per match: ShuttleSet match folder and video path (not read with --clubs-only)")
+    parser.add_argument("--clubs-only", action="store_true", help="with --save and --club: train on the club videos only, equal weight each, no ShuttleSet match; with --tune and a single club the thresholds are tuned on the training video itself (in-sample)")
     parser.add_argument("--held-out", action="store_true", help="score each match with a model trained on the others")
     parser.add_argument("--tune", action="store_true", help="with --held-out: also tune the two thresholds on the training matches (each scored by a model without it); with --save: print the thresholds tuned that way on all the saved model's training sources")
     parser.add_argument("--by-player", action="store_true", help="with --held-out: also leave out every training match that shares a player with the held-out one")
@@ -269,6 +270,19 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--club-weight", type=float, default=DEFAULT_CLUB_WEIGHT, help="share of the total sample weight carried by the club videos together (default 1/3); the ShuttleSet matches share the rest equally")
     parser.add_argument("--out", type=Path, default=RESULTS_DIR, help="folder for the result tables (default data/hit_training)")
     return parser.parse_args(arguments)
+
+
+def inner_training_sources(names: list[str], inner: str) -> list[str]:
+    others = [name for name in names if name != inner]
+    return others or list(names)
+
+
+def clubs_only_problem(parsed: argparse.Namespace) -> str | None:
+    if not parsed.save or not parsed.club:
+        return "--clubs-only needs --save and at least one --club"
+    if parsed.held_out or parsed.learning_curve or parsed.baseline or parsed.by_player:
+        return "--clubs-only works with --save (and --tune) only"
+    return None
 
 
 def loaded_matches(match_list: Path) -> dict[str, MatchData]:
@@ -293,11 +307,20 @@ def write_table(rows: list[dict], output_path: Path) -> pd.DataFrame:
 def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
     try:
-        matches = loaded_matches(parsed.match_list)
-        if not matches:
-            raise ValueError("no usable match in the list")
+        if parsed.clubs_only:
+            problem = clubs_only_problem(parsed)
+            if problem:
+                raise ValueError(problem)
+            matches = {}
+            parsed.club_weight = 1.0
+        else:
+            if parsed.match_list is None:
+                raise ValueError("give a match list, or --clubs-only")
+            matches = loaded_matches(parsed.match_list)
+            if not matches:
+                raise ValueError("no usable match in the list")
         baseline_model = load_hit_model(parsed.baseline) if parsed.baseline else None
-        if not 0 <= parsed.club_weight < 1:
+        if not parsed.clubs_only and not 0 <= parsed.club_weight < 1:
             raise ValueError(f"--club-weight must be in [0, 1), got {parsed.club_weight}")
         clubs = {club.name: club for club in (load_club(Path(video), Path(labels)) for video, labels in parsed.club)}
     except (FileNotFoundError, OSError, ValueError, KeyError) as error:
@@ -327,9 +350,10 @@ def main(arguments: list[str]) -> int:
         print(f"saved {save_hit_model(fit_on(names, rows_by_match, club_names, parsed.club_weight), parsed.save, names)} (trained on {len(names)} sources{f', club weight {parsed.club_weight:.3f}' if club_names else ''})")
         if parsed.tune:
             sources = {**matches, **clubs}
-            inner_scores = {inner: match_scores(fit_on([name for name in names if name != inner], rows_by_match, club_names, parsed.club_weight), sources[inner]) for inner in names}
+            inner_scores = {inner: match_scores(fit_on(inner_training_sources(names, inner), rows_by_match, club_names, parsed.club_weight), sources[inner]) for inner in names}
             hit_score_min, rally_end_score_min = best_thresholds(sources, inner_scores)
-            print(f"thresholds for the saved model, tuned on its {len(names)} training sources (each scored by a model trained without it): --hit-score-min {hit_score_min:g} --rally-end-score-min {rally_end_score_min:g}")
+            scoring = "each scored by a model trained without it" if len(names) > 1 else "in-sample: the one source scored by the model trained on it"
+            print(f"thresholds for the saved model, tuned on its {len(names)} training sources ({scoring}): --hit-score-min {hit_score_min:g} --rally-end-score-min {rally_end_score_min:g}")
     return 0
 
 

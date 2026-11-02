@@ -24,6 +24,7 @@ no fine offset yet, is left out with a printed reason (`exclusion_reason`).
 
 ```
 .venv/bin/python -m vision.hit_training <match list> [--held-out [--tune] [--by-player]] [--learning-curve] [--baseline MODEL] [--save MODEL [--exclude FOLDER ...]] [--club VIDEO LABELS ...] [--club-weight 0.333] [--out data/hit_training]
+.venv/bin/python -m vision.hit_training --clubs-only --club VIDEO LABELS [--club ...] --save MODEL [--tune]
 ```
 
 The match list is a text file with one match per line: the ShuttleSet match folder and the
@@ -38,6 +39,7 @@ video path, separated by a space (`#` lines are skipped).
 | `--baseline MODEL` | every match scored by an existing model | `baseline.csv` |
 | `--save MODEL` | trains on every listed match except `--exclude` ones (and the club videos) and saves the model | |
 | `--club VIDEO LABELS` | adds a fully hand-labelled club video as training data; repeatable. It is never scored. Its tracks are the whole-video files (`positions_0_<last>.csv`), minus the rows flagged `doubtful` (`docs/vision/players.md`). Its hits are the labels file's (`vision.label_ui`); every other tracked frame is a negative, because the video is labelled in full. Settings scale to its frame rate (`settings_for_video`) | |
+| `--clubs-only` | with `--save` and `--club`: trains on the club videos alone, each carrying an equal share of the weight; the match list is not read (leave it out). With `--tune`, each club is scored by a model trained on the other clubs, and with a single club by the model trained on it (in-sample, said in the printed line). Refused with `--held-out`, `--learning-curve`, `--baseline` or `--by-player` | |
 | `--club-weight W` | the share of the total sample weight the club videos carry together (default 1/3, `DEFAULT_CLUB_WEIGHT`); the ShuttleSet matches share the rest equally, each match's share spread evenly over its rows. Used by `--held-out` (every held-out match's model also trains on the clubs) and `--save` | |
 
 Every table has one row per match and scoring window (`MATCH_TOLERANCE_SECONDS`, ±0.25 s
@@ -49,7 +51,9 @@ also prints them by fps. Labels are every shot of every set at
 leave out the inferred serve rows. Training uses the targets of the shipped model:
 frames within ±2 of a hit of that player, on frames where at least one player was
 found. Exit code `1` with `error: ...` when the list, a record, a stretch list, a tracking
-file or the baseline model is missing, or no match is usable.
+file or the baseline model is missing, or no match is usable; or for `--clubs-only`
+without `--save` and a `--club`, or with a scoring option; or without a match list and
+without `--clubs-only`.
 
 Run time on the Mac's CPU for nine matches (9,424 hits): about 1 min to load, 5 s per
 fit; `--held-out --tune --by-player --learning-curve` together take about 20 min.
@@ -152,6 +156,18 @@ unweighted, as before.
 >>> kept, _ = without_doubtful(positions, positions[["frame", "player"]])
 >>> kept[["frame", "player"]].values.tolist()
 [[1, 'me'], [2, 'me']]
+
+```
+
+### `inner_training_sources(names, inner) -> list[str]`, `clubs_only_problem(parsed) -> str | None`
+`inner_training_sources` gives the sources a tuning model is trained on: all but `inner`,
+or all of them when `inner` is the only one (in-sample). `clubs_only_problem` gives the
+reason `--clubs-only` can't run, or `None`.
+
+```python
+>>> from vision.hit_training import inner_training_sources
+>>> inner_training_sources(["club:lin", "club:ding"], "club:lin"), inner_training_sources(["club:lin"], "club:lin")
+(['club:ding'], ['club:lin'])
 
 ```
 

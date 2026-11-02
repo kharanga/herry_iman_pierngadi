@@ -276,6 +276,53 @@ combined detector. Detected hits unless the row says otherwise:
 - Nothing was chosen on set 1. The weight split and the threshold tuning were fixed
   beforehand or used the training sources only.
 
+## Club-only scorers: Lin + Ding, Lin, Ding (set 1 only)
+
+Three scorers trained on club footage only, with no ShuttleSet match. Features, model and
+the doubtful-row rule are the same as for the others (`vision.hit_training --clubs-only`):
+
+| | Trained on | Tuned thresholds (hit / rally end) | How tuned |
+|---|---|---|---|
+| F | Lin + Ding, equal weight | 0.65 / 0.7 | each club scored by a model trained on the other |
+| G | Lin | 0.65 / 0.7 | **in-sample**: Lin scored by the model trained on Lin |
+| H | Ding | 0.65 / 0.8 | **in-sample**: Ding scored by the model trained on Ding |
+
+The models are `data/models/movement_hits_club_{lin_ding,lin,ding}_tuned.joblib`. All
+three hit-score thresholds are 0.65, the top of the tuning grid, so a higher one might
+have scored better on the training clubs.
+
+Set 1 against the relabel (172 hits). B is the combined detector with nine + Lin 1/3
+tuned, and C the combined detector with nine + Lin + Ding. "Combined" means the default
+model's rallies and serves with the scorer's hits after the serve.
+
+| | Recall ±0.25 / ±0.50 s | Precision in rallies ±0.25 / ±0.50 s | Hitter ±0.25 s | Shot type with serves ±0.25 / ±0.50 s | Shot type, serves left out ±0.25 / ±0.50 s | 8-label detail ±0.50 s | Serves found / typed `serve` | Non-serves typed `serve` ±0.25 / ±0.50 s | 32 rallies: matched; merged / split / missed / extra |
+|---|---|---|---|---|---|---|---|---|---|
+| D: nine + Lin 1/3 tuned, alone | **80.8% / 87.8%** | 74.7% / 78.6% | 94.2% | 67.7% / 67.4% | 78.7% / 76.7% | 65.3% | 24 / 5 | 0 / 1 | 30; 2 / 4 / 1 / 7 |
+| F alone | 66.9% / 72.7% | 82.1% / 88.0% | 94.8% | 71.8% / 73.3% | 79.3% / 78.9% | 71.6% | 21 / 10 | 4 / 4 | 28; 0 / 3 / 4 / 3 |
+| G alone | 48.3% / 51.2% | 85.6% / 89.8% | 98.8% | 70.7% / 72.6% | 75.4% / 75.7% | 71.1% | 14 / 8 | 4 / 5 | 24; 1 / 4 / 8 / 1 |
+| H alone | 41.9% / 47.7% | 75.0% / 85.4% | 98.6% | 70.6% / 69.9% | 69.4% / 68.0% | 69.9% | 8 / 7 | 7 / 10 | 21; 1 / 2 / 11 / 0 |
+| B: combined + nine + Lin | 70.3% / 77.3% | 76.1% / 82.1% | 95.0% | 77.0% / 75.5% | 75.5% / 73.5% | 74.8% | 22 / 19 | 0 / 1 | 29; 2 / 2 / 1 / 5 |
+| C: combined + nine + Lin + Ding | 67.4% / 75.0% | 73.0% / 79.6% | 95.7% | 77.0% / 75.0% | 74.8% / 72.2% | 72.8% | 21 / 19 | 0 / 1 | 29; 2 / 2 / 1 / 5 |
+| F combined | 59.3% / 64.5% | 81.6% / 88.1% | 96.1% | 83.0% / 81.1% | 80.7% / 78.3% | 79.3% | 20 / 19 | 0 / 2 | 29; 2 / 2 / 1 / 5 |
+| G combined | 45.3% / 48.3% | **86.7% / 91.2%** | **98.7%** | **84.4% / 85.7%** | **82.0% / 83.3%** | **82.1%** | 18 / 17 | 0 / 0 | 29; 2 / 2 / 1 / 5 |
+| H combined | 41.3% / 46.5% | 75.5% / 85.1% | 98.6% | 80.3% / 81.5% | 75.9% / 77.3% | 76.5% | 15 / 15 | 0 / 1 | 29; 2 / 2 / 1 / 5 |
+
+- **The club-only scorers are precise but find far fewer hits.** F finds 67% at ±0.25 s,
+  G 48% and H 42%, against 81% for D. Their precision is up to 86% (G).
+- **Their shot types look better, but on fewer hits.** The agreement is counted on
+  matched hits only. G combined agrees on 85.7% at ±0.50 s, but over 84 hits, where B
+  agrees on 75.5% over 139. A scorer that finds only the clearest hits leaves the
+  classifier the easier shots. So the shot-type columns don't compare like with like
+  across rows that find very different numbers of hits.
+- **F (Lin + Ding) is the most balanced of the three:**
+  - fewer between-point rallies than D (3 extra against 7);
+  - the closest rally ends of the scorers alone (1.00 s median);
+  - inside the combined detector, 83.0% shot type with serves at ±0.25 s, at 59% of hits.
+- **G and H are tuned in-sample**, so their thresholds fit their own video. H is trained
+  on Ding, a different hall, and finds the fewest hits on set 1.
+- Nothing was chosen on set 1. These are candidates F, G and H for the final test on the
+  two held-out games (`docs/results/club_games.md`, "Two test games"), each alone and combined.
+
 ## What next
 
 - **The two test games** (`docs/results/club_games.md`), once labelled, test nine + Lin
@@ -362,3 +409,24 @@ Then `vision.features` and `shots.predict` per run, and `vision.label_scores` on
 label copies with `--run` for
 `nine_plus_lin_tuned lin_ding_tuned combined_nine_plus_lin_tuned combined_lin_ding_tuned`
 (reports `data/club_labels/report_vis030{,_checked}.md`).
+
+Club-only scorers (set 1 only):
+
+```
+LIN="--club data/recordings/club/q3pfhnvKPig.mp4 data/labels/club_q3pfhnvKPig.csv"
+DING="--club data/recordings/club/E6SRRmvJ6dI.mp4 data/labels/club_E6SRRmvJ6dI.csv"
+.venv/bin/python -m vision.hit_training --clubs-only $LIN $DING --tune --save data/models/movement_hits_club_lin_ding_tuned.joblib   # about 2 min CPU
+.venv/bin/python -m vision.hit_training --clubs-only $LIN --tune --save data/models/movement_hits_club_lin_tuned.joblib
+.venv/bin/python -m vision.hit_training --clubs-only $DING --tune --save data/models/movement_hits_club_ding_tuned.joblib
+for run in club_lin_ding:0.65:0.7 club_lin:0.65:0.7 club_ding:0.65:0.8; do
+  IFS=: read name h r <<< "$run"; M=data/models/movement_hits_${name}_tuned.joblib
+  .venv/bin/python -m vision.movement $V --start 0 --end 26234 --model $M --hit-score-min $h --rally-end-score-min $r --hits-dir $D/$name/hits
+  .venv/bin/python -m vision.movement $V --start 0 --end 26234 --rallies-from data/models/movement_hits.joblib --model $M \
+    --hit-score-min $h --rally-end-score-min $r --hits-dir $D/combined_$name/hits
+done
+```
+
+Then `vision.features` and `shots.predict` per run, and `vision.label_scores` on both
+label copies with `--run` for
+`nine_plus_lin_tuned club_lin_ding club_lin club_ding combined_nine_plus_lin_tuned combined_lin_ding_tuned combined_club_lin_ding combined_club_lin combined_club_ding`
+(reports `data/club_labels/report_vis033{,_checked}.md`).
