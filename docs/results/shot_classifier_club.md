@@ -78,6 +78,62 @@ Per type, hits alone, typed right of matched:
 - **Test game 1, lift (24):** pro and P+C type 10 as drives, club 1, AVG 3.
 - Set 1 has only 2 labelled smashes; each classifier gets 1 right.
 
+## At ±0.25 s
+
+The same prediction databases scored with the narrower window, the per-type table
+included (`vision.label_scores --breakdown-tolerance 0.25`). Nothing else changed.
+
+The classifier doesn't move the hits, so hits found and precision are the same for all
+four:
+
+| Hits | Video | Hits found (detected) | Precision in labelled rallies (detected) |
+|---|---|---|---|
+| Alone | Test game 1 | 91/110 = 82.7% | 91/107 = 85.0% |
+| Alone | Set 1 | 129/172 = 75.0% | 129/167 = 77.2% |
+| Combined | Test game 1 | 80/110 = 72.7% | 80/95 = 84.2% |
+| Combined | Set 1 | 110/172 = 64.0% | 110/141 = 78.0% |
+
+Correct shots:
+
+| Hits | Classifier | Test game 1 | Set 1 | Both |
+|---|---|---|---|---|
+| Alone | Pro | 47/128 = 36.7% | **95/222 = 42.8%** | 142/350 = 40.6% |
+| Alone | Club | **61/128 = 47.7%** | 88/222 = 39.6% | 149/350 = 42.6% |
+| Alone | P+C | 55/128 = 43.0% | 92/222 = 41.4% | 147/350 = 42.0% |
+| Alone | **AVG** | **61/128 = 47.7%** | 93/222 = 41.9% | **154/350 = 44.0%** |
+| Combined | Pro | 45/129 = 34.9% | 90/214 = 42.1% | 135/343 = 39.4% |
+| Combined | Club | 58/129 = 45.0% | 86/214 = 40.2% | 144/343 = 42.0% |
+| Combined | P+C | 51/129 = 39.5% | **91/214 = 42.5%** | 142/343 = 41.4% |
+| Combined | **AVG** | **60/129 = 46.5%** | **91/214 = 42.5%** | **151/343 = 44.0%** |
+
+Shot type on matched hits, hits alone (combined):
+
+| Classifier | Test game 1, with serves | Test game 1, serves left out | Set 1, with serves | Set 1, serves left out |
+|---|---|---|---|---|
+| Pro | 53.4% (55.6%) | 54.5% (52.0%) | **74.2%** (78.3%) | **79.4%** (76.0%) |
+| Club | **69.3%** (71.6%) | **72.7%** (69.3%) | 68.8% (74.8%) | 72.9% (72.0%) |
+| P+C | 62.5% (63.0%) | 64.9% (60.0%) | 71.9% (**79.1%**) | 76.6% (**77.0%**) |
+| AVG | **69.3%** (**74.1%**) | **72.7%** (**72.0%**) | 72.7% (**79.1%**) | 77.6% (**77.0%**) |
+
+Per type, hits alone, typed right of matched:
+
+| Type | Test game 1: Pro | Club | P+C | AVG | Set 1: Pro | Club | P+C | AVG |
+|---|---|---|---|---|---|---|---|---|
+| lift | 10/24 | 21/24 | 12/24 | 20/24 | 19/23 | 22/23 | 20/23 | 22/23 |
+| drop | 5/8 | 7/8 | 6/8 | **8/8** | **15/19** | 11/19 | 13/19 | 13/19 |
+| smash | 3/12 | 5/12 | 5/12 | 5/12 | 1/1 | 1/1 | 1/1 | 1/1 |
+| drive | 1/4 | 0/4 | 2/4 | 0/4 | 3/14 | 1/14 | 1/14 | 1/14 |
+| net | 14/19 | 14/19 | 15/19 | 14/19 | 36/37 | 33/37 | 36/37 | 35/37 |
+| clear | 9/10 | 9/10 | 10/10 | 9/10 | 11/13 | 10/13 | 11/13 | 11/13 |
+| serve | 5/11 | 5/11 | 5/11 | 5/11 | 10/21 | 10/21 | 10/21 | 10/21 |
+
+- **The ranking holds at ±0.25 s.** AVG has the most correct shots over both videos
+  (154 of 350 alone, 151 of 343 combined). It equals the club classifier on test game 1
+  alone, and on set 1 combined it ties P+C (91 of 214), one shot ahead of pro.
+- Fewer hits match in the narrower window, so every count is a little lower than at
+  ±0.50 s. The differences between classifiers barely change: AVG over pro on test game
+  1 is +14 shots alone and +15 combined.
+
 ## What it says
 
 - **AVG is the steadiest candidate.**
@@ -113,4 +169,5 @@ The club training databases are the ones from `docs/results/shuttle_features.md`
 video is scored with `vision.label_scores --fps 30` against its 30 fps labels. Each mode
 gets four `--run`s on the same hits file: the original database (pro), then
 `club.duckdb`, `pro_plus_club.duckdb` and `average.duckdb`. The reports are
-`data/shot_classifier_club/{UHKzdJqgFwk_30,stand_in_set1_30}/report.md`.
+`data/shot_classifier_club/{UHKzdJqgFwk_30,stand_in_set1_30}/report.md`. The ±0.25 s section adds
+`--breakdown-tolerance 0.25` to the same runs (`report_025.md`).
