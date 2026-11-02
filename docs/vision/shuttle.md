@@ -83,7 +83,11 @@ be installed (it pins old torch, numpy and OpenCV).
 | `--shuttleset-rally` | ShuttleSet match folder, set number, rally number: tracks from the rally's first hit to its last, plus `--padding` frames each side (start clamped to 0) |
 | `--padding` | frames before and after a ShuttleSet rally (default 30) |
 | `--ensemble` | `weighted` (default, about 1.6 s per frame on CPU) or `nonoverlap` (about 0.25 s per frame, 6 times faster) |
+| `--device` | `cpu` (default) or `mps`, the Mac's GPU, for TrackNet; InpaintNet stays on the CPU. On 600 frames of 60 fps 1080p video with `nonoverlap`, `mps` took 87 s against 205 s on the CPU, with the same positions |
 | `--overlay` | also write `data/checks/shuttle/<video id>_shuttle_<start>_<end>.mp4`: the last 8 visible positions as a yellow trail and the current one as a red circle |
+
+Every frame of the range is read into memory at 512x288 first, about 0.44 MB a frame, so
+track long videos in stretches (about 3,600 frames each).
 
 Output: `data/shuttle/<video id>/shuttle_<start>_<end>.csv`, one row per frame:
 
@@ -378,7 +382,7 @@ and the video's `(width, height)`. Errors: those of `open_video` and `frames_in_
 ### `read_background(video_path, start_frame, end_frame) -> ndarray`
 `median_background` of up to 300 frames sampled evenly from the range.
 
-### `tracknet_positions(images, frame_size, background, tracknet, sequence_length, ensemble_mode) -> DataFrame`
+### `tracknet_positions(images, frame_size, background, tracknet, sequence_length, ensemble_mode, device="cpu") -> DataFrame`
 Runs TrackNet over the windows, ensembles the heatmaps and converts each to a
 position. Columns `frame` (0-based within the range), `x`, `y`, `visibility`.
 
@@ -386,7 +390,7 @@ position. Columns `frame` (0-based within the range), `x`, `y`, `visibility`.
 Builds the inpaint mask, runs InpaintNet on 16-frame windows (weighted ensemble),
 keeps the TrackNet position where the mask is 0, and returns `POSITION_COLUMNS`.
 
-### `track_shuttle(video_path, start_frame, end_frame, ensemble_mode="weighted", tracknet_checkpoint=..., inpaintnet_checkpoint=...) -> DataFrame`
+### `track_shuttle(video_path, start_frame, end_frame, ensemble_mode="weighted", tracknet_checkpoint=..., inpaintnet_checkpoint=..., device="cpu") -> DataFrame`
 The whole pipeline for one range; `frame` is the video's frame index. Checks the
 range, the mode and the video before loading anything. Errors: `ValueError` (range,
 mode), `FileNotFoundError` (video, checkpoints), `OSError` (video can't be opened).

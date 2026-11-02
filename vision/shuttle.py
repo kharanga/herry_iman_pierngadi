@@ -182,6 +182,7 @@ def tracknet_positions(
     tracknet,
     sequence_length: int,
     ensemble_mode: str,
+    device: str = "cpu",
 ) -> pd.DataFrame:
     frame_width, frame_height = frame_size
     starts = window_starts(len(images), sequence_length, ensemble_mode)
@@ -198,7 +199,7 @@ def tracknet_positions(
             ]
         )
         with torch.no_grad():
-            batch_heatmaps = tracknet(torch.from_numpy(batch_input)).numpy()
+            batch_heatmaps = tracknet(torch.from_numpy(batch_input).to(device)).cpu().numpy()
         for start, heatmaps in zip(batch_starts, batch_heatmaps):
             ensemble.add_window(start, heatmaps)
         next_start = starts[batch_begin + WINDOW_BATCH_SIZE] if batch_begin + WINDOW_BATCH_SIZE < len(starts) else len(images)
@@ -246,15 +247,17 @@ def track_shuttle(
     ensemble_mode: str = "weighted",
     tracknet_checkpoint: Path = TRACKNET_CHECKPOINT,
     inpaintnet_checkpoint: Path = INPAINTNET_CHECKPOINT,
+    device: str = "cpu",
 ) -> pd.DataFrame:
     check_frame_range(start_frame, end_frame)
     check_ensemble_mode(ensemble_mode)
     require_video_file(video_path)
     tracknet, tracknet_sequence_length = load_tracknet(tracknet_checkpoint)
+    tracknet = tracknet.to(device)
     inpaintnet, inpaintnet_sequence_length = load_inpaintnet(inpaintnet_checkpoint)
     images, frame_size = read_model_input_images(video_path, start_frame, end_frame)
     background = read_background(video_path, start_frame, start_frame + len(images) - 1)
-    positions = tracknet_positions(images, frame_size, background, tracknet, tracknet_sequence_length, ensemble_mode)
+    positions = tracknet_positions(images, frame_size, background, tracknet, tracknet_sequence_length, ensemble_mode, device)
     positions = inpainted_positions(positions, *frame_size, inpaintnet, inpaintnet_sequence_length)
     positions["frame"] += start_frame
     return positions
@@ -319,6 +322,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
         help="track one labeled rally: its first to last hit frame, plus --padding frames each side",
     )
     parser.add_argument("--padding", type=int, default=30, help="frames tracked before and after a ShuttleSet rally")
+    parser.add_argument("--device", choices=("cpu", "mps"), default="cpu", help="where TrackNet runs (default cpu; mps = the Mac's GPU). InpaintNet stays on the CPU")
     parser.add_argument("--ensemble", choices=ENSEMBLE_MODES, default="weighted", help="weighted: every frame from 8 windows (slow); nonoverlap: 8x faster")
     parser.add_argument("--overlay", action="store_true", help="also write an overlay video to data/checks/shuttle/")
     return parser.parse_args(arguments)
@@ -338,7 +342,7 @@ def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
     try:
         start_frame, end_frame = frames_to_track(parsed)
-        positions = track_shuttle(parsed.video, start_frame, end_frame, parsed.ensemble)
+        positions = track_shuttle(parsed.video, start_frame, end_frame, parsed.ensemble, device=parsed.device)
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
