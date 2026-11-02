@@ -23,6 +23,7 @@ Results: `docs/results/shot_classifier_club.md`. Nothing here is used by the pip
 - **Typing:** each `--predict` database's own rows with a hitter and a landing point are
   typed by every candidate. Each candidate writes `OUT_DIR/<candidate>.duckdb`, a copy
   with only this match's own predictions replaced (`vision.flight_types.write_predictions`).
+- **Unreviewed labels:** a labels file that still holds unreviewed model labels (`source = model`, from `vision.prelabel`) is refused with `error: ... review them in python -m vision.label_ui --review first`: scores and training use reviewed rows only (`vision.label.reviewed_rows_only`).
 - **Exit codes:** `0`; `1` with `error: ...` for a missing file or column; `2` for bad
   arguments.
 

@@ -14,7 +14,9 @@ CANDIDATES = ("club", "pro_plus_club", "average")
 
 
 def club_rows(source: Source, labels_file: Path) -> pd.DataFrame:
-    labels = pd.read_csv(labels_file)[["frame_num", "type_detail"]]
+    from vision.label import reviewed_rows_only
+
+    labels = reviewed_rows_only(pd.read_csv(labels_file), labels_file)[["frame_num", "type_detail"]]
     rows = shot_rows(source).merge(labels, on="frame_num")
     return rows[rows["has_points"] & rows["type_detail"].isin(CLASSIFIED_DETAILS)].reset_index(drop=True)
 
@@ -54,16 +56,27 @@ def probabilities_over(classifier, features: pd.DataFrame, details: tuple[str, .
     return np.column_stack([probabilities[:, columns[detail]] if detail in columns else np.zeros(len(features)) for detail in details])
 
 
+def averaged_probabilities(pro, club, features: pd.DataFrame, pro_share: float = AVERAGE_PRO_SHARE) -> np.ndarray:
+    return pro_share * probabilities_over(pro, features) + (1 - pro_share) * probabilities_over(club, features)
+
+
 def averaged_details(pro, club, features: pd.DataFrame, pro_share: float = AVERAGE_PRO_SHARE) -> np.ndarray:
-    blended = pro_share * probabilities_over(pro, features) + (1 - pro_share) * probabilities_over(club, features)
-    return np.array(CLASSIFIED_DETAILS)[blended.argmax(axis=1)]
+    return np.array(CLASSIFIED_DETAILS)[averaged_probabilities(pro, club, features, pro_share).argmax(axis=1)]
+
+
+def details_and_scores(probabilities: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    return np.array(CLASSIFIED_DETAILS)[probabilities.argmax(axis=1)], probabilities.max(axis=1)
 
 
 def candidate_details(models: dict, features: pd.DataFrame) -> dict[str, np.ndarray]:
+    return {name: details for name, (details, _) in candidate_details_and_scores(models, features).items()}
+
+
+def candidate_details_and_scores(models: dict, features: pd.DataFrame) -> dict[str, tuple[np.ndarray, np.ndarray]]:
     return {
-        "club": models["club"].predict(features),
-        "pro_plus_club": models["pro_plus_club"].predict(features),
-        "average": averaged_details(models["pro"], models["club"], features),
+        "club": details_and_scores(probabilities_over(models["club"], features)),
+        "pro_plus_club": details_and_scores(probabilities_over(models["pro_plus_club"], features)),
+        "average": details_and_scores(averaged_probabilities(models["pro"], models["club"], features)),
     }
 
 
@@ -98,8 +111,8 @@ def main(arguments: list[str]) -> int:
         source = Source(Path(video), Path(database), int(end))
         typed = shot_rows(source)
         typed = typed[typed["has_points"]]
-        for name, details in candidate_details(models, typed[names]).items():
-            print(f"saved {write_predictions(source, Path(out_dir) / f'{name}.duckdb', typed['row_id'], details)}")
+        for name, (details, scores) in candidate_details_and_scores(models, typed[names]).items():
+            print(f"saved {write_predictions(source, Path(out_dir) / f'{name}.duckdb', typed['row_id'], details, scores)}")
     return 0
 
 

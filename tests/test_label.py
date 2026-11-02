@@ -59,12 +59,15 @@ def test_escape_cancels_a_pending_hit_and_unknown_keys_do_nothing():
     assert pressed(starting_state(), ["z"]) == starting_state()
 
 
-def test_rally_navigation_add_and_remove_relabel_and_drop_labels_outside():
+def test_rally_navigation_add_and_remove_and_a_rally_with_hits_is_never_removed():
     state = pressed(starting_state(), ["]"])
     assert state.frame == 380 and state.rally.rally == 2
     state = pressed(state, ["[", "h", "o", "s", "l", "]", "h", "m", "l"])
     assert [(label.rally, label.frame) for label in state.labels] == [(1, 77), (2, 380)]
-    state = pressed(state, ["-"])
+    refused = pressed(state, ["-"])
+    assert refused.rallies == state.rallies and refused.labels == state.labels and refused.history == state.history
+    assert "380" in refused.notice and "outside every rally" in refused.notice
+    state = pressed(refused, ["x", "-"])
     assert [span.rally for span in state.rallies] == [1] and [(label.rally, label.frame) for label in state.labels] == [(1, 77)]
     state = pressed(state, ["+"])
     assert len(state.rallies) == 1

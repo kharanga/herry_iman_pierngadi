@@ -18,6 +18,8 @@ gives the numbers before and after a change to player choice
 | `--rallies` | a rallies CSV (`start_frame`, `end_frame`) for the gaps instead, e.g. the detector's `data/hits/<id>/rallies_0_N.csv` |
 | `--sheets` | draw up to 12 sample frames per error type, spread over the video, to `data/checks/track_check/<video id>_<type>[_<tag>].jpg` |
 
+A labels file that still holds unreviewed model labels (`source = model`, from `vision.prelabel`) is refused with `error: ... review them in python -m vision.label_ui --review first` (`vision.label.reviewed_rows_only`).
+
 It prints a Markdown table and exits `0`; `1` with `error: ...` for a missing video or
 track file; `2` for bad arguments.
 

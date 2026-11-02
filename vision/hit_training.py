@@ -69,7 +69,9 @@ def exclusion_reason(record: dict) -> str | None:
 
 
 def club_labels(labels_file: Path) -> pd.DataFrame:
-    table = pd.read_csv(labels_file)
+    from vision.label import reviewed_rows_only
+
+    table = reviewed_rows_only(pd.read_csv(labels_file), labels_file)
     return pd.DataFrame({"rally": table["rally"].astype(int), "frame": table["frame_num"].astype(int), "hitter": table["player"], "type": table["type_group"]})
 
 

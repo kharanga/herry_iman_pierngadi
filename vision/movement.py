@@ -633,7 +633,9 @@ def write_spot_check(video_path: Path, hits: pd.DataFrame, boxes: pd.DataFrame, 
 
 
 def labels_from_file(labels_file: Path, start_frame: int, end_frame: int) -> pd.DataFrame:
-    table = pd.read_csv(labels_file)
+    from vision.label import reviewed_rows_only
+
+    table = reviewed_rows_only(pd.read_csv(labels_file), labels_file)
     in_range = table[(table["frame_num"] >= start_frame) & (table["frame_num"] <= end_frame)]
     return pd.DataFrame(
         {

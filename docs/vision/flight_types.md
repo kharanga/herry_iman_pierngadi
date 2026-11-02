@@ -32,6 +32,8 @@ Then build each training video's own rows from them, using `vision.features` wit
 - Rows without both a hitter point and a landing point aren't typed, as in
   `shots.predict`.
 
+A labels file that still holds unreviewed model labels (`source = model`, from `vision.prelabel`) is refused with `error: ... review them in python -m vision.label_ui --review first`: scores and training use reviewed rows only (`vision.label.reviewed_rows_only`).
+
 Exit codes: `0`; `1` with `error: ...` for a missing file or column; `2` for bad
 arguments.
 

@@ -53,6 +53,8 @@ It prints Markdown:
 - every labelled hit that any run missed, with the offset of that run's nearest detected
   hit.
 
+A labels file that still holds unreviewed model labels (`source = model`, from `vision.prelabel`) is refused with `error: ... review them in python -m vision.label_ui --review first`: scores and training use reviewed rows only (`vision.label.reviewed_rows_only`).
+
 Exit codes: `0`; `1` with `error: ...` for a missing file or a missing column; `2` for
 bad arguments.
 

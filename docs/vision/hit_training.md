@@ -42,6 +42,8 @@ video path, separated by a space (`#` lines are skipped).
 | `--clubs-only` | with `--save` and `--club`: trains on the club videos alone, each carrying an equal share of the weight; the match list is not read (leave it out). With `--tune`, each club is scored by a model trained on the other clubs, and with a single club by the model trained on it (in-sample, said in the printed line). Refused with `--held-out`, `--learning-curve`, `--baseline` or `--by-player` | |
 | `--club-weight W` | the share of the total sample weight the club videos carry together (default 1/3, `DEFAULT_CLUB_WEIGHT`); the ShuttleSet matches share the rest equally, each match's share spread evenly over its rows. Used by `--held-out` (every held-out match's model also trains on the clubs) and `--save` | |
 
+A labels file that still holds unreviewed model labels (`source = model`, from `vision.prelabel`) is refused with `error: ... review them in python -m vision.label_ui --review first`: scores and training use reviewed rows only (`vision.label.reviewed_rows_only`).
+
 Every table has one row per match and scoring window (`MATCH_TOLERANCE_SECONDS`, ±0.25 s
 and ±0.50 s, as frames at the match's own fps: `tolerance_s`, `tolerance_frames`): `labelled`,
 `detected`, `matched`, `hitter_correct`, `hitter_judged` (the counts of

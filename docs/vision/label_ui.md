@@ -88,6 +88,51 @@ existed. To bring it to the same standard, keeping its 153 hits:
    false, so they aren't used as in-play training data. Screenshot: `data/checks/label_ui/blank_segments.png` (Chong
 v Ding, segment 2).
 
+### Review mode (`--review`)
+
+For a file the model labelled (`source = model`, with `score`, `model_frame` and
+`model_type_detail`). The user confirms or corrects each shot:
+
+```
+.venv/bin/python -m vision.label_ui <video> --match-id <id> --review --port N
+```
+
+`--review` implies `--blank` (segments, no detector proposals). The model's labels are
+the ones to check.
+
+| Key | Does | `source` afterwards |
+|---|---|---|
+| `y` | confirms the model label within 0.5 s of the current frame (`REVIEW_REACH_SECONDS`) | `confirmed` |
+| a type key (`c d k n l v ?`, or `s` then `s` / `l`) | retypes that label | `corrected_type` |
+| `g` | moves that label to the current frame | `moved` |
+| `x` | rejects the nearest label within 0.5 s. A model label goes to `<labels>_rejected.csv` with `source = rejected` and its model frame; a hand label is deleted | `rejected` |
+| `h` | adds a missed hit, as in the other modes | `hand` |
+| `b` / `e` | rally bounds, as in blank mode | |
+
+- **What a label keeps:** every model label keeps its `score`, `model_frame` and
+  `model_type_detail`. Its `source` comes from comparing them with the label now
+  (`reviewed_source`):
+  - `moved` if the frame differs from the model's, even if the type was corrected too;
+  - `corrected_type` if only the type differs;
+  - `confirmed` otherwise.
+  So a correction followed by a move counts as moved, and the model type stays in its
+  column.
+- **Rejected hits** stay out of the labels file, so every reader of labels
+  (`label_scores`, `hit_training`, `track_check`) sees only kept hits.
+- **The page:**
+  - The timeline marks are orange for labels to review, green for confirmed, blue for
+    corrected or moved, and white for added.
+  - The hit table shows each model label's score and what the model said ("was f1234",
+    "was drop").
+  - The header counts the labels to review, confirmed, corrected, moved, rejected and
+    added (`review_counts`).
+- **No silent loss:** a move (`g`) or a new hit (`h`) outside every rally is refused,
+  with "a hit must be inside a rally ..." in the header; widen the rally with `b` / `e`
+  first. A rally edit that would leave a hit outside every rally is refused the same way,
+  in every mode (`docs/vision/label.md`, "Never losing a label").
+- **Old files** without the extra columns load and save as before. The columns are only
+  written once a file has model labels.
+
 ## The page
 
 - **Left:** the current frame as a JPEG from the server (960 px, tracking boxes with

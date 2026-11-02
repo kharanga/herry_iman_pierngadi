@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
+from vision.label import reviewed_rows_only
 from vision.court import COURT_LENGTH_M, COURT_WIDTH_M, NET_Y_M, video_id
 from vision.players import PLAYERS, PLAYERS_DIR, boxes_path, require_video_file, video_fps_and_width
 from vision.players import positions_path as player_positions_path
@@ -232,7 +233,7 @@ def main(arguments: list[str]) -> int:
         positions, boxes = pd.read_csv(positions_file), pd.read_csv(boxes_file)
         fps, frame_width = video_fps_and_width(parsed.video)
         rallies = rallies_for(parsed.labels, parsed.rallies)
-        labels = pd.read_csv(parsed.labels) if parsed.labels else None
+        labels = reviewed_rows_only(pd.read_csv(parsed.labels), parsed.labels) if parsed.labels else None
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

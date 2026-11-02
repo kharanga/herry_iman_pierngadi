@@ -23,6 +23,12 @@ LABELS_DIR = Path("data/labels")
 LABEL_COLUMNS = ["rally", "frame_num", "player", "type_group", "type_detail", "source"]
 RALLY_COLUMNS = ["rally", "start_frame", "end_frame", "bounds_checked"]
 SOURCE_HAND, SOURCE_ACCEPTED = "hand", "accepted"
+SOURCE_MODEL, SOURCE_CONFIRMED, SOURCE_CORRECTED, SOURCE_MOVED, SOURCE_REJECTED = "model", "confirmed", "corrected_type", "moved", "rejected"
+REVIEW_COLUMNS = ["score", "model_frame", "model_type_detail"]
+CONFIRM_KEY, MOVE_KEY = "y", "g"
+REVIEW_REACH_SECONDS = 0.5
+RETYPE_SOURCE = "retype"
+HIT_OUTSIDE_RALLY_NOTICE = "a hit must be inside a rally: press b at the serve first, or b / e to widen the rally"
 TYPE_KEYS = {"c": "clear", "d": "drop", "k": "smash", "n": "net", "l": "lift", "v": "drive", "?": "unknown"}
 SERVE_GROUP = "serve"
 SERVE_WITHOUT_LENGTH_TEXT = "serve ?"
@@ -62,6 +68,13 @@ class HitLabel:
     type_group: str
     source: str
     type_detail: str = ""
+    score: float | None = field(default=None, repr=False)
+    model_frame: int | None = field(default=None, repr=False)
+    model_type_detail: str = field(default="", repr=False)
+
+    @property
+    def from_model(self) -> bool:
+        return self.model_frame is not None
 
 
 @dataclass(frozen=True)
@@ -101,11 +114,14 @@ class LabelState:
     last_frame: int
     fps: float
     pending: PendingHit | None = None
-    history: tuple[tuple[tuple[HitLabel, ...], tuple[RallySpan, ...]], ...] = ()
+    history: tuple[tuple[tuple[HitLabel, ...], tuple[RallySpan, ...], tuple[HitLabel, ...]], ...] = ()
     dirty: bool = False
     segments: tuple[RallySpan, ...] = ()
     segment_index: int = 0
     blank: bool = False
+    review: bool = False
+    rejected: tuple[HitLabel, ...] = ()
+    notice: str = ""
 
     @property
     def rally(self) -> RallySpan | None:
@@ -137,8 +153,37 @@ def labels_relabelled(labels, rallies) -> tuple[HitLabel, ...]:
     return tuple(sorted(kept, key=lambda label: label.frame))
 
 
+def lost_labels(labels, rallies) -> list[HitLabel]:
+    return [label for label in labels if rally_containing(rallies, label.frame) is None]
+
+
+def newly_lost_labels(labels, old_rallies, new_rallies) -> list[HitLabel]:
+    return [label for label in labels if rally_containing(old_rallies, label.frame) is not None and rally_containing(new_rallies, label.frame) is None]
+
+
+def labels_kept(labels, rallies) -> tuple[HitLabel, ...]:
+    orphans = tuple(label for label in labels if rally_containing(rallies, label.frame) is None)
+    return tuple(sorted(labels_relabelled(labels, rallies) + orphans, key=lambda label: label.frame))
+
+
+def lost_labels_notice(lost: list[HitLabel]) -> str:
+    frames = ", ".join(f"f{label.frame}" for label in lost[:3]) + (" ..." if len(lost) > 3 else "")
+    return f"not done: that would leave {len(lost)} hit(s) outside every rally ({frames}); move or delete them first (x)"
+
+
+def unreviewed_model_rows(table: pd.DataFrame) -> int:
+    return int((table["source"] == SOURCE_MODEL).sum()) if "source" in table.columns else 0
+
+
+def reviewed_rows_only(table: pd.DataFrame, labels_file) -> pd.DataFrame:
+    unreviewed = unreviewed_model_rows(table)
+    if unreviewed:
+        raise ValueError(f"{labels_file} has {unreviewed} unreviewed model labels (source = model); review them in python -m vision.label_ui --review first")
+    return table
+
+
 def remembered(state: LabelState) -> LabelState:
-    return replace(state, history=state.history[-200:] + ((state.labels, state.rallies),))
+    return replace(state, history=state.history[-200:] + ((state.labels, state.rallies, state.rejected),))
 
 
 def clamp_frame(frame: int, last_frame: int) -> int:
@@ -202,6 +247,8 @@ def nearest_proposal(state: LabelState, max_distance: int = PROPOSAL_MAX_DISTANC
 
 
 def begin_hit(state: LabelState) -> LabelState:
+    if rally_containing(state.rallies, state.frame) is None:
+        return replace(state, notice=HIT_OUTSIDE_RALLY_NOTICE)
     return replace(state, pending=PendingHit(state.frame, SOURCE_HAND))
 
 
@@ -209,6 +256,8 @@ def accept_nearest_proposal(state: LabelState) -> LabelState:
     proposal = nearest_proposal(state)
     if proposal is None:
         return state
+    if rally_containing(state.rallies, proposal.frame) is None:
+        return replace(state, notice=HIT_OUTSIDE_RALLY_NOTICE)
     return at_frame(state, proposal.frame, pending=PendingHit(proposal.frame, SOURCE_ACCEPTED, proposal.hitter))
 
 
@@ -272,8 +321,8 @@ def delete_nearest_label(state: LabelState) -> LabelState:
 def undo(state: LabelState) -> LabelState:
     if not state.history:
         return state
-    labels, rallies = state.history[-1]
-    return replace(state, labels=labels, rallies=rallies, history=state.history[:-1], pending=None, dirty=True, rally_index=min(state.rally_index, max(len(rallies) - 1, 0)))
+    labels, rallies, rejected = state.history[-1]
+    return replace(state, labels=labels, rallies=rallies, rejected=rejected, history=state.history[:-1], pending=None, dirty=True, rally_index=min(state.rally_index, max(len(rallies) - 1, 0)))
 
 
 def set_rally_bound(state: LabelState) -> LabelState:
@@ -285,7 +334,10 @@ def set_rally_bound(state: LabelState) -> LabelState:
     if updated.start_frame > updated.end_frame:
         return state
     rallies = renumbered(state.rallies[: state.rally_index] + (updated,) + state.rallies[state.rally_index + 1 :])
-    return replace(remembered(state), rallies=rallies, labels=labels_relabelled(state.labels, rallies), rally_index=rally_containing(rallies, updated.start_frame), dirty=True)
+    lost = newly_lost_labels(state.labels, state.rallies, rallies)
+    if lost:
+        return replace(state, notice=lost_labels_notice(lost))
+    return replace(remembered(state), rallies=rallies, labels=labels_kept(state.labels, rallies), rally_index=rally_containing(rallies, updated.start_frame), dirty=True)
 
 
 def add_rally(state: LabelState) -> LabelState:
@@ -293,22 +345,28 @@ def add_rally(state: LabelState) -> LabelState:
         return state
     end_frame = clamp_frame(state.frame + int(round(NEW_RALLY_SECONDS * state.fps)), state.last_frame)
     rallies = renumbered(state.rallies + (RallySpan(0, state.frame, end_frame),))
-    return replace(remembered(state), rallies=rallies, labels=labels_relabelled(state.labels, rallies), rally_index=rally_containing(rallies, state.frame), dirty=True)
+    return replace(remembered(state), rallies=rallies, labels=labels_kept(state.labels, rallies), rally_index=rally_containing(rallies, state.frame), dirty=True)
 
 
 def remove_rally(state: LabelState) -> LabelState:
     if state.rally is None:
         return state
     rallies = renumbered(state.rallies[: state.rally_index] + state.rallies[state.rally_index + 1 :])
+    lost = newly_lost_labels(state.labels, state.rallies, rallies)
+    if lost:
+        return replace(state, notice=lost_labels_notice(lost))
     index = min(state.rally_index, max(len(rallies) - 1, 0))
     frame = rallies[index].start_frame if rallies and not state.segments else state.frame
-    return at_frame(remembered(state), frame, rallies=rallies, labels=labels_relabelled(state.labels, rallies), rally_index=index, pending=None, dirty=True)
+    return at_frame(remembered(state), frame, rallies=rallies, labels=labels_kept(state.labels, rallies), rally_index=index, pending=None, dirty=True)
 
 
 def with_rallies(state: LabelState, rallies, focus_frame: int) -> LabelState:
     rallies = renumbered(rallies)
+    lost = newly_lost_labels(state.labels, state.rallies, rallies)
+    if lost:
+        return replace(state, notice=lost_labels_notice(lost))
     index = rally_containing(rallies, focus_frame)
-    return replace(remembered(state), rallies=rallies, labels=labels_relabelled(state.labels, rallies), rally_index=0 if index is None else index, dirty=True)
+    return replace(remembered(state), rallies=rallies, labels=labels_kept(state.labels, rallies), rally_index=0 if index is None else index, dirty=True)
 
 
 def labels_in(state: LabelState, first_frame: int, last_frame: int) -> bool:
@@ -368,7 +426,113 @@ def mark_rally_end(state: LabelState) -> LabelState:
     return with_rallies(state, replaced_rally(state, index, replace(span, end_frame=frame, end_marked=True)), frame)
 
 
+def review_reach_frames(state: LabelState) -> int:
+    return max(1, int(round(REVIEW_REACH_SECONDS * state.fps)))
+
+
+def review_target(state: LabelState) -> HitLabel | None:
+    candidates = [label for label in state.labels if label.from_model and abs(label.frame - state.frame) <= review_reach_frames(state)]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda label: (abs(label.frame - state.frame), label.frame))
+
+
+def reviewed_source(label: HitLabel) -> str:
+    if label.frame != label.model_frame:
+        return SOURCE_MOVED
+    if label.type_detail != label.model_type_detail:
+        return SOURCE_CORRECTED
+    return SOURCE_CONFIRMED
+
+
+def replaced_label(state: LabelState, old: HitLabel, new: HitLabel) -> LabelState:
+    others = tuple(label for label in state.labels if label != old)
+    return replace(remembered(state), labels=tuple(sorted(others + (new,), key=lambda label: label.frame)), pending=None, dirty=True)
+
+
+def confirm_label(state: LabelState) -> LabelState:
+    target = review_target(state)
+    if target is None:
+        return state
+    return replaced_label(state, target, replace(target, source=reviewed_source(target)))
+
+
+def retype_label_at(state: LabelState, frame: int, type_name: str) -> LabelState:
+    target = next((label for label in state.labels if label.frame == frame and label.from_model), None)
+    if target is None:
+        return replace(state, pending=None)
+    type_group, type_detail = group_and_detail(type_name)
+    retyped = replace(target, type_group=type_group, type_detail=type_detail)
+    return replaced_label(state, target, replace(retyped, source=reviewed_source(retyped)))
+
+
+def begin_retype(state: LabelState, key: str) -> LabelState:
+    target = review_target(state)
+    if target is None:
+        return state
+    if key == SERVE_KEY:
+        return replace(state, pending=PendingHit(target.frame, RETYPE_SOURCE, target.player, choosing_serve_length=True))
+    return retype_label_at(state, target.frame, TYPE_KEYS[key])
+
+
+def move_label(state: LabelState) -> LabelState:
+    target = review_target(state)
+    if target is None or any(label.frame == state.frame and label != target for label in state.labels):
+        return state
+    index = rally_containing(state.rallies, state.frame)
+    if index is None:
+        return replace(state, notice=HIT_OUTSIDE_RALLY_NOTICE)
+    moved = replace(target, frame=state.frame, rally=state.rallies[index].rally)
+    return replaced_label(state, target, replace(moved, source=reviewed_source(moved)))
+
+
+def reject_label(state: LabelState) -> LabelState:
+    label = nearest_label(state)
+    if label is None or abs(label.frame - state.frame) > review_reach_frames(state):
+        return state
+    if not label.from_model:
+        return delete_nearest_label(state)
+    rejected = replace(label, frame=label.model_frame, source=SOURCE_REJECTED)
+    return replace(remembered(state), labels=tuple(item for item in state.labels if item != label), rejected=tuple(sorted(state.rejected + (rejected,), key=lambda item: item.frame)), dirty=True)
+
+
+def review_key(state: LabelState, key: str) -> LabelState | None:
+    if state.pending is not None and state.pending.source == RETYPE_SOURCE:
+        if key == "esc":
+            return cancel_pending(state)
+        return retype_label_at(state, state.pending.frame, SERVE_LENGTH_KEYS[key]) if key in SERVE_LENGTH_KEYS else state
+    if state.pending is not None:
+        return None
+    if key == CONFIRM_KEY:
+        return confirm_label(state)
+    if key == MOVE_KEY:
+        return move_label(state)
+    if key == "x":
+        return reject_label(state)
+    if key in TYPE_KEYS or key == SERVE_KEY:
+        return begin_retype(state, key)
+    return None
+
+
+def review_counts(state: LabelState) -> dict[str, int]:
+    sources = [label.source for label in state.labels]
+    return {
+        "unreviewed": sources.count(SOURCE_MODEL),
+        "confirmed": sources.count(SOURCE_CONFIRMED),
+        "corrected_type": sources.count(SOURCE_CORRECTED),
+        "moved": sources.count(SOURCE_MOVED),
+        "rejected": len(state.rejected),
+        "added": sum(not label.from_model for label in state.labels),
+    }
+
+
 def handle_key(state: LabelState, key: str) -> LabelState:
+    if state.notice:
+        state = replace(state, notice="")
+    if state.review:
+        reviewed = review_key(state, key)
+        if reviewed is not None:
+            return reviewed
     if state.pending is not None:
         return pending_key(state, key)
     if key in STEP_KEYS:
@@ -395,8 +559,30 @@ def handle_key(state: LabelState, key: str) -> LabelState:
     return actions[key](state) if key in actions else state
 
 
+def label_rows(labels, with_review_columns: bool) -> pd.DataFrame:
+    columns = LABEL_COLUMNS + (REVIEW_COLUMNS if with_review_columns else [])
+    rows = []
+    for label in labels:
+        row = [label.rally, label.frame, label.player, label.type_group, label.type_detail, label.source]
+        if with_review_columns:
+            row += [label.score, label.model_frame, label.model_type_detail]
+        rows.append(row)
+    table = pd.DataFrame(rows, columns=columns)
+    if with_review_columns:
+        table["model_frame"] = table["model_frame"].astype("Int64")
+    return table
+
+
+def has_review_columns(state: LabelState) -> bool:
+    return state.review or any(label.from_model for label in state.labels + state.rejected)
+
+
 def labels_frame(state: LabelState) -> pd.DataFrame:
-    return pd.DataFrame([(label.rally, label.frame, label.player, label.type_group, label.type_detail, label.source) for label in state.labels], columns=LABEL_COLUMNS)
+    return label_rows(state.labels, has_review_columns(state))
+
+
+def rejected_frame(state: LabelState) -> pd.DataFrame:
+    return label_rows(state.rejected, True)
 
 
 def rallies_frame(state: LabelState) -> pd.DataFrame:
@@ -432,11 +618,20 @@ def unfinished_counts(state: "LabelState") -> dict[str, int]:
     }
 
 
+def optional_column(table: pd.DataFrame, column: str) -> pd.Series:
+    return table[column] if column in table.columns else pd.Series([None] * len(table), index=table.index, dtype=object)
+
+
 def labels_from_frame(table: pd.DataFrame) -> tuple[HitLabel, ...]:
     details = table["type_detail"] if "type_detail" in table.columns else pd.Series([""] * len(table), index=table.index)
     labels = (
-        HitLabel(int(row.rally), int(row.frame_num), str(row.player), str(row.type_group), str(row.source), detail_for(str(row.type_group), detail_of(detail)))
-        for row, detail in zip(table.itertuples(), details)
+        HitLabel(
+            int(row.rally), int(row.frame_num), str(row.player), str(row.type_group), str(row.source), detail_for(str(row.type_group), detail_of(detail)),
+            score=None if pd.isna(score) else float(score),
+            model_frame=None if pd.isna(model_frame) else int(model_frame),
+            model_type_detail=detail_of(model_detail),
+        )
+        for row, detail, score, model_frame, model_detail in zip(table.itertuples(), details, optional_column(table, "score"), optional_column(table, "model_frame"), optional_column(table, "model_type_detail"))
     )
     return tuple(sorted(labels, key=lambda label: label.frame))
 
@@ -459,6 +654,10 @@ def proposals_from_hits(hits: pd.DataFrame) -> tuple[Proposal, ...]:
     return tuple(Proposal(int(row.frame), str(row.hitter)) for row in detected.sort_values("frame").itertuples())
 
 
+def rejected_path_for(labels_file: Path) -> Path:
+    return Path(labels_file).with_name(f"{Path(labels_file).stem}_rejected.csv")
+
+
 def label_paths(video_path: Path, labels_dir: Path = LABELS_DIR) -> tuple[Path, Path]:
     stem = video_id(video_path)
     return labels_dir / f"{stem}.csv", labels_dir / f"{stem}_rallies.csv"
@@ -476,6 +675,8 @@ def write_atomically(table: pd.DataFrame, path: Path) -> Path:
 def save_labels(state: LabelState, labels_file: Path, rallies_file: Path) -> LabelState:
     write_atomically(labels_frame(state), Path(labels_file))
     write_atomically(rallies_frame(state), Path(rallies_file))
+    if state.rejected or rejected_path_for(labels_file).is_file():
+        write_atomically(rejected_frame(state), rejected_path_for(labels_file))
     return replace(state, dirty=False)
 
 
@@ -488,12 +689,15 @@ def initial_state(
     label_rallies: pd.DataFrame | None = None,
     segment_seconds: float | None = None,
     blank: bool = False,
+    review: bool = False,
+    rejected: pd.DataFrame | None = None,
 ) -> LabelState:
     spans = rallies_from_frame(label_rallies) if label_rallies is not None and len(label_rallies) else rallies_from_frame(rallies)
     known = labels_from_frame(labels) if labels is not None else ()
     segments = segment_spans(int(last_frame), float(fps), segment_seconds) if segment_seconds else ()
     first_frame = 0 if segments else (spans[0].start_frame if spans else 0)
-    return following_frame(LabelState(known, spans, proposals_from_hits(hits), 0, first_frame, int(last_frame), float(fps), segments=segments, blank=blank))
+    known_rejected = labels_from_frame(rejected) if rejected is not None and len(rejected) else ()
+    return following_frame(LabelState(known, spans, proposals_from_hits(hits), 0, first_frame, int(last_frame), float(fps), segments=segments, blank=blank, review=review, rejected=known_rejected))
 
 
 def pending_prompt(pending: PendingHit) -> str:
@@ -589,7 +793,8 @@ def status_line(state: LabelState) -> str:
     pending = ""
     if state.pending is not None:
         pending = f"   HIT at f{state.pending.frame}{pending_prompt(state.pending)}"
-    return f"f{state.frame}  {rally_text}  labels in {'segment' if state.segments else 'rally'}: {len(inside)}  total: {len(state.labels)}{unfinished_text(state)}{'  (unsaved)' if state.dirty else ''}{pending}"
+    notice = f"   {state.notice}" if state.notice else ""
+    return f"f{state.frame}  {rally_text}  labels in {'segment' if state.segments else 'rally'}: {len(inside)}  total: {len(state.labels)}{unfinished_text(state)}{'  (unsaved)' if state.dirty else ''}{pending}{notice}"
 
 
 def unfinished_text(state: LabelState) -> str:

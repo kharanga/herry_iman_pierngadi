@@ -8,6 +8,7 @@ import pandas as pd
 
 import analytics.court as court
 from analytics.court import ZONE_NAMES, hit_zone, landing_zone
+from vision.label import reviewed_rows_only
 
 OLD_DEPTH_EDGES_M = (1.98, 3.50)
 ZONE_ORDER = ZONE_NAMES + ("not_over_net",)
@@ -130,7 +131,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
 def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
     try:
-        labels = pd.read_csv(parsed.labels)
+        labels = reviewed_rows_only(pd.read_csv(parsed.labels), parsed.labels)
         parsed.out.mkdir(parents=True, exist_ok=True)
         old_rows = labelled_copy(parsed.database, parsed.out / "old_bands.duckdb", parsed.match_id, labels, OLD_DEPTH_EDGES_M)
         new_rows = labelled_copy(parsed.database, parsed.out / "new_bands.duckdb", parsed.match_id, labels, court.DEPTH_EDGES_M)

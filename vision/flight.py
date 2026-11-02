@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from vision.alignment import open_video, read_frame
+from vision.label import reviewed_rows_only
 from vision.court import video_id
 from vision.label_scores import rallies_file_for
 from vision.players import video_fps_and_width
@@ -158,7 +159,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
 def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
     try:
-        labels = pd.read_csv(parsed.labels)
+        labels = reviewed_rows_only(pd.read_csv(parsed.labels), parsed.labels)
         labels = labels[(labels["frame_num"] >= parsed.start) & (labels["frame_num"] <= parsed.end)].reset_index(drop=True)
         rallies = pd.read_csv(rallies_file_for(parsed.labels))
         track = shuttle_track(parsed.video, parsed.start, parsed.end, parsed.shuttle_dir)

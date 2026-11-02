@@ -215,6 +215,7 @@ True
 ```
 
 ### `set_rally_bound`, `add_rally`, `remove_rally`
+Removing a rally that still holds hits is refused with a notice; delete its hits first.
 
 ```python
 >>> moved = set_rally_bound(replace(two, frame=120))
@@ -227,7 +228,11 @@ RallySpan(rally=1, start_frame=120, end_frame=200)
 ([RallySpan(rally=1, start_frame=100, end_frame=200), RallySpan(rally=2, start_frame=400, end_frame=500), RallySpan(rally=3, start_frame=700, end_frame=760)], 3)
 >>> add_rally(replace(two, frame=150)).rallies == two.rallies
 True
->>> removed = remove_rally(go_to_rally(two, 0))
+>>> refused = remove_rally(go_to_rally(two, 0))
+>>> refused.rallies == two.rallies, len(refused.labels), refused.notice.startswith("not done: that would leave 2 hit(s)")
+(True, 2, True)
+>>> emptied = replace(go_to_rally(two, 0), labels=())
+>>> removed = remove_rally(emptied)
 >>> removed.rallies, removed.labels, removed.frame
 ((RallySpan(rally=1, start_frame=400, end_frame=500),), (), 400)
 
@@ -360,6 +365,88 @@ file without `type_detail` loads with empty details (`detail_of`).
 (HitLabel(rally=1, frame=131, player='me', type_group='serve', source='hand', type_detail=''),)
 >>> [path.as_posix() for path in label_paths(Path("data/recordings/stand_in/set1.mp4"))]
 ['data/labels/stand_in_set1.csv', 'data/labels/stand_in_set1_rallies.csv']
+
+```
+
+### Review mode: `review_target`, `confirm_label`, `begin_retype`, `retype_label_at`, `move_label`, `reject_label`, `reviewed_source`, `review_key`, `review_counts`, `rejected_path_for`, `rejected_frame`
+With `LabelState.review`, `handle_key` first offers the key to `review_key`:
+- `y` → `confirm_label`;
+- a type key → `begin_retype`, where `s` waits for `s` / `l`;
+- `g` → `move_label`;
+- `x` → `reject_label`.
+
+They act on `review_target`: the model label (one with a `model_frame`) nearest the
+current frame, within `REVIEW_REACH_SECONDS`. A rejected model label moves to
+`state.rejected`, and undo brings it back. `labels_frame` adds the review columns once a
+state is in review or holds model labels, and `save_labels` writes `state.rejected` to
+`rejected_path_for(labels_file)`.
+
+```python
+>>> model = pd.DataFrame({"rally": [1, 1], "frame_num": [100, 130], "player": ["opp", "me"], "type_group": ["serve", "net"], "type_detail": ["serve_short", "net"], "source": "model",
+...                       "score": [0.9, 0.6], "model_frame": [100, 130], "model_type_detail": ["serve_short", "net"]})
+>>> review = initial_state(hits, rallies, 999, 30.0, model, None, 60.0, True, review=True)
+>>> review = handle_key(at_frame(review, 102), "y")
+>>> review = handle_key(at_frame(review, 128), "v")
+>>> review = handle_key(at_frame(review, 140), "g")
+>>> [(label.frame, label.type_detail, label.source, label.model_frame, label.model_type_detail) for label in review.labels]
+[(100, 'serve_short', 'confirmed', 100, 'serve_short'), (140, 'drive', 'moved', 130, 'net')]
+>>> review = handle_key(review, "x")
+>>> review_counts(review)
+{'unreviewed': 0, 'confirmed': 1, 'corrected_type': 0, 'moved': 0, 'rejected': 1, 'added': 0}
+>>> [(label.frame, label.source) for label in review.rejected], review_counts(handle_key(review, "u"))["moved"]
+([(130, 'rejected')], 1)
+>>> list(labels_frame(review).columns)[-3:], rejected_path_for(Path("data/labels/club_x.csv")).as_posix()
+(['score', 'model_frame', 'model_type_detail'], 'data/labels/club_x_rejected.csv')
+
+```
+
+### Never losing a label: `lost_labels`, `newly_lost_labels`, `labels_kept`, `lost_labels_notice`, `HIT_OUTSIDE_RALLY_NOTICE`, `reviewed_rows_only`, `unreviewed_model_rows`
+A label outside every rally would be dropped by the next rally edit, so neither can
+happen:
+- **Rally edits:** any rally edit (`b`, `e`, `r`, `-`, through `with_rallies`,
+  `set_rally_bound` and `remove_rally`) that would push a label out of every rally is
+  refused (`newly_lost_labels`). The state is unchanged and gets a `notice` naming the
+  hits.
+- **Labels already outside:** a label that was outside every rally before the edit (from
+  an older file) doesn't block edits and is kept as it is (`labels_kept`).
+- **New or moved hits:** `h`, `a` and the review move `g` refuse a frame outside every
+  rally with `HIT_OUTSIDE_RALLY_NOTICE`.
+- **Notices:** they show in the page header and the status line, and clear on the next
+  key.
+
+`reviewed_rows_only` raises `ValueError` for a labels table that still has `source =
+model` rows. `label_scores`, `hit_training`, `club_classifier`, `flight_types`,
+`movement --evaluate-labels`, `track_check`, `flight` and `zone_split` use it, so nothing
+scores, trains or reports on unreviewed model labels.
+
+```python
+>>> from vision.label import HIT_OUTSIDE_RALLY_NOTICE, lost_labels, reviewed_rows_only
+>>> guarded = initial_state(hits, rallies, 999, 30.0, pd.DataFrame({"rally": [1], "frame_num": [190], "player": ["me"], "type_group": ["net"], "type_detail": ["net"], "source": ["hand"]}), rallies)
+>>> outside = handle_key(at_frame(guarded, 300), "h")
+>>> outside.pending is None, outside.notice == HIT_OUTSIDE_RALLY_NOTICE
+(True, True)
+>>> shrunk = handle_key(at_frame(guarded, 160), "r")
+>>> shrunk.rallies == guarded.rallies, shrunk.notice
+(True, 'not done: that would leave 1 hit(s) outside every rally (f190); move or delete them first (x)')
+>>> handle_key(shrunk, ".").notice
+''
+>>> split = handle_key(at_frame(guarded, 160), "e")
+>>> [(span.start_frame, span.end_frame) for span in split.rallies][:2], [(label.rally, label.frame) for label in split.labels]
+([(100, 160), (161, 200)], [(2, 190)])
+>>> [label.frame for label in lost_labels(guarded.labels, guarded.rallies[1:])]
+[190]
+>>> from vision.label import newly_lost_labels
+>>> orphaned = replace(guarded, labels=guarded.labels + (HitLabel(1, 300, "opp", "net", "hand", "net"),))
+>>> widened = handle_key(at_frame(orphaned, 210), "r")
+>>> widened.notice, [(label.rally, label.frame) for label in widened.labels]
+('', [(1, 190), (1, 300)])
+>>> [label.frame for label in newly_lost_labels(orphaned.labels, orphaned.rallies, orphaned.rallies[1:])]
+[190]
+>>> try:
+...     reviewed_rows_only(pd.DataFrame({"source": ["model", "hand"]}), "x.csv")
+... except ValueError as error:
+...     print(error)
+x.csv has 1 unreviewed model labels (source = model); review them in python -m vision.label_ui --review first
 
 ```
 

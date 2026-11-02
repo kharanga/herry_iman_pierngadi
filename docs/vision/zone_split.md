@@ -25,6 +25,8 @@ It prints:
   zone-mix and serve-placement habits are listed one by one, the other families as a
   count.
 
+A labels file that still holds unreviewed model labels (`source = model`, from `vision.prelabel`) is refused with `error: ... review them in python -m vision.label_ui --review first` (`vision.label.reviewed_rows_only`).
+
 Exit codes: `0`; `1` with `error: ...` for a missing file or column; `2` for bad
 arguments.
 

@@ -20,6 +20,8 @@ With `--sheet` it also draws 20 random hits (seed 1). Each tile shows the frame 
 quarter-second after the hit with the 0.5 s of detections drawn, marked "jump" when the
 track jumps. It is saved to `data/checks/shuttle/<video id>_flight_sheet.jpg`.
 
+A labels file that still holds unreviewed model labels (`source = model`, from `vision.prelabel`) is refused with `error: ... review them in python -m vision.label_ui --review first` (`vision.label.reviewed_rows_only`).
+
 Exit codes: `0`; `1` with `error: ...` for a missing file or no shuttle track in the
 range; `2` for bad arguments.
 

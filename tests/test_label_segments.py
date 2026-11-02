@@ -113,18 +113,17 @@ def test_e_before_any_rally_and_r_or_minus_outside_every_rally_do_nothing():
     assert pressed(at(state, 900), ["e"]).rallies == state.rallies
 
 
-def test_hits_take_the_rally_holding_them_and_rally_zero_outside():
+def test_hits_take_the_rally_holding_them_and_a_hit_outside_every_rally_is_refused():
     state = blank_state()
     state = pressed(at(state, 1440), ["b", "h", "m", "s", "s"])
     state = pressed(at(state, 1470), ["h", "o", "n"])
     state = pressed(at(state, 1560), ["e"])
-    state = pressed(at(state, 3000), ["h", "m", "c"])
-    assert [(label.rally, label.frame, label.type_group, label.type_detail) for label in state.labels] == [
-        (1, 1440, "serve", "serve_short"), (1, 1470, "net", "net"), (0, 3000, "clear", "clear")
-    ]
-    after_rally_change = pressed(at(state, 100), ["b"])
-    assert [label.frame for label in after_rally_change.labels] == [1440, 1470]
-    assert pressed(after_rally_change, ["u"]).labels == state.labels
+    outside = pressed(at(state, 3000), ["h"])
+    assert outside.pending is None and outside.labels == state.labels and outside.notice
+    assert pressed(outside, ["."]).notice == ""
+    assert [(label.rally, label.frame, label.type_group, label.type_detail) for label in state.labels] == [(1, 1440, "serve", "serve_short"), (1, 1470, "net", "net")]
+    orphaning = pressed(at(state, 1450), ["r"])
+    assert orphaning.rallies == state.rallies and "1440" in orphaning.notice
 
 
 def test_undo_reverses_b_and_e_one_at_a_time():

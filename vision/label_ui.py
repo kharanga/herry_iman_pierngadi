@@ -20,7 +20,9 @@ import pandas as pd
 from vision.alignment import open_video, read_frame
 from vision.hits import HITS_DIR
 from vision.label import (
+    CONFIRM_KEY,
     DEFAULT_SEGMENT_SECONDS,
+    MOVE_KEY,
     KEY_HELP,
     LEFT_PANEL_WIDTH,
     PLAYER_KEYS,
@@ -39,7 +41,9 @@ from vision.label import (
     load_tracks,
     overlay_state,
     rally_containing,
+    rejected_path_for,
     remembered,
+    review_counts,
     type_text,
     unfinished_counts,
     save_labels,
@@ -54,8 +58,9 @@ DEFAULT_PORT = 8766
 CLIP_WIDTH = 480
 JPEG_QUALITY = 85
 CLIENT_GONE_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
-ACTION_KEYS = set(STEP_KEYS) | set(TYPE_KEYS) | set(PLAYER_KEYS) | set(SERVE_LENGTH_KEYS) | {SERVE_KEY, RALLY_START_KEY, RALLY_END_KEY, "[", "]", "h", "a", "x", "u", "r", "+", "-", "esc"}
+ACTION_KEYS = set(STEP_KEYS) | set(TYPE_KEYS) | set(PLAYER_KEYS) | set(SERVE_LENGTH_KEYS) | {SERVE_KEY, RALLY_START_KEY, RALLY_END_KEY, CONFIRM_KEY, MOVE_KEY, "[", "]", "h", "a", "x", "u", "r", "+", "-", "esc"}
 BROWSER_KEY_HELP = (KEY_HELP[0].replace("space play/pause left", "space play/pause the clip"),) + KEY_HELP[1:-1] + ("+ add rally here   - delete rally   1/2/3 loop speed   esc cancel   every change is saved at once",)
+REVIEW_KEY_HELP = "review: y confirm the model label within 0.5 s   c d k n l v ? or s s / s l retype it   g move it to this frame   x reject it   h add a missed hit"
 
 
 def jump_to_frame(state: LabelState, frame: int) -> LabelState:
@@ -133,7 +138,14 @@ def state_json(state: LabelState) -> dict:
         "rally_index": state.rally_index,
         "rally": None if span is None else {"rally": span.rally, "start_frame": span.start_frame, "end_frame": span.end_frame},
         "rally_count": len(state.rallies),
-        "labels": [{"rally": label.rally, "frame": label.frame, "player": label.player, "type_group": label.type_group, "type_detail": label.type_detail, "type_text": type_text(label), "source": label.source} for label in state.labels if in_rally(label.frame)],
+        "labels": [
+            {"rally": label.rally, "frame": label.frame, "player": label.player, "type_group": label.type_group, "type_detail": label.type_detail, "type_text": type_text(label), "source": label.source,
+             "score": label.score, "model_frame": label.model_frame, "model_type_detail": label.model_type_detail}
+            for label in state.labels if in_rally(label.frame)
+        ],
+        "review": state.review,
+        "notice": state.notice,
+        "review_counts": review_counts(state) if state.review else None,
         "proposals": [{"frame": proposal.frame, "hitter": proposal.hitter} for proposal in state.proposals if in_rally(proposal.frame)],
         "segment_count": len(state.segments),
         "blank": state.blank,
@@ -178,15 +190,18 @@ def clip_command(video_path: Path, start_frame: int, end_frame: int, fps: float,
 
 
 class LabelSession:
-    def __init__(self, video_path: Path, labels_file: Path, rallies_file: Path, players_dir: Path = PLAYERS_DIR, hits_dir: Path = HITS_DIR, blank: bool = False, segment_seconds: float | None = None):
+    def __init__(self, video_path: Path, labels_file: Path, rallies_file: Path, players_dir: Path = PLAYERS_DIR, hits_dir: Path = HITS_DIR, blank: bool = False, segment_seconds: float | None = None, review: bool = False):
         self.video_path = Path(video_path)
         self.labels_file, self.rallies_file = Path(labels_file), Path(rallies_file)
+        blank = blank or review
         self.blank = blank
         last_frame, fps = video_last_frame_and_fps(self.video_path)
         self.hits_table, self.rallies_table = detector_tables(self.video_path, last_frame, hits_dir, blank)
         labels = pd.read_csv(self.labels_file) if self.labels_file.is_file() else None
         label_rallies = pd.read_csv(self.rallies_file) if self.rallies_file.is_file() else None
-        self.state = initial_state(self.hits_table, self.rallies_table, last_frame, fps, labels, label_rallies, segment_seconds, blank)
+        rejected_file = rejected_path_for(self.labels_file)
+        rejected = pd.read_csv(rejected_file) if review and rejected_file.is_file() else None
+        self.state = initial_state(self.hits_table, self.rallies_table, last_frame, fps, labels, label_rallies, segment_seconds, blank, review, rejected)
         self.tracks = load_tracks(self.video_path, 0, last_frame, players_dir)
         self.lock = threading.Lock()
         self.clip_dir = Path(tempfile.mkdtemp(prefix="label_ui_clips_"))
@@ -353,8 +368,10 @@ table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px s
 .serveprompt{background:#f6f;color:#111;padding:2px 8px;border-radius:4px}
 .rblock{position:absolute;top:0;height:44px;background:#2f5f3f}
 .rblock.unchecked{background:#5f4f2f}
+.lab.model{background:#f80}.lab.confirmed{background:#3c3}.lab.corrected_type,.lab.moved{background:#0cf}.lab.hand{background:#fff}
+.notice{color:#111;background:#fc0;padding:2px 8px;border-radius:4px}.notice:empty{display:none}.src-model{color:#f80}.src-confirmed{color:#3c3}.src-corrected_type,.src-moved{color:#0cf}.review-only{display:none}
 </style></head><body>
-<header><b>Label hits</b><span><input id="framebox" size="8" placeholder="frame" inputmode="numeric" autocomplete="off" aria-label="frame number"><button id="gobutton">go</button> <span id="framemsg" class="small"></span></span><span id="status"></span><span id="progress" class="small"></span><span id="pending" class="pending"></span></header>
+<header><b>Label hits</b><span><input id="framebox" size="8" placeholder="frame" inputmode="numeric" autocomplete="off" aria-label="frame number"><button id="gobutton">go</button> <span id="framemsg" class="small"></span></span><span id="status"></span><span id="progress" class="small"></span><span id="pending" class="pending"></span><span id="notice" class="notice"></span></header>
 <main>
 <section id="left"><img id="frame" alt="current frame">
 <div id="timeline" title="click to jump"></div>
@@ -365,6 +382,7 @@ table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px s
 <div><button data-key="h">hit (h)</button><button data-key="a" class="detector">accept proposal (a)</button><button data-key="m">me (m)</button><button data-key="o">opp (o)</button>
 <button data-keys='["s","s"]'>serve short (s s)</button><button data-keys='["s","l"]'>serve long (s l)</button><button data-key="c">clear (c)</button><button data-key="d">drop (d)</button><button data-key="k">smash (k)</button>
 <button data-key="n">net (n)</button><button data-key="l">lift (l)</button><button data-key="v">drive (v)</button><button data-key="?">unknown (?)</button></div>
+<div class="review-only"><button data-key="y">confirm (y)</button><button data-key="g">move here (g)</button><span class="small"> model labels: orange = to review, green = confirmed, blue = corrected or moved, white = added</span></div>
 <div><button data-key="x">delete nearest (x)</button><button data-key="u">undo (u)</button><button data-key="r" class="detector">rally start/end here (r)</button>
 <button data-key="+" class="detector">add rally (+)</button><button data-key="-">remove rally (-)</button><button data-key="esc">cancel (esc)</button></div>
 <div class="small" id="help"></div></div></section>
@@ -376,7 +394,7 @@ table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px s
 let state=null, speed=0.5, clipKey="";
 const $=id=>document.getElementById(id);
 const ACTION_KEYS=ACTION_KEY_LIST;
-$("help").textContent=KEY_HELP_TEXT;
+$("help").textContent=KEY_HELP_TEXT;const REVIEW_HELP=REVIEW_HELP_TEXT;
 async function post(action){const r=await fetch("/api/action",{method:"POST",body:JSON.stringify(action)});render(await r.json());}
 function x(frame,width){const s=state.rally;return s?Math.round((frame-s.start_frame)/Math.max(s.end_frame-s.start_frame,1)*(width-2)):0;}
 function render(s){if(s.error){alert(s.error);return;}state=s;
@@ -387,15 +405,18 @@ function render(s){if(s.error){alert(s.error);return;}state=s;
  document.querySelectorAll("button.detector").forEach(b=>b.hidden=s.blank);
  $("hitshead").textContent=s.segment_count?"Hits in this segment":"Hits in this rally";
  $("prev").textContent=s.segment_count?"prev segment ([)":"prev rally";$("next").textContent=s.segment_count?"next segment (])":"next rally";
- const p0=s.progress;$("progress").textContent=p0.rallies_labelled+" of "+p0.rallies+" rallies labelled, "+p0.hits_labelled+" hits"+(p0.serves_without_length?", "+p0.serves_without_length+" serves need short/long":"")+(p0.unchecked_rallies?", "+p0.unchecked_rallies+" rallies unchecked":"");
+ document.querySelectorAll(".review-only").forEach(e=>e.style.display=s.review?"block":"none");$("help").textContent=(s.review?REVIEW_HELP+" | ":"")+KEY_HELP_TEXT;
+ $("notice").textContent=s.notice||"";const rc=s.review_counts;
+ const p0=s.progress;$("progress").textContent=(rc?"to review "+rc.unreviewed+" | confirmed "+rc.confirmed+" | corrected "+rc.corrected_type+" | moved "+rc.moved+" | rejected "+rc.rejected+" | added "+rc.added+"   ":"")+p0.rallies_labelled+" of "+p0.rallies+" rallies labelled, "+p0.hits_labelled+" hits"+(p0.serves_without_length?", "+p0.serves_without_length+" serves need short/long":"")+(p0.unchecked_rallies?", "+p0.unchecked_rallies+" rallies unchecked":"");
  const p=s.pending;$("pending").className=p&&p.choosing_serve_length?"pending serveprompt":"pending";
  $("pending").textContent=p?("HIT at f"+p.frame+(!p.player?": pick me or opp":p.choosing_serve_length?" by "+p.player+": SERVE, press s for SHORT or l for LONG (esc cancels)":" by "+p.player+": pick a type")):"";
  const t=$("timeline"),w=t.clientWidth;t.innerHTML="";
  s.user_rallies.forEach(u=>{const d=document.createElement("div");d.className=u[3]?"rblock":"rblock unchecked";const a=x(Math.max(u[1],r.start_frame),w),b=x(Math.min(u[2],r.end_frame),w);d.style.left=a+"px";d.style.width=Math.max(2,b-a)+"px";d.title="rally "+u[0]+" ["+u[1]+"-"+u[2]+"]"+(u[3]?"":" (bounds not checked: press b and e)");t.appendChild(d);});
  s.proposals.forEach(p=>{const d=document.createElement("div");d.className="tick";d.style.left=x(p.frame,w)+"px";d.title="proposal f"+p.frame+" "+p.hitter;t.appendChild(d);});
- s.labels.forEach(l=>{const d=document.createElement("div");d.className="lab";d.style.left=x(l.frame,w)+"px";d.title=l.frame+" "+l.player+" "+l.type_text;t.appendChild(d);});
+ s.labels.forEach(l=>{const d=document.createElement("div");d.className="lab"+(s.review?" "+l.source:"");d.style.left=x(l.frame,w)+"px";d.title=l.frame+" "+l.player+" "+l.type_text+(l.score!=null?" ("+l.score.toFixed(2)+")":"");t.appendChild(d);});
  if(r&&s.frame>=r.start_frame&&s.frame<=r.end_frame){const c=document.createElement("div");c.className="cur";c.style.left=x(s.frame,w)+"px";t.appendChild(c);}
- const rows=s.labels.map(l=>"<tr class='row' data-frame='"+l.frame+"'><td>f"+l.frame+"</td><td>"+l.player+"</td><td>"+l.type_text+"</td><td class='small'>"+l.source+"</td><td><button data-delete='"+l.frame+"'>delete</button></td></tr>");
+ const modelNote=l=>l.model_frame==null?"":" <span class='small'>"+(l.score!=null?l.score.toFixed(2):"")+(l.model_frame!==l.frame?" was f"+l.model_frame:"")+(l.model_type_detail&&l.model_type_detail!==l.type_detail?" was "+l.model_type_detail:"")+"</span>";
+ const rows=s.labels.map(l=>"<tr class='row' data-frame='"+l.frame+"'><td>f"+l.frame+"</td><td>"+l.player+"</td><td>"+l.type_text+modelNote(l)+"</td><td class='small src-"+l.source+"'>"+l.source+"</td><td>"+(s.review?"":"<button data-delete='"+l.frame+"'>delete</button>")+"</td></tr>");
  $("hits").innerHTML=rows.join("")||"<tr><td class='small'>none yet</td></tr>";
  if(r){const key=r.start_frame+"-"+r.end_frame;if(key!==clipKey){clipKey=key;$("clip").src="/clip.mp4?start="+r.start_frame+"&end="+r.end_frame;$("clip").playbackRate=speed;}}
 }
@@ -418,7 +439,7 @@ document.addEventListener("keydown",e=>{if(e.metaKey||e.ctrlKey||e.altKey)return
 setInterval(()=>{const v=$("clip");if(!state||!state.rally||!v.duration)return;const tr=$("cliptrack");const f=v.currentTime*state.fps;const span=state.rally.end_frame-state.rally.start_frame;
  tr.innerHTML="<div class='playhead' style='left:"+Math.round(f/Math.max(span,1)*(tr.clientWidth-2))+"px'></div><div class='cur' style='height:10px;left:"+Math.round((state.frame-state.rally.start_frame)/Math.max(span,1)*(tr.clientWidth-2))+"px'></div>";},100);
 fetch("/api/state").then(r=>r.json()).then(render);
-</script></body></html>""".replace("ACTION_KEY_LIST", json.dumps(sorted(ACTION_KEYS))).replace("KEY_HELP_TEXT", json.dumps(" | ".join(BROWSER_KEY_HELP)))
+</script></body></html>""".replace("ACTION_KEY_LIST", json.dumps(sorted(ACTION_KEYS))).replace("REVIEW_HELP_TEXT", json.dumps(REVIEW_KEY_HELP)).replace("KEY_HELP_TEXT", json.dumps(" | ".join(BROWSER_KEY_HELP)))
 
 
 def parse_arguments(arguments: list[str]) -> argparse.Namespace:
@@ -431,6 +452,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--players-dir", type=Path, default=PLAYERS_DIR, help="root of the tracking files for the overlay (default data/players)")
     parser.add_argument("--hits-dir", type=Path, default=HITS_DIR, help="root of the hits/rallies files (default data/hits)")
     parser.add_argument("--blank", action="store_true", help="show nothing the detector inferred: no detected rallies, no hit proposals, no inferred serves, no hit flash; no hits file needed. Tracking boxes stay; you mark rallies with b / e and move by --segment-seconds segments")
+    parser.add_argument("--review", action="store_true", help="review a model-labelled file (implies --blank): y confirms the model label within 0.5 s, a type key retypes it, g moves it to the current frame, x rejects it (kept in <labels>_rejected.csv), h adds a missed hit")
     parser.add_argument("--segment-seconds", type=float, help=f"move through the video in back-to-back segments of this many seconds ([ ] previous/next; default {DEFAULT_SEGMENT_SECONDS:g} with --blank); segments are never saved")
     return parser.parse_args(arguments)
 
@@ -442,7 +464,8 @@ def main(arguments: list[str]) -> int:
         labels_file = Path(parsed.labels)
         rallies_file = labels_file.with_name(labels_file.stem + "_rallies.csv")
     try:
-        session = LabelSession(parsed.video, labels_file, rallies_file, parsed.players_dir, parsed.hits_dir, parsed.blank, segment_seconds_of(parsed.blank, parsed.segment_seconds))
+        blank = parsed.blank or parsed.review
+        session = LabelSession(parsed.video, labels_file, rallies_file, parsed.players_dir, parsed.hits_dir, blank, segment_seconds_of(blank, parsed.segment_seconds), parsed.review)
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

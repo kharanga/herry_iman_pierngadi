@@ -41,6 +41,10 @@ SET_PREDICTION_SQL = """
 UPDATE shots SET type_pred = ?, type_detail_pred = ?
 WHERE shots.rowid = ?
 """
+SET_PREDICTION_WITH_CONFIDENCE_SQL = """
+UPDATE shots SET type_pred = ?, type_detail_pred = ?, type_conf = ?
+WHERE shots.rowid = ?
+"""
 
 
 @dataclass(frozen=True)
@@ -128,7 +132,9 @@ def with_flight_features(rows: pd.DataFrame, source: Source) -> pd.DataFrame:
 
 
 def training_rows(source: Source, labels_file: Path) -> pd.DataFrame:
-    labels = pd.read_csv(labels_file)[["frame_num", "type_detail"]]
+    from vision.label import reviewed_rows_only
+
+    labels = reviewed_rows_only(pd.read_csv(labels_file), labels_file)[["frame_num", "type_detail"]]
     rows = with_flight_features(shot_rows(source), source).merge(labels, on="frame_num")
     return rows[rows["has_points"] & rows["type_detail"].isin(CLASSIFIED_DETAILS)].reset_index(drop=True)
 
@@ -143,7 +149,7 @@ def fitted_classifier(training: pd.DataFrame, with_flight: bool) -> HistGradient
     return HistGradientBoostingClassifier(random_state=CLASSIFIER_SEED).fit(training[feature_columns(with_flight)], training["type_detail"])
 
 
-def write_predictions(source: Source, output_database: Path, row_ids, details) -> Path:
+def write_predictions(source: Source, output_database: Path, row_ids, details, confidences=None) -> Path:
     import duckdb
 
     output_database.parent.mkdir(parents=True, exist_ok=True)
@@ -154,7 +160,10 @@ def write_predictions(source: Source, output_database: Path, row_ids, details) -
         connection.execute(CLEAR_OWN_PREDICTIONS_SQL, [source.match_id])
         if "type_conf" in {row[0] for row in connection.execute(SHOTS_COLUMNS_SQL).fetchall()}:
             connection.execute(CLEAR_OWN_CONFIDENCE_SQL, [source.match_id])
-        connection.executemany(SET_PREDICTION_SQL, [[group_of_detail(detail), detail, int(row_id)] for row_id, detail in zip(row_ids, details)])
+        if confidences is None:
+            connection.executemany(SET_PREDICTION_SQL, [[group_of_detail(detail), detail, int(row_id)] for row_id, detail in zip(row_ids, details)])
+        else:
+            connection.executemany(SET_PREDICTION_WITH_CONFIDENCE_SQL, [[group_of_detail(detail), detail, float(confidence), int(row_id)] for row_id, detail, confidence in zip(row_ids, details, confidences)])
         connection.execute("COMMIT")
     finally:
         connection.close()
