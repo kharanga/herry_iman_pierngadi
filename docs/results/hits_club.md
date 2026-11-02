@@ -336,6 +336,16 @@ model's rallies and serves with the scorer's hits after the serve.
 - **Serve rows on in-play rallies**: the in-play refit is done
   (`docs/results/rally_in_play.md`); its rally starts still rarely carry the serve.
 
+## Adding the reviewed club game n7 (test game 1 and set 1, 30 fps)
+
+A third club game, `n7MqoAVqEW4`, labelled by the model and then reviewed by the user,
+was added to the scorer: nine + Lin + Ding + n7, the clubs together at 1/3 of the weight,
+tuned thresholds 0.55 / 0.6. It is worse than nine + Lin + Ding. It loses 2-11 correct
+shots across the 8 scorer × detector × classifier pairings, from fewer hits found and
+lower precision on test game 1 and more false hits on set 1. Its hit frames were reviewed
+from the model's proposals, so they may teach the scorer its own timing. The shipped
+choice stays nine + Lin + Ding. Full tables and commands: `docs/results/retrain_with_review.md`.
+
 ## How to run
 
 ```

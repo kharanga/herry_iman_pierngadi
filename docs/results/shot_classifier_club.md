@@ -152,6 +152,18 @@ Per type, hits alone, typed right of matched:
 - **Small numbers:** two videos, 282 labelled hits in all. A 1-3 shot difference is noise,
   but AVG's lead over pro on test game 1 (13-14 shots) is not.
 
+## Adding the reviewed club game n7 (test game 1 and set 1, 30 fps)
+
+The club classifier inside AVG was retrained on Lin + Ding + n7 (912 labelled hits with
+feet points, 704 before). The new AVG beats the old one in all 8 pairings of scorer,
+detector and classifier, by 1-5 correct shots. With the nine + Lin + Ding scorer, summed
+over both videos:
+- alone: 166/339 = 49.0%, against 162/339;
+- combined: 164/324 = 50.6%, against 160/324.
+
+The recommendation is AVG with club = Lin + Ding + n7. Full tables and commands:
+`docs/results/retrain_with_review.md`.
+
 ## How to run
 
 ```
