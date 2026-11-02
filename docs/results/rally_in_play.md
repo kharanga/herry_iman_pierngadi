@@ -322,4 +322,8 @@ done
 Then `vision.features` and `shots.predict` on a copy of `data/scout.duckdb` per run, and
 `vision.label_scores` on the relabel with `--run` for
 `five_ranges combined_nine_matches combined_nine_plus_lin_tuned combined_lin_w0.6_tuned in_play_refit_tuned in_play_refit_nine`
-(reports `data/club_labels/report_vis029_pipeline{,_checked}.md`).
+(reports `data/club_labels/report_vis029_pipeline{,_checked}.md`). Those shot types were
+scored before the drive-after-clear-is-a-smash rule retyped 2 of set 1's labels; to
+reproduce them, use the label copies dated `_2026-11-01` (`docs/results/hits_club.md`,
+"Test files"). The rally bounds and the in-play training don't use shot types, so they
+reproduce from either copy.

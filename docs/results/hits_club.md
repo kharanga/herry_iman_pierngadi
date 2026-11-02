@@ -81,6 +81,12 @@ Set 1 is never trained on.
 - **Test files:** a read-only copy, `data/club_labels/set1_labels_relabel/`. A second
   copy keeps only the 28 checked rallies and their 136 hits
   (`set1_labels_relabel_checked/`).
+- **A later labelling rule:** a drive that directly follows a clear in the same rally is
+  a smash. It retypes 2 of set 1's 172 labels (frames 4657 and 8963, drive to smash) and
+  leaves the hit frames, hitters and rallies alone. Every set-1 number on this page was
+  scored before that rule. To reproduce them, use the copies kept from then:
+  `data/club_labels/set1_labels_relabel_2026-11-01/` and
+  `set1_labels_relabel_checked_2026-11-01/`. The undated copies now follow the rule.
 - **Tracks:** set 1's current tracks (unchanged by the cleanup, see
   `club_tracks_clean.md`).
 - **Rows:** built and predicted in copies of the database, with the 8-label classifier.
