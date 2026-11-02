@@ -24,7 +24,8 @@ LABEL_COLUMNS = ["rally", "frame_num", "player", "type_group", "type_detail", "s
 RALLY_COLUMNS = ["rally", "start_frame", "end_frame", "bounds_checked"]
 SOURCE_HAND, SOURCE_ACCEPTED = "hand", "accepted"
 SOURCE_MODEL, SOURCE_CONFIRMED, SOURCE_CORRECTED, SOURCE_MOVED, SOURCE_REJECTED = "model", "confirmed", "corrected_type", "moved", "rejected"
-REVIEW_COLUMNS = ["score", "model_frame", "model_type_detail"]
+SOURCE_CORRECTED_HITTER = "corrected_hitter"
+REVIEW_COLUMNS = ["score", "model_frame", "model_type_detail", "model_player"]
 CONFIRM_KEY, MOVE_KEY = "y", "g"
 REVIEW_REACH_SECONDS = 0.5
 RETYPE_SOURCE = "retype"
@@ -71,6 +72,7 @@ class HitLabel:
     score: float | None = field(default=None, repr=False)
     model_frame: int | None = field(default=None, repr=False)
     model_type_detail: str = field(default="", repr=False)
+    model_player: str = field(default="", repr=False)
 
     @property
     def from_model(self) -> bool:
@@ -437,12 +439,26 @@ def review_target(state: LabelState) -> HitLabel | None:
     return min(candidates, key=lambda label: (abs(label.frame - state.frame), label.frame))
 
 
+def hitter_corrected(label: HitLabel) -> bool:
+    return label.from_model and bool(label.model_player) and label.player != label.model_player
+
+
 def reviewed_source(label: HitLabel) -> str:
     if label.frame != label.model_frame:
         return SOURCE_MOVED
     if label.type_detail != label.model_type_detail:
         return SOURCE_CORRECTED
+    if hitter_corrected(label):
+        return SOURCE_CORRECTED_HITTER
     return SOURCE_CONFIRMED
+
+
+def set_hitter(state: LabelState, player: str) -> LabelState:
+    target = review_target(state)
+    if target is None:
+        return state
+    rehit = replace(target, player=player, model_player=target.model_player or target.player)
+    return replaced_label(state, target, replace(rehit, source=reviewed_source(rehit)))
 
 
 def replaced_label(state: LabelState, old: HitLabel, new: HitLabel) -> LabelState:
@@ -509,18 +525,21 @@ def review_key(state: LabelState, key: str) -> LabelState | None:
         return move_label(state)
     if key == "x":
         return reject_label(state)
+    if key in PLAYER_KEYS:
+        return set_hitter(state, PLAYER_KEYS[key])
     if key in TYPE_KEYS or key == SERVE_KEY:
         return begin_retype(state, key)
     return None
 
 
 def review_counts(state: LabelState) -> dict[str, int]:
-    sources = [label.source for label in state.labels]
+    reviewed = [label for label in state.labels if label.from_model and label.source != SOURCE_MODEL]
     return {
-        "unreviewed": sources.count(SOURCE_MODEL),
-        "confirmed": sources.count(SOURCE_CONFIRMED),
-        "corrected_type": sources.count(SOURCE_CORRECTED),
-        "moved": sources.count(SOURCE_MOVED),
+        "unreviewed": sum(label.source == SOURCE_MODEL for label in state.labels),
+        "confirmed": sum(label.source == SOURCE_CONFIRMED for label in state.labels),
+        "corrected_type": sum(label.type_detail != label.model_type_detail for label in reviewed),
+        "corrected_hitter": sum(hitter_corrected(label) for label in reviewed),
+        "moved": sum(label.frame != label.model_frame for label in reviewed),
         "rejected": len(state.rejected),
         "added": sum(not label.from_model for label in state.labels),
     }
@@ -565,7 +584,7 @@ def label_rows(labels, with_review_columns: bool) -> pd.DataFrame:
     for label in labels:
         row = [label.rally, label.frame, label.player, label.type_group, label.type_detail, label.source]
         if with_review_columns:
-            row += [label.score, label.model_frame, label.model_type_detail]
+            row += [label.score, label.model_frame, label.model_type_detail, label.model_player]
         rows.append(row)
     table = pd.DataFrame(rows, columns=columns)
     if with_review_columns:
@@ -630,8 +649,11 @@ def labels_from_frame(table: pd.DataFrame) -> tuple[HitLabel, ...]:
             score=None if pd.isna(score) else float(score),
             model_frame=None if pd.isna(model_frame) else int(model_frame),
             model_type_detail=detail_of(model_detail),
+            model_player=detail_of(model_player) or ("" if pd.isna(model_frame) else str(row.player)),
         )
-        for row, detail, score, model_frame, model_detail in zip(table.itertuples(), details, optional_column(table, "score"), optional_column(table, "model_frame"), optional_column(table, "model_type_detail"))
+        for row, detail, score, model_frame, model_detail, model_player in zip(
+            table.itertuples(), details, optional_column(table, "score"), optional_column(table, "model_frame"), optional_column(table, "model_type_detail"), optional_column(table, "model_player")
+        )
     )
     return tuple(sorted(labels, key=lambda label: label.frame))
 

@@ -16,7 +16,8 @@ correct in `vision.label_ui --review` (`docs/vision/label_ui.md`, "Review mode")
 - **The labels file** (default `data/labels/<video id>.csv`) gets one row per hit:
   - the hit's rally, frame and hitter;
   - the predicted group and detail, with `source = model`;
-  - `score`, `model_frame` (= the frame) and `model_type_detail` (= the detail).
+  - `score`, `model_frame` (= the frame), `model_type_detail` (= the detail) and
+    `model_player` (= the hitter).
   A hit with no prediction (no landing point: the last shot of a rally) gets type
   `unknown` and no score.
 - **The rallies file** gets the detector's rallies that hold hits, with

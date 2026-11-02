@@ -104,16 +104,18 @@ the ones to check.
 |---|---|---|
 | `y` | confirms the model label within 0.5 s of the current frame (`REVIEW_REACH_SECONDS`) | `confirmed` |
 | a type key (`c d k n l v ?`, or `s` then `s` / `l`) | retypes that label | `corrected_type` |
+| `m` / `o` (with no hit pending) | sets that label's hitter; the model's is kept in `model_player` | `corrected_hitter` |
 | `g` | moves that label to the current frame | `moved` |
 | `x` | rejects the nearest label within 0.5 s. A model label goes to `<labels>_rejected.csv` with `source = rejected` and its model frame; a hand label is deleted | `rejected` |
 | `h` | adds a missed hit, as in the other modes | `hand` |
 | `b` / `e` | rally bounds, as in blank mode | |
 
-- **What a label keeps:** every model label keeps its `score`, `model_frame` and
-  `model_type_detail`. Its `source` comes from comparing them with the label now
+- **What a label keeps:** every model label keeps its `score`, `model_frame`,
+  `model_type_detail` and `model_player`. Its `source` comes from comparing them with the label now
   (`reviewed_source`):
   - `moved` if the frame differs from the model's, even if the type was corrected too;
-  - `corrected_type` if only the type differs;
+  - `corrected_type` if the type differs and the frame doesn't;
+  - `corrected_hitter` if only the hitter differs;
   - `confirmed` otherwise.
   So a correction followed by a move counts as moved, and the model type stays in its
   column.
@@ -124,8 +126,9 @@ the ones to check.
     corrected or moved, and white for added.
   - The hit table shows each model label's score and what the model said ("was f1234",
     "was drop").
-  - The header counts the labels to review, confirmed, corrected, moved, rejected and
-    added (`review_counts`).
+  - The header counts the labels to review, confirmed, type fixed, hitter fixed,
+    moved, rejected and added (`review_counts`). A label with several fixes counts once
+    for each kind.
 - **No silent loss:** a move (`g`) or a new hit (`h`) outside every rally is refused,
   with "a hit must be inside a rally ..." in the header; widen the rally with `b` / `e`
   first. A rally edit that would leave a hit outside every rally is refused the same way,

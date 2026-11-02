@@ -60,7 +60,7 @@ JPEG_QUALITY = 85
 CLIENT_GONE_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 ACTION_KEYS = set(STEP_KEYS) | set(TYPE_KEYS) | set(PLAYER_KEYS) | set(SERVE_LENGTH_KEYS) | {SERVE_KEY, RALLY_START_KEY, RALLY_END_KEY, CONFIRM_KEY, MOVE_KEY, "[", "]", "h", "a", "x", "u", "r", "+", "-", "esc"}
 BROWSER_KEY_HELP = (KEY_HELP[0].replace("space play/pause left", "space play/pause the clip"),) + KEY_HELP[1:-1] + ("+ add rally here   - delete rally   1/2/3 loop speed   esc cancel   every change is saved at once",)
-REVIEW_KEY_HELP = "review: y confirm the model label within 0.5 s   c d k n l v ? or s s / s l retype it   g move it to this frame   x reject it   h add a missed hit"
+REVIEW_KEY_HELP = "review: y confirm the model label within 0.5 s   c d k n l v ? or s s / s l retype it   m / o set its hitter   g move it to this frame   x reject it   h add a missed hit"
 
 
 def jump_to_frame(state: LabelState, frame: int) -> LabelState:
@@ -140,7 +140,7 @@ def state_json(state: LabelState) -> dict:
         "rally_count": len(state.rallies),
         "labels": [
             {"rally": label.rally, "frame": label.frame, "player": label.player, "type_group": label.type_group, "type_detail": label.type_detail, "type_text": type_text(label), "source": label.source,
-             "score": label.score, "model_frame": label.model_frame, "model_type_detail": label.model_type_detail}
+             "score": label.score, "model_frame": label.model_frame, "model_type_detail": label.model_type_detail, "model_player": label.model_player}
             for label in state.labels if in_rally(label.frame)
         ],
         "review": state.review,
@@ -368,8 +368,8 @@ table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px s
 .serveprompt{background:#f6f;color:#111;padding:2px 8px;border-radius:4px}
 .rblock{position:absolute;top:0;height:44px;background:#2f5f3f}
 .rblock.unchecked{background:#5f4f2f}
-.lab.model{background:#f80}.lab.confirmed{background:#3c3}.lab.corrected_type,.lab.moved{background:#0cf}.lab.hand{background:#fff}
-.notice{color:#111;background:#fc0;padding:2px 8px;border-radius:4px}.notice:empty{display:none}.src-model{color:#f80}.src-confirmed{color:#3c3}.src-corrected_type,.src-moved{color:#0cf}.review-only{display:none}
+.lab.model{background:#f80}.lab.confirmed{background:#3c3}.lab.corrected_type,.lab.corrected_hitter,.lab.moved{background:#0cf}.lab.hand{background:#fff}
+.notice{color:#111;background:#fc0;padding:2px 8px;border-radius:4px}.notice:empty{display:none}.src-model{color:#f80}.src-confirmed{color:#3c3}.src-corrected_type,.src-corrected_hitter,.src-moved{color:#0cf}.review-only{display:none}
 </style></head><body>
 <header><b>Label hits</b><span><input id="framebox" size="8" placeholder="frame" inputmode="numeric" autocomplete="off" aria-label="frame number"><button id="gobutton">go</button> <span id="framemsg" class="small"></span></span><span id="status"></span><span id="progress" class="small"></span><span id="pending" class="pending"></span><span id="notice" class="notice"></span></header>
 <main>
@@ -407,7 +407,7 @@ function render(s){if(s.error){alert(s.error);return;}state=s;
  $("prev").textContent=s.segment_count?"prev segment ([)":"prev rally";$("next").textContent=s.segment_count?"next segment (])":"next rally";
  document.querySelectorAll(".review-only").forEach(e=>e.style.display=s.review?"block":"none");$("help").textContent=(s.review?REVIEW_HELP+" | ":"")+KEY_HELP_TEXT;
  $("notice").textContent=s.notice||"";const rc=s.review_counts;
- const p0=s.progress;$("progress").textContent=(rc?"to review "+rc.unreviewed+" | confirmed "+rc.confirmed+" | corrected "+rc.corrected_type+" | moved "+rc.moved+" | rejected "+rc.rejected+" | added "+rc.added+"   ":"")+p0.rallies_labelled+" of "+p0.rallies+" rallies labelled, "+p0.hits_labelled+" hits"+(p0.serves_without_length?", "+p0.serves_without_length+" serves need short/long":"")+(p0.unchecked_rallies?", "+p0.unchecked_rallies+" rallies unchecked":"");
+ const p0=s.progress;$("progress").textContent=(rc?"to review "+rc.unreviewed+" | confirmed "+rc.confirmed+" | type fixed "+rc.corrected_type+" | hitter fixed "+rc.corrected_hitter+" | moved "+rc.moved+" | rejected "+rc.rejected+" | added "+rc.added+"   ":"")+p0.rallies_labelled+" of "+p0.rallies+" rallies labelled, "+p0.hits_labelled+" hits"+(p0.serves_without_length?", "+p0.serves_without_length+" serves need short/long":"")+(p0.unchecked_rallies?", "+p0.unchecked_rallies+" rallies unchecked":"");
  const p=s.pending;$("pending").className=p&&p.choosing_serve_length?"pending serveprompt":"pending";
  $("pending").textContent=p?("HIT at f"+p.frame+(!p.player?": pick me or opp":p.choosing_serve_length?" by "+p.player+": SERVE, press s for SHORT or l for LONG (esc cancels)":" by "+p.player+": pick a type")):"";
  const t=$("timeline"),w=t.clientWidth;t.innerHTML="";
@@ -415,7 +415,7 @@ function render(s){if(s.error){alert(s.error);return;}state=s;
  s.proposals.forEach(p=>{const d=document.createElement("div");d.className="tick";d.style.left=x(p.frame,w)+"px";d.title="proposal f"+p.frame+" "+p.hitter;t.appendChild(d);});
  s.labels.forEach(l=>{const d=document.createElement("div");d.className="lab"+(s.review?" "+l.source:"");d.style.left=x(l.frame,w)+"px";d.title=l.frame+" "+l.player+" "+l.type_text+(l.score!=null?" ("+l.score.toFixed(2)+")":"");t.appendChild(d);});
  if(r&&s.frame>=r.start_frame&&s.frame<=r.end_frame){const c=document.createElement("div");c.className="cur";c.style.left=x(s.frame,w)+"px";t.appendChild(c);}
- const modelNote=l=>l.model_frame==null?"":" <span class='small'>"+(l.score!=null?l.score.toFixed(2):"")+(l.model_frame!==l.frame?" was f"+l.model_frame:"")+(l.model_type_detail&&l.model_type_detail!==l.type_detail?" was "+l.model_type_detail:"")+"</span>";
+ const modelNote=l=>l.model_frame==null?"":" <span class='small'>"+(l.score!=null?l.score.toFixed(2):"")+(l.model_frame!==l.frame?" was f"+l.model_frame:"")+(l.model_type_detail&&l.model_type_detail!==l.type_detail?" was "+l.model_type_detail:"")+(l.model_player&&l.model_player!==l.player?" was "+l.model_player:"")+"</span>";
  const rows=s.labels.map(l=>"<tr class='row' data-frame='"+l.frame+"'><td>f"+l.frame+"</td><td>"+l.player+"</td><td>"+l.type_text+modelNote(l)+"</td><td class='small src-"+l.source+"'>"+l.source+"</td><td>"+(s.review?"":"<button data-delete='"+l.frame+"'>delete</button>")+"</td></tr>");
  $("hits").innerHTML=rows.join("")||"<tr><td class='small'>none yet</td></tr>";
  if(r){const key=r.start_frame+"-"+r.end_frame;if(key!==clipKey){clipKey=key;$("clip").src="/clip.mp4?start="+r.start_frame+"&end="+r.end_frame;$("clip").playbackRate=speed;}}

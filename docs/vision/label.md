@@ -368,12 +368,24 @@ file without `type_detail` loads with empty details (`detail_of`).
 
 ```
 
-### Review mode: `review_target`, `confirm_label`, `begin_retype`, `retype_label_at`, `move_label`, `reject_label`, `reviewed_source`, `review_key`, `review_counts`, `rejected_path_for`, `rejected_frame`
+### Review mode: `review_target`, `confirm_label`, `set_hitter`, `hitter_corrected`, `begin_retype`, `retype_label_at`, `move_label`, `reject_label`, `reviewed_source`, `review_key`, `review_counts`, `rejected_path_for`, `rejected_frame`
 With `LabelState.review`, `handle_key` first offers the key to `review_key`:
 - `y` → `confirm_label`;
+- `m` / `o` → `set_hitter`, keeping the model's hitter in `model_player`;
 - a type key → `begin_retype`, where `s` waits for `s` / `l`;
 - `g` → `move_label`;
 - `x` → `reject_label`.
+
+A label's `source` is the first that applies, in this order (`reviewed_source`):
+1. `moved`: the frame differs from `model_frame`;
+2. `corrected_type`: the type differs from `model_type_detail`;
+3. `corrected_hitter`: the hitter differs from `model_player`;
+4. `confirmed`.
+
+The kept model columns record every fix, so `review_counts` counts each kind of fix from
+them. A label whose hitter and type were both fixed counts in both. A file from before
+`model_player` loads with the label's own hitter as the model's, since the hitter
+couldn't be changed then.
 
 They act on `review_target`: the model label (one with a `model_frame`) nearest the
 current frame, within `REVIEW_REACH_SECONDS`. A rejected model label moves to
@@ -392,11 +404,16 @@ state is in review or holds model labels, and `save_labels` writes `state.reject
 [(100, 'serve_short', 'confirmed', 100, 'serve_short'), (140, 'drive', 'moved', 130, 'net')]
 >>> review = handle_key(review, "x")
 >>> review_counts(review)
-{'unreviewed': 0, 'confirmed': 1, 'corrected_type': 0, 'moved': 0, 'rejected': 1, 'added': 0}
+{'unreviewed': 0, 'confirmed': 1, 'corrected_type': 0, 'corrected_hitter': 0, 'moved': 0, 'rejected': 1, 'added': 0}
 >>> [(label.frame, label.source) for label in review.rejected], review_counts(handle_key(review, "u"))["moved"]
 ([(130, 'rejected')], 1)
->>> list(labels_frame(review).columns)[-3:], rejected_path_for(Path("data/labels/club_x.csv")).as_posix()
-(['score', 'model_frame', 'model_type_detail'], 'data/labels/club_x_rejected.csv')
+>>> list(labels_frame(review).columns)[-4:], rejected_path_for(Path("data/labels/club_x.csv")).as_posix()
+(['score', 'model_frame', 'model_type_detail', 'model_player'], 'data/labels/club_x_rejected.csv')
+>>> rehit = handle_key(handle_key(at_frame(review, 100), "m"), "v")
+>>> [(label.frame, label.player, label.model_player, label.type_detail, label.source) for label in rehit.labels][:1]
+[(100, 'me', 'opp', 'drive', 'corrected_type')]
+>>> {key: review_counts(rehit)[key] for key in ("corrected_type", "corrected_hitter", "moved")}
+{'corrected_type': 1, 'corrected_hitter': 1, 'moved': 0}
 
 ```
 

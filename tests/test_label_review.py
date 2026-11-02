@@ -64,7 +64,7 @@ def test_confirm_retype_serve_length_move_and_reject_each_record_their_source():
     assert (by_frame[100].source, by_frame[200].source, by_frame[200].type_detail, by_frame[306].source, by_frame[500].type_detail, by_frame[500].source) == ("confirmed", "corrected_type", "drop", "moved", "serve_long", "corrected_type")
     assert by_frame[306].model_frame == 300 and 400 not in by_frame
     assert [(label.frame, label.source) for label in state.rejected] == [(400, "rejected")]
-    assert review_counts(state) == {"unreviewed": 0, "confirmed": 1, "corrected_type": 2, "moved": 1, "rejected": 1, "added": 0}
+    assert review_counts(state) == {"unreviewed": 0, "confirmed": 1, "corrected_type": 2, "corrected_hitter": 0, "moved": 1, "rejected": 1, "added": 0}
 
 
 def test_undo_brings_a_rejected_label_back_and_x_on_a_hand_label_deletes_it():
@@ -122,3 +122,44 @@ def test_prelabel_types_known_hits_marks_the_rest_unknown_and_refuses_to_overwri
     existing.write_text("keep me")
     assert prelabel_main(["v.mp4", "--hits", str(tmp_path / "hits_0_9.csv"), "--database", str(tmp_path / "db.duckdb"), "--match-id", "m", "--labels", str(existing)]) != 0
     assert existing.read_text() == "keep me"
+
+
+def test_m_and_o_fix_the_hitter_of_the_model_label_in_reach_and_keep_the_models_hitter():
+    state = review_state([model(100, player="opp"), model(400, player="me")])
+    fixed = at(state, 103, "m")
+    label = next(label for label in fixed.labels if label.frame == 100)
+    assert (label.player, label.model_player, label.source) == ("me", "opp", "corrected_hitter")
+    twice = at(fixed, 103, "o")
+    back = next(label for label in twice.labels if label.frame == 100)
+    assert (back.player, back.model_player, back.source) == ("opp", "opp", "confirmed")
+    nothing_in_reach = at(state, 250, "m")
+    assert nothing_in_reach.labels == state.labels
+
+
+def test_sources_follow_moved_then_type_then_hitter_and_counts_record_every_fix():
+    state = review_state([model(100, player="opp"), model(200, player="opp"), model(300, player="opp")])
+    state = at(state, 100, "m")
+    state = at(state, 200, "m", "v")
+    state = at(state, 300, "m")
+    state = at(state, 305, "g")
+    by_frame = {label.frame: label for label in state.labels}
+    assert (by_frame[100].source, by_frame[200].source, by_frame[305].source) == ("corrected_hitter", "corrected_type", "moved")
+    assert all(label.model_player == "opp" for label in state.labels)
+    counts = review_counts(state)
+    assert (counts["corrected_hitter"], counts["corrected_type"], counts["moved"], counts["confirmed"]) == (3, 1, 1, 0)
+
+
+def test_h_then_m_still_sets_a_pending_hits_hitter_in_review_mode():
+    state = at(review_state([model(100)]), 600, "h", "m")
+    assert state.pending is not None and state.pending.player == "me"
+    assert [label.player for label in state.labels] == ["opp"]
+
+
+def test_a_review_file_without_model_player_takes_each_model_labels_own_hitter(tmp_path):
+    table = pd.DataFrame({"rally": [1, 1], "frame_num": [100, 200], "player": ["opp", "me"], "type_group": ["lift", "net"], "type_detail": ["lift", "net"], "source": ["confirmed", "hand"], "score": [0.8, None], "model_frame": [100, None], "model_type_detail": ["lift", ""]})
+    labels = labels_from_frame(table)
+    assert [(label.frame, label.model_player) for label in labels] == [(100, "opp"), (200, "")]
+    reviewed = replace(review_state(labels), dirty=True)
+    save_labels(reviewed, tmp_path / "r.csv", tmp_path / "r_rallies.csv")
+    saved = pd.read_csv(tmp_path / "r.csv")
+    assert "model_player" in saved.columns and saved["model_player"].fillna("").tolist() == ["opp", ""]

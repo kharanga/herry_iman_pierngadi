@@ -36,7 +36,7 @@ def model_labels(hits: pd.DataFrame, typed: pd.DataFrame) -> pd.DataFrame:
             group, detail, score = str(row["type_pred"]), str(row["type_detail_pred"]), (None if pd.isna(row["type_conf"]) else float(row["type_conf"]))
         else:
             group, detail, score = UNKNOWN_TYPE, UNKNOWN_TYPE, None
-        rows.append([int(hit.rally), frame, hit.hitter, group, detail, SOURCE_MODEL, score, frame, detail])
+        rows.append([int(hit.rally), frame, hit.hitter, group, detail, SOURCE_MODEL, score, frame, detail, hit.hitter])
     table = pd.DataFrame(rows, columns=LABEL_COLUMNS + REVIEW_COLUMNS)
     table["model_frame"] = table["model_frame"].astype("Int64")
     return table
