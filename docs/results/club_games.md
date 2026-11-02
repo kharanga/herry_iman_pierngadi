@@ -131,6 +131,55 @@ The rules for the rally bounds (`docs/vision/label.md`, "Rally bounds"):
 - mark a rally's start before its hits, because a hit's rally is the user's rally that
   holds it.
 
+## Two test games
+
+Two more club videos are held out as the final test of the hit detector and the shot
+classifier (`docs/results/club_test.md`, once run). The user labels them in blank mode.
+They are never used for training, tuning or any choice before that test, and their labels
+are not read until then.
+
+| Video | Length | fps | Frames | Codec | Camera | Labelled and tracked |
+|---|---|---|---|---|---|---|
+| `UHKzdJqgFwk` | 35:15 | 60 | 126,887 | AV1 | one fixed view, low, behind the near court at a corner; other courts and players in view | first 10 min: frames 0-36,299 (10 min plus 5 s) |
+| `xBClOgrP1Hs` | 10:37 | 59.95 | 38,183 | VP9 | one fixed view, low, beside the near court at a corner; other courts and players in view | the whole video |
+
+Both were downloaded like the others: 1280x720, video only, no sign-in, no cookies.
+
+**Calibration.** The user clicked both with `--pick-points`; neither view shows the near
+baseline's far end.
+
+| Video | Frame | Points clicked | Error, max / RMS | Overlay |
+|---|---|---|---|---|
+| `UHKzdJqgFwk` | 8400 | 22 | 8.7 px / 3.6 px | `data/calibration/club_UHKzdJqgFwk/court_overlay.jpg` |
+| `xBClOgrP1Hs` | 21212 | 18 | 6.2 px / 3.0 px | `data/calibration/club_xBClOgrP1Hs/court_overlay.jpg` |
+
+On both overlays the drawn court lies on the painted lines. `UHKzdJqgFwk` has a wide lens,
+so at the near-left the drawn sideline drifts off the painted one by a few pixels. That is
+where its largest point errors are.
+
+**Tracking.** This used the cleaned player choice, with the raw detections saved, on the
+GPU (`mps`, 4 frames per call) in 3-minute stretches, alone, with the swap guard on. No
+hit detection was run.
+- `UHKzdJqgFwk`: 4 stretches over frames 0-36,299, 28 min plus about 11 min for a first
+  stretch, paused once so another job could run. The merged file keeps the whole-video
+  name (`positions_0_126886.csv`); its tracking record lists the stretches, and frames
+  after 36,299 have no rows.
+- `xBClOgrP1Hs`: the whole video, 40 min.
+- No "NMS time limit" warnings, and swap use stayed flat.
+
+| Video | Tracked frames | Frames with `me` / `opp` | Doubtful rows | Still stand-ins | Passers-by | me/opp swapped |
+|---|---|---|---|---|---|---|
+| `UHKzdJqgFwk` | 36,300 | 36,267 / 36,275 (99.9%) | 2,722 (3.7%) | 1 run, 175 player-frames | 4 runs, 79 player-frames | 0 |
+| `xBClOgrP1Hs` | 38,183 | 38,065 / 37,844 (99.7% / 99.1%) | 198 (0.3%) | 0 | 1 run, 15 player-frames | 0 |
+
+The counts come from `vision.track_check` without labels. Gaps inside rallies need rally
+bounds, so they are not counted: there is no detector run, and the labels stay closed
+until the test.
+
+**Labelling.** The user labels in blank mode on ports 8769 and 8770 (commands below).
+For `UHKzdJqgFwk` they stop after the tenth 60-second segment. The tracking boxes show
+for the tracked part only.
+
 ## How to reproduce
 
 ```
@@ -144,4 +193,23 @@ for id in E6SRRmvJ6dI q3pfhnvKPig; do
   .venv/bin/python -m vision.players data/recordings/club/$id.mp4 --stretches data/club_games/${id}_stretches.csv --merge --batch-frames 4
 done
 .venv/bin/python -m vision.hits data/recordings/club/E6SRRmvJ6dI.mp4 --start 0 --end 31799
+```
+
+The two test games:
+
+```
+for id in UHKzdJqgFwk xBClOgrP1Hs; do
+  .venv/bin/yt-dlp --no-playlist -f "bv*[height<=720][ext=mp4]/bv*[height<=720]" --remux-video mp4 -o "data/recordings/club/%(id)s.%(ext)s" "https://www.youtube.com/watch?v=$id"
+done
+.venv/bin/python -m vision.court data/recordings/club/UHKzdJqgFwk.mp4 --frame 8400 --pick-points
+.venv/bin/python -m vision.court data/recordings/club/xBClOgrP1Hs.mp4 --frame 21212 --pick-points
+printf "start_frame,end_frame\n0,10799\n10800,21599\n21600,32399\n32400,36299\n" > data/club_games/UHKzdJqgFwk_stretches.csv
+.venv/bin/python -m vision.players data/recordings/club/xBClOgrP1Hs.mp4 --plan-stretches data/club_games/xBClOgrP1Hs_stretches.csv
+for id in UHKzdJqgFwk xBClOgrP1Hs; do
+  .venv/bin/python -m vision.players data/recordings/club/$id.mp4 --stretches data/club_games/${id}_stretches.csv --merge --batch-frames 4
+done
+.venv/bin/python -m vision.track_check data/recordings/club/UHKzdJqgFwk.mp4 --end 126886 --sheets --tag test
+.venv/bin/python -m vision.track_check data/recordings/club/xBClOgrP1Hs.mp4 --end 38182 --sheets --tag test
+.venv/bin/python -m vision.label_ui data/recordings/club/UHKzdJqgFwk.mp4 --match-id club_UHKzdJqgFwk --blank --port 8769
+.venv/bin/python -m vision.label_ui data/recordings/club/xBClOgrP1Hs.mp4 --match-id club_xBClOgrP1Hs --blank --port 8770
 ```
