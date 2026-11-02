@@ -161,7 +161,11 @@ def read_model_input_images(video_path: Path, start_frame: int, end_frame: int) 
     return images, frame_size
 
 
-def read_background(video_path: Path, start_frame: int, end_frame: int) -> np.ndarray:
+def median_of_model_images(images: list[np.ndarray]) -> np.ndarray:
+    return np.median(np.stack(images), axis=0).astype(np.uint8)
+
+
+def read_background(video_path: Path, start_frame: int, end_frame: int, low_memory: bool = False) -> np.ndarray:
     capture = open_video(Path(video_path))
     sampled_frames = []
     try:
@@ -169,10 +173,10 @@ def read_background(video_path: Path, start_frame: int, end_frame: int) -> np.nd
             capture.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
             frame_was_read, frame = capture.read()
             if frame_was_read:
-                sampled_frames.append(frame)
+                sampled_frames.append(model_input_image(frame) if low_memory else frame)
     finally:
         capture.release()
-    return median_background(sampled_frames)
+    return median_of_model_images(sampled_frames) if low_memory else median_background(sampled_frames)
 
 
 def tracknet_positions(
@@ -248,6 +252,7 @@ def track_shuttle(
     tracknet_checkpoint: Path = TRACKNET_CHECKPOINT,
     inpaintnet_checkpoint: Path = INPAINTNET_CHECKPOINT,
     device: str = "cpu",
+    low_memory_background: bool = False,
 ) -> pd.DataFrame:
     check_frame_range(start_frame, end_frame)
     check_ensemble_mode(ensemble_mode)
@@ -256,7 +261,7 @@ def track_shuttle(
     tracknet = tracknet.to(device)
     inpaintnet, inpaintnet_sequence_length = load_inpaintnet(inpaintnet_checkpoint)
     images, frame_size = read_model_input_images(video_path, start_frame, end_frame)
-    background = read_background(video_path, start_frame, start_frame + len(images) - 1)
+    background = read_background(video_path, start_frame, start_frame + len(images) - 1, low_memory_background)
     positions = tracknet_positions(images, frame_size, background, tracknet, tracknet_sequence_length, ensemble_mode, device)
     positions = inpainted_positions(positions, *frame_size, inpaintnet, inpaintnet_sequence_length)
     positions["frame"] += start_frame
@@ -323,6 +328,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     )
     parser.add_argument("--padding", type=int, default=30, help="frames tracked before and after a ShuttleSet rally")
     parser.add_argument("--device", choices=("cpu", "mps"), default="cpu", help="where TrackNet runs (default cpu; mps = the Mac's GPU). InpaintNet stays on the CPU")
+    parser.add_argument("--low-memory-background", action="store_true", help="take the background median over the sampled frames shrunk to the model's input size (about 130 MB) instead of at full size (about 1.9 GB at 1080p plus the median's copy)")
     parser.add_argument("--ensemble", choices=ENSEMBLE_MODES, default="weighted", help="weighted: every frame from 8 windows (slow); nonoverlap: 8x faster")
     parser.add_argument("--overlay", action="store_true", help="also write an overlay video to data/checks/shuttle/")
     return parser.parse_args(arguments)
@@ -342,7 +348,7 @@ def main(arguments: list[str]) -> int:
     parsed = parse_arguments(arguments)
     try:
         start_frame, end_frame = frames_to_track(parsed)
-        positions = track_shuttle(parsed.video, start_frame, end_frame, parsed.ensemble, device=parsed.device)
+        positions = track_shuttle(parsed.video, start_frame, end_frame, parsed.ensemble, device=parsed.device, low_memory_background=parsed.low_memory_background)
     except (FileNotFoundError, OSError, ValueError) as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

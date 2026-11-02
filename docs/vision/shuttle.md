@@ -84,6 +84,7 @@ be installed (it pins old torch, numpy and OpenCV).
 | `--padding` | frames before and after a ShuttleSet rally (default 30) |
 | `--ensemble` | `weighted` (default, about 1.6 s per frame on CPU) or `nonoverlap` (about 0.25 s per frame, 6 times faster) |
 | `--device` | `cpu` (default) or `mps`, the Mac's GPU, for TrackNet; InpaintNet stays on the CPU. On 600 frames of 60 fps 1080p video with `nonoverlap`, `mps` took 87 s against 205 s on the CPU, with the same positions |
+| `--low-memory-background` | take the background median over the sampled frames already shrunk to the model's input (512x288, about 130 MB for 300 samples) instead of at full size (about 1.9 GB at 1080p, plus the median's own copy). Off by default. On 600 frames of a 720p club video it moved the median position by 0 px, and 15 of 592 visible frames by more than 5 px |
 | `--overlay` | also write `data/checks/shuttle/<video id>_shuttle_<start>_<end>.mp4`: the last 8 visible positions as a yellow trail and the current one as a red circle |
 
 Every frame of the range is read into memory at 512x288 first, about 0.44 MB a frame, so
@@ -379,8 +380,10 @@ a copy of the frame with them joined by a yellow line and the last one circled i
 and the video's `(width, height)`. Errors: those of `open_video` and `frames_in_range`
 (`vision/players.py`): negative start, reversed range, no readable frame.
 
-### `read_background(video_path, start_frame, end_frame) -> ndarray`
-`median_background` of up to 300 frames sampled evenly from the range.
+### `read_background(video_path, start_frame, end_frame, low_memory=False) -> ndarray`, `median_of_model_images(images) -> ndarray`
+`median_background` of up to 300 frames sampled evenly from the range. With `low_memory`,
+each sampled frame is shrunk to the model's input first and `median_of_model_images` takes
+the median of those.
 
 ### `tracknet_positions(images, frame_size, background, tracknet, sequence_length, ensemble_mode, device="cpu") -> DataFrame`
 Runs TrackNet over the windows, ensembles the heatmaps and converts each to a
@@ -390,7 +393,7 @@ position. Columns `frame` (0-based within the range), `x`, `y`, `visibility`.
 Builds the inpaint mask, runs InpaintNet on 16-frame windows (weighted ensemble),
 keeps the TrackNet position where the mask is 0, and returns `POSITION_COLUMNS`.
 
-### `track_shuttle(video_path, start_frame, end_frame, ensemble_mode="weighted", tracknet_checkpoint=..., inpaintnet_checkpoint=..., device="cpu") -> DataFrame`
+### `track_shuttle(video_path, start_frame, end_frame, ensemble_mode="weighted", tracknet_checkpoint=..., inpaintnet_checkpoint=..., device="cpu", low_memory_background=False) -> DataFrame`
 The whole pipeline for one range; `frame` is the video's frame index. Checks the
 range, the mode and the video before loading anything. Errors: `ValueError` (range,
 mode), `FileNotFoundError` (video, checkpoints), `OSError` (video can't be opened).
