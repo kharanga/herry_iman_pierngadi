@@ -218,7 +218,7 @@ def test_picker_saves_four_corners_clicked_in_order(step_window):
 
 
 def test_picker_skips_a_hidden_corner_and_saves_once_four_points_fix_a_homography(step_window):
-    long_service = list(court_point_catalog()).index("near_long_service_line x left_doubles_sideline")
+    long_service = court.clickable_point_names().index("near_long_service_line x left_doubles_sideline")
     steps = [([], ord("n")), ([(900, 600), (800, 200), (300, 200)], -1), ([], 13)]
     steps += [([], ord("n"))] * (long_service - 4) + [([(150, 560)], 13)]
     window = step_window(steps)
