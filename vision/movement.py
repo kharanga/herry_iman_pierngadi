@@ -713,6 +713,8 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--rallies-from", type=Path, metavar="MODEL", help="rallies and serve rows come from this hit model (with the gap rule and the inferred serve); the --model hits fill each rally after its serve row, and its hits outside these rallies are dropped")
     parser.add_argument("--rallies-hit-score-min", type=float, default=MovementSettings().hit_score_min, help="with --rallies-from: that model's hit score minimum (default 0.5)")
     parser.add_argument("--rallies-end-score-min", type=float, default=MovementSettings().rally_end_score_min, help="with --rallies-from: that model's rally end score minimum (default 0.7)")
+    parser.add_argument("--serve-stance", action="store_true", help="with --in-play-model: each stretch's serve is the stance rule's (python -m vision.serve_stance): both players still in diagonal service courts, the first to move serves; the --model hits fill the rally after it and its hits after the stretch are dropped")
+    parser.add_argument("--stretch-model", type=Path, metavar="MODEL", help="with --in-play-model: the hit model whose scores feed the in-play model (and, with --serve-stance, the stance serve, at its default thresholds); the --model hits fill the stretches (default: --model does both)")
     return parser.parse_args(arguments)
 
 
@@ -751,13 +753,37 @@ def tables_with_rallies_from(tracks: PlayerTracks, parsed: argparse.Namespace, s
     return rallies_with_newer_hits(rally_hits, rallies, newer_hits, same_hit_frames)
 
 
+def tables_with_stretch_model(tracks: PlayerTracks, parsed: argparse.Namespace, settings: MovementSettings) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if parsed.in_play_model is None:
+        raise ValueError("--serve-stance needs --in-play-model")
+    if parsed.serve_stance and not settings.infer_serves:
+        raise ValueError("--serve-stance adds the serve rows; drop --no-serves")
+    from vision.in_play import load_in_play_model
+    from vision.serve_stance import stance_rallies
+
+    from vision.in_play import hits_in_play, in_play_feature_matrix, in_play_probability
+
+    stretch_settings = replace(settings, hit_score_min=MovementSettings().hit_score_min, rally_end_score_min=MovementSettings().rally_end_score_min)
+    hit_scores = sample_hit_scores(tracks, load_hit_model(parsed.model), settings)
+    stretch_scores = hit_scores if parsed.stretch_model is None else sample_hit_scores(tracks, load_hit_model(parsed.stretch_model), settings)
+    in_play_model = load_in_play_model(parsed.in_play_model)
+    if not parsed.serve_stance:
+        probability = in_play_probability(in_play_model, in_play_feature_matrix(tracks, stretch_scores, settings), settings)
+        return hits_in_play(tracks, hit_scores, probability, settings)
+    return stance_rallies(tracks, stretch_scores, hit_scores, in_play_model, settings, stretch_settings)
+
+
 def detect_command(parsed: argparse.Namespace, settings: MovementSettings) -> int:
     if parsed.start is None or parsed.end is None:
         raise ValueError("give --start and --end")
     tracks = load_player_tracks(parsed.video, parsed.start, parsed.end, parsed.players_dir)
     settings = settings_for_tracks(parsed.video, track_frame_stride(parsed.video, parsed.start, parsed.end, parsed.players_dir), settings)
+    if parsed.stretch_model is not None and parsed.in_play_model is None:
+        raise ValueError("--stretch-model needs --in-play-model")
     if parsed.rallies_from is not None:
         hits, rallies = tables_with_rallies_from(tracks, parsed, settings)
+    elif parsed.serve_stance or parsed.stretch_model is not None:
+        hits, rallies = tables_with_stretch_model(tracks, parsed, settings)
     else:
         hits, rallies = detected_tables(tracks, load_hit_model(parsed.model), parsed.in_play_model, settings)
     labels = None

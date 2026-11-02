@@ -10,8 +10,14 @@ the same tracks.
 
 ```
 .venv/bin/python -m vision.rally_bounds <video> --rallies <labels stem>_rallies.csv \
-    --method NAME HIT_MODEL HIT_SCORE_MIN RALLY_END_SCORE_MIN IN_PLAY_MODEL|rule [--method ...] [--players-dir D]
+    [--method NAME HIT_MODEL HIT_SCORE_MIN RALLY_END_SCORE_MIN IN_PLAY_MODEL|rule ...] \
+    [--found NAME HITS_CSV ...] [--end N] [--labels LABELS_CSV] [--players-dir D]
 ```
+
+`--method` runs a detector; `--found` scores a saved `vision.movement` run (its
+`rallies_*.csv` sits next to the hits file). At least one of them is needed. `--end N` is
+the last labelled frame: later frames are not judged, and detected rallies that start
+after it are left out.
 
 The video must be tracked in full (frame 0 to its last frame). It prints how many checked
 rallies are scored, then one Markdown row per method:
@@ -22,6 +28,13 @@ rallies are scored, then one Markdown row per method:
   rallies (`vision.in_play.compare_spans`). A detected rally that overlaps only
   unchecked rallies is left out, so it isn't counted as extra;
 - the start and end error of the matched rallies, median absolute and mean, in seconds.
+
+With `--labels` (the hand labels CSV), a second table follows, one row per method:
+- serve rows: each detected rally's first row;
+- serves found at ±0.25 s and ±0.50 s: serve rows matched one to one with the labelled
+  serves (`type_group = serve`, up to `--end`); fake serves are the serve rows left over;
+- detected hits out of play: detected hits (not inferred serves) up to the last judged
+  frame that fall outside every hand-marked rally, checked or not.
 
 Exit codes: `0`; `1` with `error: ...` for a missing file or column; `2` for bad
 arguments.
@@ -42,9 +55,10 @@ arguments.
 
 ```
 
-### `bound_row(name, found, frames, checked, unchecked, fps) -> dict`, `bound_lines(rows) -> list[str]`, `method_spans(...)`, `main(arguments) -> int`
-One method's numbers, the printed table, and a method's detected rallies on the whole
-video (`vision.movement.detected_tables`).
+### `bound_row(name, found, frames, checked, unchecked, fps) -> dict`, `bound_lines(rows) -> list[str]`, `method_tables(...)`, `saved_tables(hits_file, video_path, players_dir)`, `main(arguments) -> int`
+One method's numbers, the printed table, and a method's hits and rallies with the
+track frames: run on the whole video (`vision.movement.detected_tables`) or read from a
+saved run.
 
 ```python
 >>> from vision.rally_bounds import bound_lines, bound_row
@@ -53,5 +67,24 @@ video (`vision.movement.detected_tables`).
 (1, 1, 0.2, 0.1)
 >>> bound_lines([row])[2]
 '| rule | 56/69 = 81.2% | 2 | 1 of 1 | 0 | 0 | 0 | 1 | 0.20 | 0.10 | -0.20 | +0.10 |'
+
+```
+
+### `up_to(end_frame, hits, rallies, frames)`, `serve_frames(hits)`, `out_of_play_hits(hits, checked, unchecked, last_judged)`, `serve_row(...)`, `serve_lines(rows)`, `labelled_serves_of(labels_file, end_frame)`
+
+```python
+>>> from vision.rally_bounds import out_of_play_hits, serve_frames, serve_lines, serve_row, up_to
+>>> hits = pd.DataFrame({"rally": [1, 1, 2, 2], "frame": [5, 20, 52, 60], "hitter": ["me", "opp", "opp", "me"], "score": [np.nan, 0.9, 0.8, 0.7]})
+>>> rallies = pd.DataFrame({"rally": [1, 2], "start_frame": [5, 52], "end_frame": [25, 65]})
+>>> serve_frames(hits)
+[5, 52]
+>>> kept_hits, kept_rallies, kept_frames = up_to(55, hits, rallies, np.arange(0, 80))
+>>> len(kept_hits), len(kept_rallies), int(kept_frames.max())
+(3, 2, 55)
+>>> out_of_play_hits(hits, checked=[(4, 22)], unchecked=[], last_judged=79)
+2
+>>> row = {"method": "stance", **serve_row(hits, [6, 40], [(4, 22)], [], np.arange(0, 80), fps=10.0)}
+>>> serve_lines([row])[2]
+'| stance | 2 | 1 of 2 | 1 | 1 of 2 | 1 | 2 |'
 
 ```
