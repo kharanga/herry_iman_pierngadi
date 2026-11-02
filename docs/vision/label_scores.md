@@ -32,6 +32,10 @@ rows (`score` NaN, `docs/vision/movement.md`) counted as detections.
 It prints Markdown:
 
 - the headline table: recall, hitter, shot type and precision per run and tolerance;
+- correct shots per run and tolerance (`correct_shots`). The numerator is the labelled
+  hits matched and given the right shot type, with the inferred serve rows in. The
+  denominator is all labelled hits plus the run's unmatched rows inside the labelled
+  rallies, so a missed hit, a wrong type and a false hit each cost one;
 - recall per label source when the labels have more than one;
 - the labelled serves, found by an inferred serve row or by a detected hit;
 - the labelled serves left out, per run and tolerance: matched with the inferred serve
@@ -159,7 +163,20 @@ The table cells (`3/4 = 75.0%`), and the signed offset of the nearest detected h
 
 ```
 
-### `headline_table(...)`, `serve_table(...)`, `non_serve_table(runs, labels, windows, fps)`, `source_lines(...)`, `breakdown_table(...)`, `type_confusion_table(...)`, `missed_table(...)`, `report_lines(...)`, `read_predictions(database_path, match_id)`, `main(arguments)`
+### `correct_shots(run, labels, spans, tolerance) -> (int, int)`, `correct_shot_table(runs, labels, spans, windows, fps)`, `headline_table(...)`, `serve_table(...)`, `non_serve_table(runs, labels, windows, fps)`, `source_lines(...)`, `breakdown_table(...)`, `type_confusion_table(...)`, `missed_table(...)`, `report_lines(...)`, `read_predictions(database_path, match_id)`, `main(arguments)`
 These build the printed tables from the functions above. `read_predictions` reads
 `frame_num, type_pred` of the match's own rows, read-only. A missing database is a
 `FileNotFoundError`.
+
+With the labels, hits and predictions above, and the labelled rallies (80, 260) and
+(880, 990), 2 hits are right: the serve at 100 and the lift at 160. 2 labelled hits are
+missed (220 and 900). One detection inside a rally matches nothing: 231 is more than 5
+frames from 220. The detection at 600 is outside every rally, so it doesn't count. That
+gives 2 right out of 4 labelled + 1 false:
+
+```python
+>>> from vision.label_scores import correct_shots
+>>> correct_shots(ScoredRun("model", hits, predictions), labels, [(80, 260), (880, 990)], 5)
+(2, 5)
+
+```
