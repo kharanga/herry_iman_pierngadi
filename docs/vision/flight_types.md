@@ -26,8 +26,8 @@ Then build each training video's own rows from them, using `vision.features` wit
 - `--predict`: a video whose own rows in DATABASE (from detected hits) are typed. Each
   classifier writes a copy of the database with its predictions: `OUT_DIR/feet_only.duckdb`
   and `OUT_DIR/feet_flight.duckdb`. The copy clears this match's own `type_pred`,
-  `type_detail_pred` and `type_conf` and sets the first two on the typed rows, in one
-  transaction. Score the
+  `type_detail_pred` and, when the table has it, `type_conf`, and sets the first two on
+  the typed rows, in one transaction. Score the
   copies with `vision.label_scores` against the same hits file.
 - Rows without both a hitter point and a landing point aren't typed, as in
   `shots.predict`.

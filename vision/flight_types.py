@@ -29,9 +29,14 @@ FROM shots
 WHERE shots.source = 'own' AND shots.match_id = ?
 """
 CLEAR_OWN_PREDICTIONS_SQL = """
-UPDATE shots SET type_pred = NULL, type_detail_pred = NULL, type_conf = NULL
+UPDATE shots SET type_pred = NULL, type_detail_pred = NULL
 WHERE shots.source = 'own' AND shots.match_id = ?
 """
+CLEAR_OWN_CONFIDENCE_SQL = """
+UPDATE shots SET type_conf = NULL
+WHERE shots.source = 'own' AND shots.match_id = ?
+"""
+SHOTS_COLUMNS_SQL = "SELECT column_name FROM information_schema.columns WHERE table_name = 'shots'"
 SET_PREDICTION_SQL = """
 UPDATE shots SET type_pred = ?, type_detail_pred = ?
 WHERE shots.rowid = ?
@@ -147,6 +152,8 @@ def write_predictions(source: Source, output_database: Path, row_ids, details) -
     try:
         connection.execute("BEGIN TRANSACTION")
         connection.execute(CLEAR_OWN_PREDICTIONS_SQL, [source.match_id])
+        if "type_conf" in {row[0] for row in connection.execute(SHOTS_COLUMNS_SQL).fetchall()}:
+            connection.execute(CLEAR_OWN_CONFIDENCE_SQL, [source.match_id])
         connection.executemany(SET_PREDICTION_SQL, [[group_of_detail(detail), detail, int(row_id)] for row_id, detail in zip(row_ids, details)])
         connection.execute("COMMIT")
     finally:
