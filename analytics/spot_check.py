@@ -6,7 +6,7 @@ import cv2
 import duckdb
 import numpy as np
 
-from analytics.court import CENTRE_X_M, COURT_LENGTH_M, COURT_WIDTH_M, DEPTH_EDGES_M, NET_Y_M
+from analytics.court import CENTRE_X_M, COURT_LENGTH_M, COURT_WIDTH_M, DEPTH_EDGES_M, NET_Y_M, SHORT_SERVICE_LINE_FROM_NET_M
 
 DATABASE_PATH = Path("data/scout.duckdb")
 SPOT_CHECK_PATH = Path("data/checks/shots/random_shots.png")
@@ -16,7 +16,6 @@ PIXELS_PER_METER = 60
 MARGIN_PIXELS = 50
 LEGEND_WIDTH_PIXELS = 720
 SINGLES_SIDELINE_INSET_M = 0.46
-SHORT_SERVICE_LINE_FROM_NET_M = DEPTH_EDGES_M[0]
 DOUBLES_LONG_SERVICE_LINE_FROM_BASELINE_M = 0.76
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)

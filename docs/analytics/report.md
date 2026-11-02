@@ -103,7 +103,7 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 >>> bullet["evidence"], bullet["zone_rect"], sorted(bullet)
 ('4 of 9', None, ['evidence', 'family', 'id', 'k', 'label_source', 'n', 'rate', 'reply_rects', 'sets', 'text', 'zone_rect'])
 >>> [tuple(round(value, 2) for value in rect) for rect in bullet["reply_rects"]]
-[(3.05, 4.72, 6.1, 6.7), (3.05, 10.2, 6.1, 13.4)]
+[(3.05, 3.95, 6.1, 6.7), (3.05, 10.7, 6.1, 13.4)]
 >>> [(group["family"], len(group["bullets"])) for group in family_groups([bullet, dict(bullet, family="zone_mix"), bullet])]
 [('zone_mix', 1), ('response', 2)]
 >>> default_me(["A", "B"]), default_me(["me", "opp"]), opponent_of("B", ["A", "B"])
@@ -131,20 +131,20 @@ both are `ValueError`s with the details as attributes), `ValueError` if the matc
 ```python
 >>> from report.court_svg import *
 >>> tuple(round(value, 2) for value in zone_rect_in_near_half("rear_backhand"))
-(0.0, 0.0, 3.05, 3.2)
+(0.0, 0.0, 3.05, 2.7)
 >>> tuple(round(value, 2) for value in zone_rect_in_near_half("rear_backhand", left_handed=True))
-(3.05, 0.0, 6.1, 3.2)
+(3.05, 0.0, 6.1, 2.7)
 >>> tuple(round(value, 2) for value in bullet_zone_rect(False, "zone_mix", "rear_backhand"))
-(3.05, 10.2, 6.1, 13.4)
+(3.05, 10.7, 6.1, 13.4)
 >>> tuple(round(value, 2) for value in bullet_zone_rect(False, "serve_placement", "front_forehand"))
-(3.05, 4.72, 6.1, 6.7)
+(3.05, 3.95, 6.1, 6.7)
 >>> bullet_zone_rect(True, "response", "drop cross") is None, bullet_zone_rect(True, "serve_placement", "not_over_net") is None
 (True, True)
 >>> svg = court_svg(bullet_zone_rect(True, "zone_mix", "front_forehand"), "example")
->>> svg.startswith('<svg class="court"'), svg.count("<line") , '<rect x="30.5" y="67" width="30.5" height="19.8" class="zone"/>' in svg
+>>> svg.startswith('<svg class="court"'), svg.count("<line") , '<rect x="30.5" y="67" width="30.5" height="27.5" class="zone"/>' in svg
 (True, 13, True)
 >>> [tuple(round(value, 2) for value in rect) for rect in reply_zone_rects(True, "net|front_forehand|front_backhand")]
-[(0.0, 6.7, 3.05, 8.68), (0.0, 4.72, 3.05, 6.7)]
+[(0.0, 6.7, 3.05, 9.45), (0.0, 3.95, 3.05, 6.7)]
 >>> reply_svg = court_svg(None, "example", reply_zone_rects(True, "net|front_forehand|front_backhand"))
 >>> reply_svg.count('class="zone from"'), reply_svg.count('class="zone"'), reply_svg.count("<polygon"), "id=" in reply_svg
 (1, 1, 1, False)

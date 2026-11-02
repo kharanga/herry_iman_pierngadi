@@ -40,8 +40,8 @@ row has one. Every row passed the table's constraints: `player` is `me` or `opp`
 hitter is on the near half after normalisation (`opponent_y` ≥ 8.9 m on every row),
 `hit_x/y` equals `player_x/y` on every row with a hit point, zones and `is_cross` come
 from `analytics.court.shot_geometry`, the same function ShuttleSet rows go through
-(the six-zone layout: front, mid and rear bands with edges 1.98 m, the short service
-line, and 3.50 m from the net, split into forehand and backhand at the centre line;
+(the six-zone layout: front, mid and rear bands with edges 2.75 m and 4.00 m from the
+net, split into forehand and backhand at the centre line;
 `data/checks/court/match_zones.jpg` shows it on this video). A
 rebuild with the same `match_id` replaces exactly these rows; the 36,483 ShuttleSet
 rows are untouched (counted before and after).
@@ -105,9 +105,15 @@ of 114).
 are a median 0.57 m off (mean 0.68). Against the labelled hit point (the floor point
 under the racket contact, about 1 m in front of the feet on a reaching shot) the feet
 hit point is a median 1.05 m off (mean 1.10), the landing point 1.06 m (mean 1.14).
-Zone agreement with the labels: `hit_zone` 69.9%, `landing_zone` 70.0%, `is_cross`
-92.2% (with the earlier nine-zone layout and its 1 m middle column: 61.8%, 64.2% and
-90.5%; the wider zones forgive more of the feet-to-contact gap). The gap to the 86.3% held-out figure is what the feet convention and the
+Zone agreement with the labels, with the depth bands at 2.75 m and 4.00 m from the net:
+`hit_zone` 60.2%, `landing_zone` 61.7%, `is_cross` 92.2%. For comparison, other layouts
+on the same positions:
+- six zones with the earlier edges at 1.98 m and 3.50 m: 69.9%, 70.0% and 92.2%;
+- the nine-zone layout with its 1 m middle column: 61.8%, 64.2% and 90.5%.
+
+The positions are the same in all three, so the zone edges alone move these numbers:
+the tracked feet and the labelled contact point are about 1 m apart (above), and how
+often that gap crosses a band edge depends on where the edges are. The gap to the 86.3% held-out figure is what the feet convention and the
 tracking error cost; `docs/results/classifier_feet.md` has the timing-jitter table for
 the frame offsets of detected hits.
 

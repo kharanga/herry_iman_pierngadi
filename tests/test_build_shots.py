@@ -192,15 +192,17 @@ def test_hitter_is_on_far_half_uses_hitter_points_before_receiver_points():
 @pytest.mark.parametrize(
     "point, left_handed, expected_zone",
     [
-        ((4.0, NET_Y_M - 1.97), False, "front_forehand"),
-        ((4.0, NET_Y_M - 1.99), False, "mid_forehand"),
-        ((2.0, NET_Y_M - 3.49), False, "mid_backhand"),
-        ((2.0, NET_Y_M - 3.51), False, "rear_backhand"),
-        ((4.0, 4.72), False, "mid_forehand"),
-        ((2.0, 3.2), False, "rear_backhand"),
+        ((4.0, NET_Y_M - 2.74), False, "front_forehand"),
+        ((4.0, NET_Y_M - 2.76), False, "mid_forehand"),
+        ((2.0, NET_Y_M - 3.99), False, "mid_backhand"),
+        ((2.0, NET_Y_M - 4.01), False, "rear_backhand"),
+        ((4.0, 4.72), False, "front_forehand"),
+        ((2.0, 3.2), False, "mid_backhand"),
+        ((2.0, 2.7), False, "rear_backhand"),
         ((2.0, -0.8), False, "rear_backhand"),
-        ((2.0, 4.0), True, "mid_forehand"),
-        ((4.0, 4.0), True, "mid_backhand"),
+        ((2.0, 3.5), True, "mid_forehand"),
+        ((4.0, 3.5), True, "mid_backhand"),
+        ((2.0, 4.0), True, "front_forehand"),
         ((3.04, 5.0), False, "front_backhand"),
         ((3.06, 5.0), False, "front_forehand"),
         ((3.05, 5.0), False, "front_backhand"),
@@ -233,7 +235,7 @@ def test_is_cross_court_is_decided_by_the_centre_line_alone_and_null_when_not_ov
     assert is_cross_court(None, (5.0, 12.0)) is None and is_cross_court((1.0, 2.0), None) is None
     assert is_cross_court((1.0, 2.0), (5.0, 6.0)) is None and is_cross_court((1.0, 2.0), (5.0, NET_Y_M)) is None
     assert is_right_of_centre(3.06) and not is_right_of_centre(3.05) and not is_right_of_centre(3.04)
-    assert [depth_name(distance) for distance in (0.0, 1.97, 1.98, 1.99, 3.49, 3.50, 3.51, 6.7)] == ["front", "front", "mid", "mid", "mid", "rear", "rear", "rear"]
+    assert [depth_name(distance) for distance in (0.0, 1.98, 2.74, 2.75, 2.76, 3.99, 4.00, 4.01, 6.7)] == ["front", "front", "front", "mid", "mid", "mid", "rear", "rear", "rear"]
     assert (side_name(3.04), side_name(3.06), side_name(3.04, True), side_name(3.06, True)) == ("backhand", "forehand", "forehand", "backhand")
 
 
@@ -553,9 +555,10 @@ def test_schema_accepts_every_contract_zone(zone):
     connection.close()
 
 
-def test_band_edges_are_the_painted_lines_and_no_middle_column_remains():
-    assert DEPTH_EDGES_M == (1.98, 3.50) and SHORT_SERVICE_LINE_FROM_NET_M == 1.98 == DEPTH_EDGES_M[0]
-    assert depth_band_from_net_m("front") == (0.0, 1.98) and depth_band_from_net_m("mid") == (1.98, 3.50) and depth_band_from_net_m("rear") == (3.50, NET_Y_M)
+def test_band_edges_are_the_users_and_the_short_service_line_is_only_a_painted_line():
+    assert DEPTH_EDGES_M == (2.75, 4.00) and SHORT_SERVICE_LINE_FROM_NET_M == 1.98
+    assert DEPTH_EDGES_M[0] > SHORT_SERVICE_LINE_FROM_NET_M
+    assert depth_band_from_net_m("front") == (0.0, 2.75) and depth_band_from_net_m("mid") == (2.75, 4.00) and depth_band_from_net_m("rear") == (4.00, NET_Y_M)
     with pytest.raises(ValueError):
         depth_band_from_net_m("middle")
     for source_path in (PROJECT_ROOT / "analytics").glob("*.py"):
@@ -564,7 +567,7 @@ def test_band_edges_are_the_painted_lines_and_no_middle_column_remains():
     assert "DEPTH_EDGES_M" in (PROJECT_ROOT / "analytics" / "spot_check.py").read_text()
 
 
-@pytest.mark.parametrize("edges_m", [(1.0, 2.0), (2.5, 4.0)])
+@pytest.mark.parametrize("edges_m", [(1.0, 2.0), (1.98, 3.50), (2.75, 4.0)])
 def test_shot_geometry_follows_the_depth_edges_constant(monkeypatch, edges_m):
     import analytics.court
 
@@ -659,8 +662,8 @@ def test_rebuild_of_a_nine_zone_table_keeps_own_rows_with_zones_rederived(built_
     summary = build_shots(rebuilt_path)
     assert summary["own_shots"] == 3 and summary["shuttleset_shots"] == 36483
     assert fetch_all(rebuilt_path, "SELECT shots.ball_round, shots.hit_zone, shots.landing_zone, shots.is_cross FROM shots WHERE shots.source = 'own' ORDER BY shots.ball_round") == [
-        (1, "rear_backhand", "mid_backhand", True),
-        (2, "rear_backhand", "not_over_net", None),
+        (1, "mid_backhand", "mid_backhand", True),
+        (2, "mid_backhand", "not_over_net", None),
         (3, None, None, None),
     ]
     assert fetch_all(rebuilt_path, "SELECT COUNT(*) FROM shots WHERE shots.hit_zone LIKE '%middle%' OR shots.landing_zone LIKE '%middle%'") == [(0,)]

@@ -333,7 +333,7 @@ def test_zone_rect_sides_follow_handedness_and_depth_bands(zone):
     depth, side = zone.split("_")
     right_handed = zone_rect_in_near_half(zone)
     left_handed = zone_rect_in_near_half(zone, left_handed=True)
-    band_bottom, band_top = {"front": (NET_Y_M - 1.98, NET_Y_M), "mid": (NET_Y_M - 3.50, NET_Y_M - 1.98), "rear": (0.0, NET_Y_M - 3.50)}[depth]
+    band_bottom, band_top = {"front": (NET_Y_M - 2.75, NET_Y_M), "mid": (NET_Y_M - 4.00, NET_Y_M - 2.75), "rear": (0.0, NET_Y_M - 4.00)}[depth]
     assert right_handed[1] == pytest.approx(band_bottom) and right_handed[3] == pytest.approx(band_top)
     expected_right = (3.05, COURT_WIDTH_M) if side == "forehand" else (0.0, 3.05)
     assert (right_handed[0], right_handed[2]) == pytest.approx(expected_right)
@@ -344,11 +344,11 @@ def test_zone_rect_sides_follow_handedness_and_depth_bands(zone):
 def test_me_at_the_bottom_opponent_at_the_top_whoever_the_zone_belongs_to():
     mine = bullet_zone_rect(True, "zone_mix", "front_forehand")
     theirs = bullet_zone_rect(False, "zone_mix", "front_forehand")
-    assert mine == pytest.approx((3.05, NET_Y_M - 1.98, COURT_WIDTH_M, NET_Y_M))
-    assert theirs == pytest.approx((0.0, NET_Y_M, 3.05, NET_Y_M + 1.98))
+    assert mine == pytest.approx((3.05, NET_Y_M - 2.75, COURT_WIDTH_M, NET_Y_M))
+    assert theirs == pytest.approx((0.0, NET_Y_M, 3.05, NET_Y_M + 2.75))
     assert theirs == pytest.approx(rotate_rect_half_turn(mine))
-    assert bullet_zone_rect(False, "zone_mix", "front_forehand", opponent_left_handed=True) == pytest.approx((3.05, NET_Y_M, COURT_WIDTH_M, NET_Y_M + 1.98))
-    assert bullet_zone_rect(True, "zone_mix", "front_forehand", me_left_handed=True) == pytest.approx((0.0, NET_Y_M - 1.98, 3.05, NET_Y_M))
+    assert bullet_zone_rect(False, "zone_mix", "front_forehand", opponent_left_handed=True) == pytest.approx((3.05, NET_Y_M, COURT_WIDTH_M, NET_Y_M + 2.75))
+    assert bullet_zone_rect(True, "zone_mix", "front_forehand", me_left_handed=True) == pytest.approx((0.0, NET_Y_M - 2.75, 3.05, NET_Y_M))
     assert bullet_zone_rect(False, "serve_placement", "rear_backhand") == bullet_zone_rect(True, "zone_mix", "rear_backhand")
     assert bullet_zone_rect(True, "serve_placement", "rear_backhand") == bullet_zone_rect(False, "zone_mix", "rear_backhand")
     assert bullet_zone_rect(True, "serve_placement", "rear_backhand", me_left_handed=True) == bullet_zone_rect(True, "serve_placement", "rear_backhand")
@@ -373,7 +373,7 @@ def test_svg_shades_the_rectangle_with_my_baseline_at_the_bottom():
     svg = court_svg(bullet_zone_rect(True, "zone_mix", "rear_forehand"), "label")
     rect = re.search(r'<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" class="zone"/>', svg)
     x, y, width, height = (float(value) for value in rect.groups())
-    assert (x, width) == pytest.approx((30.5, 30.5)) and y + height == pytest.approx(COURT_LENGTH_M * 10) and y == pytest.approx(102.0, abs=0.05) and height == pytest.approx(32.0, abs=0.05)
+    assert (x, width) == pytest.approx((30.5, 30.5)) and y + height == pytest.approx(COURT_LENGTH_M * 10) and y == pytest.approx(107.0, abs=0.05) and height == pytest.approx(27.0, abs=0.05)
     far = court_svg(bullet_zone_rect(False, "zone_mix", "rear_forehand"), "label")
     far_rect = re.search(r'<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)" class="zone"/>', far)
     assert float(far_rect.group(1)) == 0.0 and float(far_rect.group(2)) == 0.0

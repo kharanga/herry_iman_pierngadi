@@ -256,21 +256,36 @@ def zone_label_points(left_handed: bool = False) -> dict[tuple[str, str], tuple[
     return labels
 
 
+def boxed_text(frame: np.ndarray, text: str, origin: tuple[int, int], scale: float, thickness: int) -> None:
+    (width, height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
+    padding = max(2, thickness * 2)
+    x, y = origin
+    cv2.rectangle(frame, (x - padding, y - height - padding), (x + width + padding, y + baseline + padding), (0, 0, 0), cv2.FILLED)
+    cv2.putText(frame, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, scale, ZONE_TEXT_COLOR_BGR, thickness, cv2.LINE_AA)
+
+
+def text_scale_for_width(frame_width: int, scale_at_1280: float) -> tuple[float, int]:
+    scale = scale_at_1280 * frame_width / 1280
+    return scale, max(1, int(round(scale * 1.6)))
+
+
 def draw_zones(frame: np.ndarray, homography: np.ndarray, left_handed: bool = False) -> np.ndarray:
     drawn_frame = draw_court_lines(frame, homography, LINE_COLOR_BGR, 2)
     for start, end in zone_boundary_segments().values():
         start_pixel, end_pixel = np.round(court_to_pixels(homography, [start, end])).astype(int)
         cv2.line(drawn_frame, tuple(map(int, start_pixel)), tuple(map(int, end_pixel)), ZONE_LINE_COLOR_BGR, 1, cv2.LINE_AA)
+    frame_width = drawn_frame.shape[1]
     for (half, name), point in zone_label_points(left_handed).items():
         x, y = np.round(court_to_pixels(homography, [point])[0]).astype(int)
-        scale = 0.45 if half == "far" else 0.6
-        text_size = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0]
-        origin = (int(x - text_size[0] / 2), int(y + text_size[1] / 2))
-        cv2.putText(drawn_frame, name, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 3, cv2.LINE_AA)
-        cv2.putText(drawn_frame, name, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, ZONE_TEXT_COLOR_BGR, 1, cv2.LINE_AA)
+        scale, thickness = text_scale_for_width(frame_width, 0.4 if half == "far" else 0.5)
+        text_size = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)[0]
+        boxed_text(drawn_frame, name, (int(x - text_size[0] / 2), int(y + text_size[1] / 2)), scale, thickness)
     caption = "near half: my hit zones (right-handed, forehand on my right); far half: landing zones of my shots, named from the receiver's side as in the shots table"
-    cv2.putText(drawn_frame, caption, (10, drawn_frame.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 3, cv2.LINE_AA)
-    cv2.putText(drawn_frame, caption, (10, drawn_frame.shape[0] - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, ZONE_TEXT_COLOR_BGR, 1, cv2.LINE_AA)
+    scale, thickness = text_scale_for_width(frame_width, 0.5)
+    caption_width = cv2.getTextSize(caption, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)[0][0]
+    if caption_width > frame_width - 20:
+        scale *= (frame_width - 20) / caption_width
+    boxed_text(drawn_frame, caption, (10, drawn_frame.shape[0] - 14), scale, thickness)
     return drawn_frame
 
 

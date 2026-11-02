@@ -16,7 +16,7 @@ diagram, to check by eye that positions, normalization, zones and `is_cross` mak
 - Prints one line per shot and the saved path.
 
 The image shows the court in meters with the hitter's half at the bottom: white lines
-are the court lines, thin gray lines the depth-band edges (1.98 m, the short service line, and 3.50 m from the net)
+are the court lines, thin gray lines the depth-band edges (2.75 m and 4.00 m from the net, `DEPTH_EDGES_M`)
 and the centre line continued through the front bands, the black line the net. Each shot is a numbered yellow dot (hit)
 with a red arrow to its landing; blue dots are the receivers at the hit. The legend
 lists each shot's type, group, hitter, zones, straight/cross and source rally.
@@ -30,7 +30,7 @@ lists each shot's type, group, hitter, zones, straight/cross and source rally.
 | `SPOT_CHECK_SEED` | 7 |
 | `SPOT_CHECK_SHOT_COUNT` | 10 |
 | `PIXELS_PER_METER`, `MARGIN_PIXELS`, `LEGEND_WIDTH_PIXELS` | 60, 50, 720 (image layout) |
-| `SINGLES_SIDELINE_INSET_M`, `SHORT_SERVICE_LINE_FROM_NET_M`, `DOUBLES_LONG_SERVICE_LINE_FROM_BASELINE_M` | 0.46, 1.98, 0.76 |
+| `SINGLES_SIDELINE_INSET_M`, `DOUBLES_LONG_SERVICE_LINE_FROM_BASELINE_M` | 0.46, 0.76 (the short service line, 1.98 m, comes from `analytics.court`) |
 | `SPOT_CHECK_CANDIDATES_SQL` | ShuttleSet shots that have both a hit and a landing point |
 
 ## `draw_spot_check(database_path, output_path=SPOT_CHECK_PATH, shot_count=10, seed=7)`

@@ -104,8 +104,8 @@ hitter's position in all 86, so for `hit_zone` and `is_cross` the hitter's posit
 used there instead of the hit point.
 
 ## Zones and cross-court
-Zones: each half has 3 depth bands with the edges on the painted lines (front: net to the short
-service line at 1.98 m; mid: 1.98-3.50 m; rear: 3.50 m to the baseline and beyond) x 2 sides
+Zones: each half has 3 depth bands (front: net to 2.75 m, just behind the short service line at 1.98 m;
+mid: 2.75-4.00 m; rear: 4.00 m to the baseline and beyond) x 2 sides
 (forehand / backhand, split at the centre line, x = 3.05 m; `DEPTH_EDGES_M`, `SIDE_NAMES`).
 A point exactly on a band edge belongs to the band behind it; a point exactly on the centre line
 is the left side. There is no middle column. `hit_zone` is seen from the hitter, `landing_zone`
@@ -116,34 +116,31 @@ how `A`/`B` are matched to names.
 
 | Zone | `hit_zone` | `landing_zone` |
 |---|---|---|
-| front_forehand | 5,569 | 5,687 |
-| front_backhand | 4,855 | 4,964 |
-| mid_forehand | 4,766 | 3,494 |
-| mid_backhand | 4,634 | 3,387 |
-| rear_forehand | 7,732 | 8,199 |
-| rear_backhand | 7,798 | 8,435 |
+| front_forehand | 8,228 | 7,956 |
+| front_backhand | 7,262 | 7,066 |
+| mid_forehand | 3,205 | 2,257 |
+| mid_backhand | 3,419 | 2,461 |
+| rear_forehand | 6,634 | 7,167 |
+| rear_backhand | 6,606 | 7,259 |
 | not_over_net | n/a | 1,131 |
 | NULL (no position) | 1,129 | 1,186 |
 
-### What moved from the earlier 9-zone grid
-Compared with the earlier build (3 equal bands of 2.23 m x forehand / 1.0 m middle column /
-backhand), joined shot by shot on (`match_id`, `set_no`, `rally`, `ball_round`, `frame_num`),
-which is unique: 10,738 of 35,354 `hit_zone`s (30.4%) and 8,463 of 35,297 `landing_zone`s (24.0%)
-changed. The largest moves:
+### What moved from the 1.98 / 3.50 m edges
+The bands used to end on the painted short service line (1.98 m) and at 3.50 m. Both edges moved back
+(2.75 m and 4.00 m from the net) after looking at the zone overlay on club footage. Sides are unchanged,
+so a shot only moves one band towards the net. 7,356 of 35,354 `hit_zone`s (20.8%) and 6,579 of 35,297
+`landing_zone`s (18.6%) changed:
 
 | Before -> after | `hit_zone` | `landing_zone` |
 |---|---|---|
-| mid_backhand -> rear_backhand (3.50 m edge instead of 4.47) | 1,894 | 2,065 |
-| mid_forehand -> rear_forehand | 1,600 | 1,731 |
-| mid_middle -> mid_backhand / mid_forehand | 1,476 / 1,388 | 327 / 317 |
-| front_forehand -> mid_forehand (1.98 m edge instead of 2.23) | 902 | 859 |
-| front_backhand -> mid_backhand | 810 | 770 |
-| front_middle -> front_forehand / front_backhand | 696 / 631 | 698 / 628 |
-| mid_middle -> rear_forehand / rear_backhand | 363 / 339 | 208 / 211 |
-| rear_middle -> rear_backhand / rear_forehand | 201 / 164 | 214 / 192 |
+| mid_forehand -> front_forehand (2.75 m edge instead of 1.98) | 2,659 | 2,269 |
+| mid_backhand -> front_backhand | 2,407 | 2,102 |
+| rear_backhand -> mid_backhand (4.00 m edge instead of 3.50) | 1,192 | 1,176 |
+| rear_forehand -> mid_forehand | 1,098 | 1,032 |
 
-The rear band grew most (hits 11,334 -> 15,530): the players' base position, 3.5-4.5 m from the net,
-is now "rear" instead of "mid", and the former middle column split evenly between the two sides.
+The front band grew most (hits 10,424 -> 15,490): shots played just behind the short service line, up to
+2.75 m from the net, now count as front. The rear band shrank (hits 15,530 -> 13,240), because the
+players' base position 3.5-4.0 m from the net is now mid. The `not_over_net` and NULL rows didn't change.
 
 `is_cross`: TRUE when the hit and landing points are on opposite sides of the centre line, NULL
 for a landing on the hitter's own half (`not_over_net`, 1,131 shots; the earlier build gave those a
@@ -186,21 +183,21 @@ before-score plus exactly one point. Every set's rally 1 is 0-0.
 
 ## Spot check
 `data/checks/shots/random_shots.png` (seed 7). 10 random shots with a hit and a landing, on a
-top-down court with the hitter's half at the bottom; gray lines mark the band edges (1.98 and
-3.50 m from the net) and the centre line through the front bands. I checked each against its numbers:
+top-down court with the hitter's half at the bottom; gray lines mark the band edges (2.75 and
+4.00 m from the net) and the centre line through the front bands. I checked each against its numbers:
 
 | # | Shot | Hit (m) | Landing (m) | Zones | Looks right? |
 |---|---|---|---|---|---|
 | 1 | clear by Christie (B) | 0.78, 1.12 | 3.10, 11.72 | rear_backhand -> rear_backhand, cross | yes: rear left corner, deep, to just right of the centre line, which from the receiver's view is their backhand; cross by 0.05 m |
-| 2 | net shot by Chen Long | 2.65, 4.70 | 3.07, 7.56 | mid_backhand -> front_backhand, cross | yes: 2.00 m from the net is just behind the short service line, so "mid"; lands 0.02 m across the centre, so cross |
-| 3 | net shot by Chou | 4.93, 4.25 | 4.85, 7.31 | mid_forehand -> front_backhand, straight | yes: 2.45 m from the net; the receiver's left |
-| 4 | push by Chou (B) to Momota | 4.53, 4.33 | 1.56, 12.54 | mid_forehand -> rear_backhand, cross | yes: left-handed Momota's backhand is on his right (small x) |
+| 2 | net shot by Chen Long | 2.65, 4.70 | 3.07, 7.56 | front_backhand -> front_backhand, cross | yes: 2.00 m from the net, just behind the short service line but inside the 2.75 m edge, so "front"; lands 0.02 m across the centre, so cross |
+| 3 | net shot by Chou | 4.93, 4.25 | 4.85, 7.31 | front_forehand -> front_backhand, straight | yes: 2.45 m from the net; the receiver's left |
+| 4 | push by Chou (B) to Momota | 4.53, 4.33 | 1.56, 12.54 | front_forehand -> rear_backhand, cross | yes: 2.37 m from the net; left-handed Momota's backhand is on his right (small x) |
 | 5 | net shot by Momota | 1.10, 5.14 | 1.36, 7.40 | front_forehand -> front_forehand, straight | yes: left side is a left-hander's forehand |
-| 6 | back-court drive by Momota | 1.11, 0.66 | 0.93, 10.90 | rear_forehand -> rear_forehand, straight | yes: deep, straight down the line; the receiver takes it 4.2 m from the net, now "rear" |
+| 6 | back-court drive by Momota | 1.11, 0.66 | 0.93, 10.90 | rear_forehand -> rear_forehand, straight | yes: deep, straight down the line; the receiver takes it 4.2 m from the net, just past the 4.00 m edge, so "rear" |
 | 7 | passive drop by Kidambi (B) | 1.23, 1.26 | 6.13, 9.90 | rear_backhand -> mid_backhand, cross | yes: receiver reached it just outside the sideline, 3.2 m from the net |
 | 8 | drop by Intanon | 2.15, 1.04 | 5.11, 8.60 | rear_backhand -> front_backhand, cross | yes |
 | 9 | lob by Axelsen | 0.81, 5.10 | 1.19, 12.86 | front_backhand -> rear_forehand, straight | yes: from the net to the back line |
-| 10 | net shot by Axelsen | 1.23, 4.28 | 2.86, 7.88 | mid_backhand -> front_forehand, straight | yes: lands 0.19 m left of the centre line, the same side as the hit, so straight |
+| 10 | net shot by Axelsen | 1.23, 4.28 | 2.86, 7.88 | front_backhand -> front_forehand, straight | yes: 2.42 m from the net; lands 0.19 m left of the centre line, the same side as the hit, so straight |
 
 Shot types agree with distances: the four net shots travel 2.3-4.0 m and stay in front.
 The clear and the back-court drive travel 10.2-10.9 m, and the lob from the net 7.8 m. Receivers (blue) cluster around the far

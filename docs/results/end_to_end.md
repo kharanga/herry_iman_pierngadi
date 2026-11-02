@@ -50,8 +50,8 @@ batch was dropped.
 | Serve rows | 36, every one with the server's feet (fixed camera, the serve frame is always in view); predicted `serve` 34 (24 short, 10 long), `net` 1, `lift` 1 |
 | `me` | 149 rows, 124 predicted: net 35, drop 23, serve 22, drive 18, lift 12, clear 7, smash 7 |
 | `opp` | 138 rows, 127 predicted: net 44, drive 27, lift 22, clear 12, serve 12, smash 6, drop 4 |
-| Habit entries | `me` 109 (22 zone, 82 reply, 5 serve placement), `opp` 122 (24, 94, 4); winner and error families empty (no rally results) |
-| Report | `data/reports/stand_in_set1/index.html`, 312 KB; phone-width screenshot `data/checks/report/stand_in_set1_390px.png` |
+| Habit entries | `me` 110 (20 zone, 83 reply, 7 serve placement), `opp` 123 (24, 92, 7); winner and error families empty (no rally results) |
+| Report | `data/reports/stand_in_set1/index.html`, 315 KB; phone-width screenshot `data/checks/report/stand_in_set1_390px.png` |
 | Database | the 287 rows are also in `data/scout.duckdb` (`source = 'own'`, `match_id = 'stand_in_set1'`), so `report.serve stand_in_set1 --me me` works from the real command |
 
 **Doubled serves.** When the movement detector catches the serve itself, the serve rule puts a second serve row

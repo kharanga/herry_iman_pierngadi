@@ -25,8 +25,8 @@ left stays their left.
 | `COURT_LENGTH_M` | 13.4 | length, outer edges |
 | `NET_Y_M` | 6.7 | net position |
 | `CENTRE_X_M` | 3.05 | centre line |
-| `SHORT_SERVICE_LINE_FROM_NET_M` | 1.98 | the painted short service line |
-| `DEPTH_EDGES_M` | `(1.98, 3.50)` | the two band edges, measured from the net: front is up to the short service line, mid up to 3.50 m, rear the rest. The one place to tune them |
+| `SHORT_SERVICE_LINE_FROM_NET_M` | 1.98 | the painted short service line (drawn, not a zone edge) |
+| `DEPTH_EDGES_M` | `(2.75, 4.00)` | the two band edges, measured from the net: front up to 2.75 m, mid up to 4.00 m, rear the rest (4.00-6.70 m and behind the baseline). The one place to tune them |
 | `DEPTH_NAMES` | `("front", "mid", "rear")` | |
 | `SIDE_NAMES` | `("forehand", "backhand")` | split at the centre line; no middle column |
 | `ZONE_NAMES` | 6 names `{front,mid,rear}_{forehand,backhand}` | every allowed `hit_zone` |
@@ -39,7 +39,7 @@ treats `None` or a NaN coordinate as missing.
 ```python
 >>> from analytics.court import *
 >>> DEPTH_EDGES_M, SIDE_NAMES
-((1.98, 3.5), ('forehand', 'backhand'))
+((2.75, 4.0), ('forehand', 'backhand'))
 >>> len(ZONE_NAMES), ZONE_NAMES[:2], LANDING_ZONE_NAMES[-1]
 (6, ('front_forehand', 'front_backhand'), 'not_over_net')
 
@@ -157,13 +157,15 @@ True
 
 ## `depth_name(distance_from_net_m)`
 
-`"front"` under 1.98 m from the net (up to the short service line), `"mid"` from 1.98 m
-under 3.50 m, `"rear"` from 3.50 m (including behind the baseline). A distance exactly on
+`"front"` under 2.75 m from the net, `"mid"` from 2.75 m
+under 4.00 m, `"rear"` from 4.00 m (including behind the baseline). A distance exactly on
 an edge belongs to the band behind it. Negative distances count as `"front"`.
 
 ```python
->>> depth_name(1.97), depth_name(1.98), depth_name(1.99), depth_name(3.49), depth_name(3.50), depth_name(3.51)
+>>> depth_name(2.74), depth_name(2.75), depth_name(2.76), depth_name(3.99), depth_name(4.00), depth_name(4.01)
 ('front', 'mid', 'mid', 'mid', 'rear', 'rear')
+>>> depth_name(1.98)
+'front'
 >>> depth_name(0.0), depth_name(8.0)
 ('front', 'rear')
 
@@ -175,7 +177,7 @@ The near and far edge of a band, as distances from the net, for drawing the band
 
 ```python
 >>> [depth_band_from_net_m(depth) for depth in DEPTH_NAMES]
-[(0.0, 1.98), (1.98, 3.5), (3.5, 6.7)]
+[(0.0, 2.75), (2.75, 4.0), (4.0, 6.7)]
 
 ```
 
@@ -204,7 +206,7 @@ Zone of a point on the near half: `f"{depth_name(...)}_{side_name(...)}"`.
 ```python
 >>> zone_in_near_half((5.0, 1.0)), zone_in_near_half((5.0, 1.0), left_handed=True)
 ('rear_forehand', 'rear_backhand')
->>> zone_in_near_half((1.0, 6.0)), zone_in_near_half((3.3, 3.0)), zone_in_near_half((3.0, 4.72))
+>>> zone_in_near_half((1.0, 6.0)), zone_in_near_half((3.3, 2.0)), zone_in_near_half((3.0, 3.70))
 ('front_backhand', 'rear_forehand', 'mid_backhand')
 
 ```
@@ -294,6 +296,6 @@ A serve with no hit point uses the server's position (here just right of the cen
 ```python
 >>> serve = shot_geometry(hit=None, landing=(1.5, 8.9), player=(3.4, 4.5), opponent=(2.5, 8.6))
 >>> serve["hit"], serve["hit_zone"], serve["landing_zone"], serve["is_cross"]
-(None, 'mid_forehand', 'mid_forehand', True)
+(None, 'front_forehand', 'front_forehand', True)
 
 ```

@@ -67,7 +67,7 @@ band edges on the painted lines.
 
 | Depth (from the net) | Side | Zones |
 |---|---|---|
-| front 0-1.98 m (to the short service line), mid 1.98-3.50 m, rear 3.50 m and beyond | forehand / backhand, split at the centre line | `front_forehand`, `front_backhand`, `mid_forehand`, `mid_backhand`, `rear_forehand`, `rear_backhand` |
+| front 0-2.75 m, mid 2.75-4.00 m, rear 4.00 m and beyond (to the baseline at 6.70 m and behind it) | forehand / backhand, split at the centre line | `front_forehand`, `front_backhand`, `mid_forehand`, `mid_backhand`, `rear_forehand`, `rear_backhand` |
 
 Forehand and backhand swap for a left-handed player. `landing_zone` can also be `not_over_net`.
 `is_cross` is TRUE when the hit and landing points are on opposite sides of the centre line, NULL

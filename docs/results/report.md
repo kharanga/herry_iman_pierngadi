@@ -19,7 +19,7 @@ their habits; **Me** with every one of mine; a footer saying what "k of n" means
 comparison or ranking, and whether shot types are labels or predictions. Inside each player, bullets sit under one
 sub-heading per family ("Shots by court zone", "Replies to the other player's shot", "Serves", "Winning shots",
 "Shots that ended in an error", "How errors happened"). Each bullet is the counted sentence in bold
-("From the front court, forehand side: lifts 5 of 6 times."), the evidence line (`5 of 6 for Opponent`) and, for
+("From the front court, forehand side: lifts 8 of 13 times."), the evidence line (`8 of 13 for Opponent`) and, for
 zone and serve bullets, a 54 px court diagram with the zone shaded on the six-zone grid (bands at the short service
 line and 3.50 m from the net, sides split at the centre line; me at the bottom). Reply bullets name the other
 player ("After a serve from my mid forehand to the mid backhand: lifts cross 1 of 1 times.") and their diagram
@@ -27,9 +27,9 @@ shows that player's shot: the hit-from zone in yellow, the landing zone in red a
 me at the bottom. Bullets whose shot types
 came from the classifier carry a "predicted shot types" tag.
 
-For `match_tracked`: 68 bullets for the opponent and 67 for me, under
+For `match_tracked`: 63 bullets for the opponent and 66 for me, under
 Shots by court zone, Replies to the other player's shot, Serves (opponent) and Shots by court zone, Replies to the other player's shot (me);
-181.0 KB of HTML; 135 bullets from predictions only, 0 mixed. (My serve rows on the broadcast have no
+173.5 KB of HTML; 129 bullets from predictions only, 0 mixed. (My serve rows on the broadcast have no
 position, so no serve bullets for me; see `docs/results/no_shuttle.md`.)
 
 ## Checks
@@ -37,13 +37,13 @@ position, so no serve bullets for me; see `docs/results/no_shuttle.md`.)
 | Check | Result |
 |---|---|
 | Builds for my tracked match | `report.serve match_tracked --me me --no-serve` writes the page |
-| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 16.9 s in one process |
-| Every habit shown, no cap | each page lists every entry of both players: 255 to 651 bullets a page (median 465) |
-| Every bullet has a count | all 40,849 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
+| Works for every ShuttleSet match | 88 pages built (44 matches x me = A and me = B) without error, 16.6 s in one process |
+| Every habit shown, no cap | each page lists every entry of both players: 237 to 629 bullets a page (median 413.5) |
+| Every bullet has a count | all 37,501 bullets (ShuttleSet pages + `match_tracked`) have `evidence` matching `k of n`, and it appears in the HTML (0 without) |
 | No comparison with pros | 0 of 89 pages mention pros (0 found) |
-| Diagrams | 5,185 bullets (zone and serve placement) get a shaded zone; 33,424 reply bullets get hit-from and landing zones with an arrow |
-| Reply bullets name the other player | 33,424 of 33,424 reply bullets name the player; 0 say "the other player" |
-| Page size | ShuttleSet 317 to 844 KB (median 595 KB), nothing external (inline CSS and SVG, no scripts) |
+| Diagrams | 4,976 bullets (zone and serve placement) get a shaded zone; 30,285 reply bullets get hit-from and landing zones with an arrow |
+| Reply bullets name the other player | 30,285 of 30,285 reply bullets name the player; 0 say "the other player" |
+| Page size | ShuttleSet 294 to 814 KB (median 526 KB), nothing external (inline CSS and SVG, no scripts) |
 | Only the report is served | the server serves a temporary folder holding a copy of the page and nothing else |
 
 ## Readable at 390 px
@@ -64,7 +64,7 @@ long: it is meant to be scrolled, one family at a time.
   right-handed players.
 
 ## Limits
-- ShuttleSet pages are long (651 bullets at most): every rare choice is listed. Ranking or filtering can
+- ShuttleSet pages are long (629 bullets at most): every rare choice is listed. Ranking or filtering can
   come back as its own task.
 - The server is Python's `http.server`: fine for one phone on the home network, not for the internet.
 - The page is static: re-run the command after new shots are loaded.

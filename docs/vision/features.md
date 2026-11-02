@@ -159,7 +159,7 @@ passes the feet as the hit point), the zone comes from the hit point:
 ```python
 >>> with_feet = shot_row("club_1", 1, 1, 1, 100, 30.0, "me", (3.4, 3.0), (2.5, 10.0), (3.0, 11.0), frozenset(), (3.0, 2.0))
 >>> {key: with_feet[key] for key in ("hit_x", "hit_y", "player_x", "player_y", "hit_zone")}
-{'hit_x': 3.4, 'hit_y': 3.0, 'player_x': 3.0, 'player_y': 2.0, 'hit_zone': 'rear_forehand'}
+{'hit_x': 3.4, 'hit_y': 3.0, 'player_x': 3.0, 'player_y': 2.0, 'hit_zone': 'mid_forehand'}
 
 ```
 
@@ -170,7 +170,7 @@ A far-side hitter is rotated by a half turn, `(x, y) -> (6.1 - x, 13.4 - y)`:
 >>> {key: round(far[key], 1) for key in ("hit_x", "hit_y", "landing_x", "landing_y", "opponent_x", "opponent_y")}
 {'hit_x': 3.6, 'hit_y': 3.4, 'landing_x': 4.1, 'landing_y': 9.4, 'opponent_x': 4.1, 'opponent_y': 9.4}
 >>> far["player"], far["hit_zone"], far["landing_zone"]
-('opp', 'mid_forehand', 'mid_backhand')
+('opp', 'mid_forehand', 'front_backhand')
 
 ```
 

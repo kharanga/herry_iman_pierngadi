@@ -622,32 +622,38 @@ this, so lines out of frame don't count as missing.
 
 ```
 
-### `zone_boundary_segments() -> dict`, `zone_label_points(left_handed=False) -> dict`, `draw_zones(frame, homography, left_handed=False) -> ndarray`, `zones_image_path(video_path, checks_dir=ZONES_CHECK_DIR) -> Path`, `write_zones_image(video_path, frame_index, calibration_dir=CALIBRATION_DIR, checks_dir=ZONES_CHECK_DIR, left_handed=False) -> Path`
+### `zone_boundary_segments() -> dict`, `zone_label_points(left_handed=False) -> dict`, `boxed_text(frame, text, origin, scale, thickness)`, `text_scale_for_width(frame_width, scale_at_1280) -> (float, int)`, `draw_zones(frame, homography, left_handed=False) -> ndarray`, `zones_image_path(video_path, checks_dir=ZONES_CHECK_DIR) -> Path`, `write_zones_image(video_path, frame_index, calibration_dir=CALIBRATION_DIR, checks_dir=ZONES_CHECK_DIR, left_handed=False) -> Path`
 The six shot zones per half of `analytics.court` drawn on a frame through the
 calibration (`python -m vision.court <video> --frame N --zones [--left-handed]`): the
 court lines in red, the zone boundaries in yellow (the two depth lines per half at
-`DEPTH_EDGES_M` from the net, 1.98 m = the short service line and 3.50 m, and the centre
-line over the full length), and each zone's name (front/mid/rear x forehand/backhand) at
+`DEPTH_EDGES_M` from the net, 2.75 m and 4.00 m, and the centre line over the full
+length; the short service line at 1.98 m is a painted line drawn in red, not a zone edge), and each zone's name (front/mid/rear x forehand/backhand) at
 its centre. The near half carries the near player's hit zones
 (`zone_in_near_half`); the far half carries the landing zones of the near player's
 shots, which the `shots` table names from the receiver's side (the point is rotated by
 a half turn first, so the receiver's forehand is on the image's left for two
-right-handers). Output `data/checks/court/<video id>_zones.jpg`; errors: a missing
-calibration or video, or an unreadable frame.
+right-handers). Every text is drawn once, in white on a filled black box
+(`boxed_text`), at a size scaled to the frame width (`text_scale_for_width`, sizes given
+for a 1280-pixel frame). The caption is shrunk further if it would run off the frame.
+Output `data/checks/court/<video id>_zones.jpg`; errors: a missing calibration or video,
+or an unreadable frame.
 
 ```python
 >>> from vision.court import draw_zones, zone_boundary_segments, zone_label_points, zones_image_path
 >>> sorted(zone_boundary_segments())
 ['centre', 'far_depth_1', 'far_depth_2', 'near_depth_1', 'near_depth_2']
 >>> [tuple(round(v, 2) for v in point) for point in zone_boundary_segments()["near_depth_1"]], zone_boundary_segments()["centre"]
-([(0.0, 4.72), (6.1, 4.72)], ((3.05, 0.0), (3.05, 13.4)))
+([(0.0, 3.95), (6.1, 3.95)], ((3.05, 0.0), (3.05, 13.4)))
 >>> labels = zone_label_points()
 >>> len(labels), tuple(round(v, 3) for v in labels[("near", "front_forehand")]), tuple(round(v, 3) for v in labels[("far", "front_forehand")])
-(12, (4.575, 5.71), (1.525, 7.69))
+(12, (4.575, 5.325), (1.525, 8.075))
 >>> sorted(name for half, name in labels if half == "near")
 ['front_backhand', 'front_forehand', 'mid_backhand', 'mid_forehand', 'rear_backhand', 'rear_forehand']
 >>> draw_zones(np.zeros((720, 1280, 3), dtype=np.uint8), homography).shape
 (720, 1280, 3)
+>>> from vision.court import text_scale_for_width
+>>> text_scale_for_width(1280, 0.5), text_scale_for_width(1920, 0.5)
+((0.5, 1), (0.75, 1))
 >>> zones_image_path(Path("data/recordings/stand_in/set1.mp4")).as_posix()
 'data/checks/court/stand_in_set1_zones.jpg'
 
