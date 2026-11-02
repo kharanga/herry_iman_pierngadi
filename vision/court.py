@@ -589,10 +589,11 @@ def overlay_path_for(calibration_file: Path) -> Path:
     return Path(calibration_file).with_name("court_overlay.jpg")
 
 
-def court_diagram(point_names, current_name: str, placed_names, height_px: int = 300) -> np.ndarray:
+def court_diagram(point_names, current_name: str, placed_names, height_px: int = 360) -> np.ndarray:
     scale = height_px / (COURT_LENGTH_M + 1.0)
     width_px = int((COURT_WIDTH_M + 1.0) * scale)
     diagram = np.full((height_px, width_px, 3), 40, dtype=np.uint8)
+    cv2.rectangle(diagram, (0, 0), (width_px - 1, height_px - 1), (255, 255, 255), 2)
 
     def to_pixel(point):
         return int(round((point[0] + 0.5) * scale)), int(round((COURT_LENGTH_M + 0.5 - point[1]) * scale))
@@ -601,8 +602,8 @@ def court_diagram(point_names, current_name: str, placed_names, height_px: int =
         cv2.line(diagram, to_pixel(start), to_pixel(end), (200, 200, 200), 1)
     catalog = court_point_catalog()
     for name in point_names:
-        color = (0, 255, 255) if name == current_name else (0, 200, 0) if name in placed_names else (120, 120, 120)
-        cv2.circle(diagram, to_pixel(catalog[name]), 5 if name == current_name else 3, color, -1)
+        color = (0, 255, 255) if name == current_name else (0, 200, 0) if name in placed_names else (190, 190, 190)
+        cv2.circle(diagram, to_pixel(catalog[name]), 6 if name == current_name else 4, color, -1)
     return diagram
 
 
@@ -633,6 +634,19 @@ def points_are_enough(point_pixels: dict) -> bool:
     return points_problem(point_pixels) is None
 
 
+def click_window_frame(frame: np.ndarray, point_names: list[str], current_name: str, placed: dict) -> np.ndarray:
+    shown_frame = frame.copy()
+    for point in placed.values():
+        cv2.circle(shown_frame, tuple(int(value) for value in point), 6, CORNER_COLOR_BGR, 2)
+    diagram = court_diagram(point_names, current_name, placed)
+    shown_frame[10 : 10 + diagram.shape[0], 10 : 10 + diagram.shape[1]] = diagram
+    problem = points_problem(placed)
+    ready = "enter = save" if problem is None else f"{len(placed)} placed: {problem}"
+    prompt = f"click {current_name}   n/p = next/previous point, d = delete it, {ready}, esc = cancel"
+    cv2.putText(shown_frame, prompt, (20, shown_frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, CORNER_COLOR_BGR, 2)
+    return shown_frame
+
+
 def click_court_points(frame: np.ndarray, window_name: str = "court points") -> dict | None:
     point_names = clickable_point_names()
     placed: dict[str, tuple[int, int]] = {}
@@ -647,17 +661,7 @@ def click_court_points(frame: np.ndarray, window_name: str = "court points") -> 
     cv2.setMouseCallback(window_name, remember_click)
     try:
         while True:
-            shown_frame = frame.copy()
-            for name, point in placed.items():
-                cv2.circle(shown_frame, point, 6, CORNER_COLOR_BGR, 2)
-                cv2.putText(shown_frame, name, (point[0] + 8, point[1] - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.45, CORNER_COLOR_BGR, 1)
-            diagram = court_diagram(point_names, point_names[current[0]], placed)
-            shown_frame[10 : 10 + diagram.shape[0], 10 : 10 + diagram.shape[1]] = diagram
-            problem = points_problem(placed)
-            ready = "enter = save" if problem is None else f"{len(placed)} placed: {problem}"
-            prompt = f"click {point_names[current[0]]}   n/p = next/previous point, d = delete it, {ready}, esc = cancel"
-            cv2.putText(shown_frame, prompt, (20, shown_frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, CORNER_COLOR_BGR, 2)
-            cv2.imshow(window_name, shown_frame)
+            cv2.imshow(window_name, click_window_frame(frame, point_names, point_names[current[0]], placed))
             key = cv2.waitKey(30) & 0xFF
             if key == 27 or window_was_closed(window_name):
                 return None

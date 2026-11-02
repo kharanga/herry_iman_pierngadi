@@ -76,13 +76,14 @@ the court exist. Click a corner at the outer edge of its lines, as the corner
 calibration does; for a crossing, at the outer edge of the sideline and the middle of
 the line across (the lines are about 4 cm wide, so the choice matters by 1-3 px).
 
-**Click window** (`--pick-points`): a small court diagram in the top-left corner shows
-every known point once. That is 32 points: the 4 corners under their short names, and no
+**Click window** (`--pick-points`): a court diagram in the top-left corner, with a white
+border, shows every known point once. That is 32 points: the 4 corners under their short names, and no
 crossing that sits on a corner (`clickable_point_names`). The current point is yellow,
 placed ones green. A click places the current point and moves to the next; `n`/`p` step
 to the next or previous point without clicking (to skip hidden ones), `d` removes the
 current point's click, Enter saves once the placed points fix a homography, Esc or the
-close button cancels. Until Enter can save, the prompt gives the reason
+close button cancels. Placed points are small circles on the frame, without their names (the
+current name is in the prompt and on the diagram). Until Enter can save, the prompt gives the reason
 (`points_problem`): fewer than 4 points, 3 on one line, or "same point clicked twice"
 with both names (possible with `--points`, or in a file from before this list).
 `--points` still takes either name for a corner.
@@ -659,7 +660,7 @@ or an unreadable frame.
 
 ```
 
-### `draw_point_markers(frame, calibration, color=CORNER_COLOR_BGR) -> ndarray`, `court_diagram(point_names, current_name, placed_names, height_px=300) -> ndarray`, `clickable_point_names() -> list[str]`, `same_point_pairs(point_names) -> list[(str, str)]`, `points_problem(point_pixels) -> str | None`, `points_are_enough(point_pixels) -> bool`, `click_court_points(frame, window_name="court points") -> dict | None`
+### `draw_point_markers(frame, calibration, color=CORNER_COLOR_BGR) -> ndarray`, `court_diagram(point_names, current_name, placed_names, height_px=360) -> ndarray`, `click_window_frame(frame, point_names, current_name, placed) -> ndarray`, `clickable_point_names() -> list[str]`, `same_point_pairs(point_names) -> list[(str, str)]`, `points_problem(point_pixels) -> str | None`, `points_are_enough(point_pixels) -> bool`, `click_court_points(frame, window_name="court points") -> dict | None`
 These are:
 - the overlay markers of a point calibration;
 - the click window's court diagram;
@@ -685,7 +686,14 @@ True
 >>> points_are_enough(dict(zip(names, pixels))), points_are_enough({"near_left": (1.0, 2.0)})
 (True, False)
 >>> court_diagram(list(catalog), "near_left", {"near_right"}).shape
-(300, 147, 3)
+(360, 177, 3)
+>>> from vision.court import click_window_frame
+>>> blank = np.zeros((720, 1280, 3), dtype=np.uint8)
+>>> shown = click_window_frame(blank, clickable, "near_right", {"near_left": (600, 500)})
+>>> bool(shown[10, 10:187].min() == 255), int(shown[15:365, 15:180].mean()) > 30
+(True, True)
+>>> int(shown[490:510, 590:610].sum() > 0), int(shown[470:495, 610:700].sum())
+(1, 0)
 
 ```
 
