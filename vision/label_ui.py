@@ -354,7 +354,7 @@ table{width:100%;border-collapse:collapse}td{padding:3px 4px;border-bottom:1px s
 .rblock{position:absolute;top:0;height:44px;background:#2f5f3f}
 .rblock.unchecked{background:#5f4f2f}
 </style></head><body>
-<header><b>Label hits</b><span id="status"></span><span id="progress" class="small"></span><span id="pending" class="pending"></span></header>
+<header><b>Label hits</b><span><input id="framebox" size="8" placeholder="frame" inputmode="numeric" autocomplete="off" aria-label="frame number"><button id="gobutton">go</button> <span id="framemsg" class="small"></span></span><span id="status"></span><span id="progress" class="small"></span><span id="pending" class="pending"></span></header>
 <main>
 <section id="left"><img id="frame" alt="current frame">
 <div id="timeline" title="click to jump"></div>
@@ -399,13 +399,19 @@ function render(s){if(s.error){alert(s.error);return;}state=s;
  $("hits").innerHTML=rows.join("")||"<tr><td class='small'>none yet</td></tr>";
  if(r){const key=r.start_frame+"-"+r.end_frame;if(key!==clipKey){clipKey=key;$("clip").src="/clip.mp4?start="+r.start_frame+"&end="+r.end_frame;$("clip").playbackRate=speed;}}
 }
+function goToTypedFrame(){const typed=$("framebox").value.trim(),message=$("framemsg");if(!state)return;
+ if(!/^[0-9]+$/.test(typed)){message.textContent="type a whole frame number";return;}
+ const frame=parseInt(typed,10);if(frame>state.last_frame){message.textContent="frames run 0-"+state.last_frame;return;}
+ message.textContent="";$("framebox").blur();post({type:"jump",frame:frame});}
+$("gobutton").addEventListener("click",e=>{e.stopPropagation();goToTypedFrame();});
+$("framebox").addEventListener("keydown",e=>{e.stopPropagation();if(e.key==="Enter"){e.preventDefault();goToTypedFrame();}else if(e.key==="Escape"){$("framebox").blur();}});
 $("timeline").addEventListener("click",e=>{if(!state||!state.rally)return;const r=state.rally,w=e.currentTarget.clientWidth;post({type:"jump",frame:Math.round(r.start_frame+e.offsetX/(w-2)*(r.end_frame-r.start_frame))});});
 document.addEventListener("click",async e=>{const b=e.target;if(b.dataset.key)post({type:"key",key:b.dataset.key});
  if(b.dataset.keys){for(const k of JSON.parse(b.dataset.keys))await post({type:"key",key:k});}
  if(b.dataset.speed){speed=parseFloat(b.dataset.speed);$("clip").playbackRate=speed;}
  if(b.dataset.delete){e.stopPropagation();post({type:"delete",frame:parseInt(b.dataset.delete)});return;}
  const row=b.closest&&b.closest("tr.row");if(row&&!b.dataset.delete)post({type:"jump",frame:parseInt(row.dataset.frame)});});
-document.addEventListener("keydown",e=>{if(e.metaKey||e.ctrlKey||e.altKey)return;let k=e.key;if(k==="ArrowLeft")k=e.shiftKey?"<":",";else if(k==="ArrowRight")k=e.shiftKey?">":".";else if(k==="Escape")k="esc";
+document.addEventListener("keydown",e=>{if(e.metaKey||e.ctrlKey||e.altKey)return;if(e.target&&(e.target.tagName==="INPUT"||e.target.tagName==="TEXTAREA"))return;let k=e.key;if(k==="ArrowLeft")k=e.shiftKey?"<":",";else if(k==="ArrowRight")k=e.shiftKey?">":".";else if(k==="Escape")k="esc";
  else if(k===" "){const v=$("clip");v.paused?v.play():v.pause();e.preventDefault();return;}
  else if(k==="1"||k==="2"||k==="3"){speed={"1":0.25,"2":0.5,"3":1}[k];$("clip").playbackRate=speed;return;}
  if(ACTION_KEYS.includes(k)){if([",",".","<",">"].includes(k))e.preventDefault();post({type:"key",key:k});}});

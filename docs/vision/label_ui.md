@@ -98,8 +98,17 @@ v Ding, segment 2).
   1x, with a strip under it showing its playhead (blue dot) and the left panel's frame
   (white line); then the list of the rally's labelled hits (frame, hitter, type, source):
   click a row to jump to it, `delete` to remove it.
-- **Top:** the frame and rally, saved / unsaved, progress ("12 of 36 rallies labelled,
-  97 hits"), and the pending hit prompt.
+- **Top:** a **frame box**, then the frame and rally, saved / unsaved, progress ("12 of
+  36 rallies labelled, 97 hits"), and the pending hit prompt.
+  - Type a frame number in the box and press Enter or `go`. The page sends the same
+    `jump` action as a click on the timeline (`jump_to_frame`, so `at_frame`). A frame
+    inside a rally selects that rally; in blank mode the segment follows.
+  - Anything that isn't a whole number, or a frame past the video's last, gets a short
+    message next to the box ("type a whole frame number", "frames run 0-N"), and nothing
+    is sent.
+  - While the box has the focus, the key shortcuts are off: the box keeps its own key
+    presses, and the page ignores keys typed in any input. Esc leaves the box, and so
+    does a jump.
 
 Every action is a button and a key; the keys are the OpenCV tool's (`docs/vision/label.md`):
 
