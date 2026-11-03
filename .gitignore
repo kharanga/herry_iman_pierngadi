@@ -14,3 +14,5 @@ docs/overview.md
 *.onnx
 *.h264
 *.mjpeg
+docs/results/
+.DS_Store

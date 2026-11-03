@@ -24,6 +24,7 @@ from vision.camera import (
     reprojection_errors,
 )
 from vision.court import court_corner_meters, load_calibration, pixels_to_court
+from tests.results_pages import docs_on_disk
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_VIDEO_PATH = PROJECT_ROOT / "data" / "match.mp4"
@@ -145,6 +146,6 @@ def test_refitting_from_the_documented_clicks_reproduces_the_shipped_camera_and_
 def test_camera_source_has_no_comments_or_docstrings_and_docs_have_no_task_ids():
     source = (PROJECT_ROOT / "vision" / "camera.py").read_text()
     assert '"""' not in source and "'''" not in source and not re.search(r"(?m)^\s*#", source)
-    for doc in ("docs/vision/camera.md", "docs/results/contact.md"):
+    for doc in docs_on_disk(("docs/vision/camera.md", "docs/results/contact.md")):
         assert not re.search(TASK_ID_PATTERN, (PROJECT_ROOT / doc).read_text())
     assert "Examples need:" not in (PROJECT_ROOT / "docs" / "vision" / "camera.md").read_text()

@@ -33,6 +33,7 @@ from vision.court import (
     reference_points,
     save_calibration,
 )
+from tests.results_pages import docs_on_disk
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 RESULTS_PATH = PROJECT_ROOT / "docs" / "results" / "court.md"
@@ -295,7 +296,7 @@ def test_stand_in_calibrates_from_seven_points_and_reproduces_the_shipped_calibr
 
 
 def test_court_docs_have_no_task_ids_and_source_has_no_comments():
-    for doc in ("docs/vision/court.md", "docs/results/court.md"):
+    for doc in docs_on_disk(("docs/vision/court.md", "docs/results/court.md")):
         assert not re.search(TASK_ID_PATTERN, (PROJECT_ROOT / doc).read_text())
     source = (PROJECT_ROOT / "vision" / "court.py").read_text()
     assert '"""' not in source and "'''" not in source and not re.search(r"(?m)^\s*#", source)

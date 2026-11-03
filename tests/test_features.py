@@ -45,6 +45,7 @@ from vision.features import (
 )
 from vision.hits import output_paths as hit_output_paths
 from shots.predict import predict_shot_types
+from tests.results_pages import docs_on_disk
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_DATABASE_PATH = PROJECT_ROOT / "data" / "scout.duckdb"
@@ -499,7 +500,7 @@ def test_features_source_has_no_comments_or_docstrings_and_docs_have_no_task_ids
     source = (PROJECT_ROOT / "vision" / "features.py").read_text()
     assert all(block.lstrip().startswith("SELECT") for block in source.split('"""')[1::2]) and "'''" not in source
     assert not re.search(r"(?m)^\s*#", source)
-    for doc in ("docs/vision/features.md", "docs/results/features.md", "docs/vision/court.md"):
+    for doc in docs_on_disk(("docs/vision/features.md", "docs/results/features.md", "docs/vision/court.md")):
         assert not re.search(TASK_ID_PATTERN, (PROJECT_ROOT / doc).read_text())
     assert "Examples need:" not in (PROJECT_ROOT / "docs" / "vision" / "features.md").read_text()
 

@@ -1,5 +1,6 @@
 import shutil
 from dataclasses import replace
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -98,6 +99,7 @@ def test_saving_writes_review_columns_and_a_rejected_file_only_when_needed(tmp_p
     assert not rejected_path_for(plain_file).exists()
 
 
+@pytest.mark.skipif(not Path("data/labels/stand_in_set1.csv").is_file(), reason="needs the user's data/labels/stand_in_set1.csv")
 def test_an_old_labels_file_round_trips_byte_for_byte(tmp_path):
     source = "data/labels/stand_in_set1.csv"
     copy = tmp_path / "set1.csv"

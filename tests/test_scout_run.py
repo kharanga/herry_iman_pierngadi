@@ -35,6 +35,7 @@ from scout.run import (
 )
 from vision import court, features, hits, players, shuttle
 from vision.features import build_own_match
+from tests.results_pages import docs_on_disk
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 REAL_DATABASE_PATH = PROJECT_ROOT / "data" / "scout.duckdb"
@@ -281,7 +282,7 @@ def test_a_run_reusing_every_tracked_output_is_repeatable_and_writes_only_where_
 def test_scout_source_and_docs_have_no_comments_or_task_ids():
     source = (PROJECT_ROOT / "scout" / "run.py").read_text()
     assert '"""' not in source and "'''" not in source and not re.search(r"(?m)^\s*#", source)
-    for doc in ("docs/analytics/run.md", "docs/results/end_to_end.md"):
+    for doc in docs_on_disk(("docs/analytics/run.md", "docs/results/end_to_end.md")):
         assert not re.search(TASK_ID_PATTERN, (PROJECT_ROOT / doc).read_text())
 
 

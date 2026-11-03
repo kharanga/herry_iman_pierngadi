@@ -48,6 +48,7 @@ from vision.contact import (
     write_contact_spot_check,
 )
 from vision.hits import output_paths as hit_output_paths
+from tests.results_pages import docs_on_disk
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 VIDEO_PATH = Path("data/match.mp4")
@@ -333,7 +334,7 @@ def test_contact_spot_check_image_regenerates_byte_for_byte(shipped_comparison, 
 def test_contact_source_has_no_comments_or_docstrings_and_docs_have_no_task_ids():
     source = (PROJECT_ROOT / "vision" / "contact.py").read_text()
     assert '"""' not in source and "'''" not in source and not re.search(r"(?m)^\s*#", source)
-    for doc in ("docs/vision/contact.md", "docs/results/contact.md"):
+    for doc in docs_on_disk(("docs/vision/contact.md", "docs/results/contact.md")):
         assert not re.search(TASK_ID_PATTERN, (PROJECT_ROOT / doc).read_text())
     assert "Examples need:" not in (PROJECT_ROOT / "docs" / "vision" / "contact.md").read_text()
 
