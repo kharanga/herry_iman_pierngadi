@@ -228,12 +228,24 @@ def correct_shots(run: ScoredRun, labels: pd.DataFrame, spans: list[tuple[int, i
     return agreement_counts(outcomes)["type_right"], len(labels) + inside - matched_inside
 
 
+def typed_and_hit_by_the_right_player(outcomes: pd.DataFrame) -> int:
+    found = outcomes[outcomes["detected_frame"].notna() & outcomes["type_pred"].notna() & outcomes["type"].notna() & (outcomes["type"] != UNKNOWN_TYPE)]
+    return int(((found["type"] == found["type_pred"]) & (found["hitter"] == found["detected_hitter"])).sum())
+
+
+def correct_shots_right_hitter(run: ScoredRun, labels: pd.DataFrame, spans: list[tuple[int, int]], tolerance: int) -> tuple[int, int]:
+    outcomes = label_outcomes(run.hits, labels, run.predictions, tolerance, with_serves=True)
+    matched_inside, inside = precision_in_labelled_rallies(run.hits, outcomes, spans, tolerance, with_serves=True)
+    return typed_and_hit_by_the_right_player(outcomes), len(labels) + inside - matched_inside
+
+
 def correct_shot_table(runs: list[ScoredRun], labels: pd.DataFrame, spans: list[tuple[int, int]], windows: list[tuple[float, int]], fps: float) -> list[str]:
-    lines = ["| Model | Tolerance | Correct shots | Labelled hits | False hits inside labelled rallies |", "|---|---|---|---|---|"]
+    lines = ["| Model | Tolerance | Correct shots | Correct shots, right hitter too | Labelled hits | False hits inside labelled rallies |", "|---|---|---|---|---|---|"]
     for run in runs:
         for window, tolerance in windows:
             right, total = correct_shots(run, labels, spans, tolerance)
-            lines.append(f"| {run.name} | {tolerance_label(window, fps)} | {share(right, total)} | {len(labels)} | {total - len(labels)} |")
+            right_hitter, _ = correct_shots_right_hitter(run, labels, spans, tolerance)
+            lines.append(f"| {run.name} | {tolerance_label(window, fps)} | {share(right, total)} | {share(right_hitter, total)} | {len(labels)} | {total - len(labels)} |")
     return lines
 
 
@@ -305,7 +317,7 @@ def report_lines(
     breakdown = tolerance_label(breakdown_seconds, fps)
     lines = [f"labels: {len(labels)} in {labels['rally'].nunique()} rallies; sources: " + ", ".join(f"{source} {count}" for source, count in labels["source"].value_counts().items())]
     lines += ["", "## Headline", *headline_table(runs, labels, spans, windows, fps)]
-    lines += ["", "## Correct shots: matched and typed right ÷ (labelled hits + false hits inside labelled rallies), detected + inferred serves", *correct_shot_table(runs, labels, spans, windows, fps)]
+    lines += ["", "## Correct shots: matched and typed right ÷ (labelled hits + false hits inside labelled rallies), detected + inferred serves; the right-hitter column also needs the hitter right", *correct_shot_table(runs, labels, spans, windows, fps)]
     lines += source_lines(runs, labels, spans, windows, fps)
     lines += ["", f"## Labelled serves, {breakdown}", *serve_table(runs, labels, breakdown_tolerance)]
     lines += ["", "## Labelled serves left out, detected + inferred serves", *non_serve_table(runs, labels, windows, fps)]

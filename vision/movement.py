@@ -713,6 +713,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--rallies-from", type=Path, metavar="MODEL", help="rallies and serve rows come from this hit model (with the gap rule and the inferred serve); the --model hits fill each rally after its serve row, and its hits outside these rallies are dropped")
     parser.add_argument("--rallies-hit-score-min", type=float, default=MovementSettings().hit_score_min, help="with --rallies-from: that model's hit score minimum (default 0.5)")
     parser.add_argument("--rallies-end-score-min", type=float, default=MovementSettings().rally_end_score_min, help="with --rallies-from: that model's rally end score minimum (default 0.7)")
+    parser.add_argument("--rallies-from-labels", type=Path, metavar="RALLIES_CSV", help="rallies are the user's (a _rallies.csv from python -m vision.label): the serve row sits at each rally's start frame, the --model hit chain fills it after the serve (none within 0.25 s of it), and nothing outside the rallies is kept")
     parser.add_argument("--serve-stance", action="store_true", help="with --in-play-model: each stretch's serve is the stance rule's (python -m vision.serve_stance): both players still in diagonal service courts, the first to move serves; the --model hits fill the rally after it and its hits after the stretch are dropped")
     parser.add_argument("--stretch-model", type=Path, metavar="MODEL", help="with --in-play-model: the hit model whose scores feed the in-play model (and, with --serve-stance, the stance serve, at its default thresholds); the --model hits fill the stretches (default: --model does both)")
     return parser.parse_args(arguments)
@@ -753,6 +754,45 @@ def tables_with_rallies_from(tracks: PlayerTracks, parsed: argparse.Namespace, s
     return rallies_with_newer_hits(rally_hits, rallies, newer_hits, same_hit_frames)
 
 
+def serve_hitter(chain: list[HitCandidate], start_index: int, scores: dict[str, np.ndarray]) -> str:
+    if chain:
+        return other_player(chain[0].hitter)
+    return max(PLAYERS, key=lambda player: float(scores[player][start_index]) if len(scores[player]) else 0.0)
+
+
+def labelled_rally(candidates: list[HitCandidate], scores: dict[str, np.ndarray], start_index: int, end_index: int, same_hit_frames: int, settings: MovementSettings) -> list[HitCandidate]:
+    chain = alternating_hit_chain([candidate for candidate in candidates if start_index + same_hit_frames < candidate.frame <= end_index], settings)
+    return [HitCandidate(start_index, serve_hitter(chain, start_index, scores), float("nan"))] + chain
+
+
+def hits_in_labelled_rallies(tracks: PlayerTracks, scores: dict[str, np.ndarray], user_rallies: pd.DataFrame, settings: MovementSettings) -> tuple[pd.DataFrame, pd.DataFrame]:
+    samples = tracks_on_sample_indices(tracks)
+    frames = np.asarray(tracks.frames, dtype=int)
+    candidates = hit_candidates(samples.frames, scores, settings)
+    same_hit = max(1, tolerance_frames(SAME_HIT_AS_SERVE_SECONDS, settings.fps))
+    hit_rows, rally_rows = [], []
+    for rally in user_rallies.sort_values("start_frame").itertuples(index=False):
+        if rally.start_frame > frames[-1] or rally.end_frame < frames[0]:
+            continue
+        start_index = int(np.searchsorted(frames, int(rally.start_frame)))
+        end_index = int(np.searchsorted(frames, int(rally.end_frame), side="right")) - 1
+        hits = labelled_rally(candidates, scores, start_index, end_index, same_hit, settings)
+        hit_rows.extend({"rally": int(rally.rally), "frame": hit.frame, "hitter": hit.hitter, "score": round(hit.score, 3), "reach": np.nan} for hit in hits)
+        rally_rows.append({"rally": int(rally.rally), "start_frame": start_index, "end_frame": end_index, "hits": len(hits)})
+    hits = pd.DataFrame(hit_rows, columns=["rally", "frame", "hitter", "score", "reach"])
+    rallies = pd.DataFrame(rally_rows, columns=["rally", "start_frame", "end_frame", "hits"])
+    return tables_in_video_frames(hits, rallies, tracks)
+
+
+def tables_with_labelled_rallies(tracks: PlayerTracks, parsed: argparse.Namespace, settings: MovementSettings) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if parsed.rallies_from is not None or parsed.in_play_model is not None or parsed.serve_stance or parsed.stretch_model is not None:
+        raise ValueError("--rallies-from-labels can't be combined with --rallies-from, --in-play-model, --stretch-model or --serve-stance")
+    if not settings.infer_serves:
+        raise ValueError("--rallies-from-labels adds the serve rows; drop --no-serves")
+    user_rallies = pd.read_csv(parsed.rallies_from_labels)
+    return hits_in_labelled_rallies(tracks, sample_hit_scores(tracks, load_hit_model(parsed.model), settings), user_rallies, settings)
+
+
 def tables_with_stretch_model(tracks: PlayerTracks, parsed: argparse.Namespace, settings: MovementSettings) -> tuple[pd.DataFrame, pd.DataFrame]:
     if parsed.in_play_model is None:
         raise ValueError("--serve-stance needs --in-play-model")
@@ -778,9 +818,11 @@ def detect_command(parsed: argparse.Namespace, settings: MovementSettings) -> in
         raise ValueError("give --start and --end")
     tracks = load_player_tracks(parsed.video, parsed.start, parsed.end, parsed.players_dir)
     settings = settings_for_tracks(parsed.video, track_frame_stride(parsed.video, parsed.start, parsed.end, parsed.players_dir), settings)
-    if parsed.stretch_model is not None and parsed.in_play_model is None:
+    if parsed.stretch_model is not None and parsed.in_play_model is None and parsed.rallies_from_labels is None:
         raise ValueError("--stretch-model needs --in-play-model")
-    if parsed.rallies_from is not None:
+    if parsed.rallies_from_labels is not None:
+        hits, rallies = tables_with_labelled_rallies(tracks, parsed, settings)
+    elif parsed.rallies_from is not None:
         hits, rallies = tables_with_rallies_from(tracks, parsed, settings)
     elif parsed.serve_stance or parsed.stretch_model is not None:
         hits, rallies = tables_with_stretch_model(tracks, parsed, settings)

@@ -42,9 +42,9 @@ def model_labels(hits: pd.DataFrame, typed: pd.DataFrame) -> pd.DataFrame:
     return table
 
 
-def model_rallies(rallies: pd.DataFrame, labels: pd.DataFrame) -> pd.DataFrame:
+def model_rallies(rallies: pd.DataFrame, labels: pd.DataFrame, bounds_checked: bool = False) -> pd.DataFrame:
     kept = rallies[rallies["rally"].isin(labels["rally"])]
-    return pd.DataFrame({"rally": kept["rally"].astype(int), "start_frame": kept["start_frame"].astype(int), "end_frame": kept["end_frame"].astype(int), "bounds_checked": False})[RALLY_COLUMNS]
+    return pd.DataFrame({"rally": kept["rally"].astype(int), "start_frame": kept["start_frame"].astype(int), "end_frame": kept["end_frame"].astype(int), "bounds_checked": bounds_checked})[RALLY_COLUMNS]
 
 
 def parse_arguments(arguments: list[str]) -> argparse.Namespace:
@@ -54,6 +54,7 @@ def parse_arguments(arguments: list[str]) -> argparse.Namespace:
     parser.add_argument("--database", type=Path, required=True, help="a shots database with the video's own rows typed (type_pred, type_detail_pred, type_conf)")
     parser.add_argument("--match-id", required=True, help="the own rows' match id")
     parser.add_argument("--labels", type=Path, help="labels CSV to write (default data/labels/<video id>.csv)")
+    parser.add_argument("--rallies-checked", action="store_true", help="mark the rallies' bounds as checked (when they are the user's own, from vision.movement --rallies-from-labels)")
     parser.add_argument("--force", action="store_true", help="overwrite an existing labels file")
     return parser.parse_args(arguments)
 
@@ -74,7 +75,7 @@ def main(arguments: list[str]) -> int:
         print(f"error: {error}", file=sys.stderr)
         return 1
     write_atomically(labels, labels_file)
-    write_atomically(model_rallies(rallies, labels), rallies_file)
+    write_atomically(model_rallies(rallies, labels, parsed.rallies_checked), rallies_file)
     typed = int((labels["type_group"] != UNKNOWN_TYPE).sum())
     print(f"saved {labels_file} ({len(labels)} model hits, {typed} typed, {len(labels) - typed} unknown) and {rallies_file}")
     return 0

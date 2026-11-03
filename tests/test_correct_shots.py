@@ -1,6 +1,6 @@
 import pandas as pd
 
-from vision.label_scores import ScoredRun, correct_shot_table, correct_shots, report_lines
+from vision.label_scores import ScoredRun, correct_shot_table, correct_shots, correct_shots_right_hitter, report_lines
 
 NAN = float("nan")
 
@@ -41,7 +41,14 @@ def test_a_missed_hit_a_wrong_type_and_a_false_hit_inside_each_cost_one_and_serv
 
 def test_the_table_line_and_its_place_after_the_headline():
     perfect = run([(1, 100, "me", NAN, NAN), (1, 140, "opp", 0.9, NAN), (1, 160, "me", 0.9, NAN), (1, 180, "me", 0.9, NAN), (1, 220, "opp", 0.9, NAN)], [(100, "serve"), (140, "clear"), (160, "lift"), (180, "smash"), (220, "net")])
-    assert correct_shot_table([perfect], labels(), SPANS, [(0.25, 5)], 20.0)[2] == "| m | ±0.25 s (±5 frames at 20 fps) | 4/5 = 80.0% | 4 | 1 |"
+    assert correct_shot_table([perfect], labels(), SPANS, [(0.25, 5)], 20.0)[2] == "| m | ±0.25 s (±5 frames at 20 fps) | 4/5 = 80.0% | 4/5 = 80.0% | 4 | 1 |"
     lines = report_lines([perfect], labels(), SPANS, 20.0, (0.25,), 0.25)
     headings = [line for line in lines if line.startswith("## ")]
     assert headings[0] == "## Headline" and headings[1].startswith("## Correct shots:")
+
+
+def test_a_serve_row_given_to_the_wrong_player_counts_for_correct_shots_but_not_with_the_hitter():
+    wrong_server = run([(1, 100, "opp", NAN, NAN), (1, 140, "opp", 0.9, NAN), (1, 180, "me", 0.9, NAN), (1, 220, "opp", 0.9, NAN)], [(100, "serve"), (140, "clear"), (180, "smash"), (220, "net")])
+    assert correct_shots(wrong_server, labels(), SPANS, 5) == (4, 4)
+    assert correct_shots_right_hitter(wrong_server, labels(), SPANS, 5) == (3, 4)
+    assert correct_shot_table([wrong_server], labels(), SPANS, [(0.25, 5)], 20.0)[2] == "| m | ±0.25 s (±5 frames at 20 fps) | 4/4 = 100.0% | 3/4 = 75.0% | 4 | 0 |"

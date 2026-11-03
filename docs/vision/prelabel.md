@@ -6,7 +6,7 @@ correct in `vision.label_ui --review` (`docs/vision/label_ui.md`, "Review mode")
 ## Command
 
 ```
-.venv/bin/python -m vision.prelabel <video> --hits HITS_CSV --database DATABASE --match-id ID [--labels LABELS] [--force]
+.venv/bin/python -m vision.prelabel <video> --hits HITS_CSV --database DATABASE --match-id ID [--labels LABELS] [--rallies-checked] [--force]
 ```
 
 - `--hits`: the detector's hits file. Its `rallies_*.csv` sits next to it.
@@ -21,7 +21,8 @@ correct in `vision.label_ui --review` (`docs/vision/label_ui.md`, "Review mode")
   A hit with no prediction (no landing point: the last shot of a rally) gets type
   `unknown` and no score.
 - **The rallies file** gets the detector's rallies that hold hits, with
-  `bounds_checked = False`.
+  `bounds_checked = False`. With `--rallies-checked` they are marked `True`, for rallies
+  that are the user's own (`vision.movement --rallies-from-labels`).
 - **Overwriting:** an existing labels file is never overwritten without `--force`,
   because it may hold the user's review.
 
@@ -40,5 +41,7 @@ missing file or a missing column; `2` for bad arguments.
 [[100, 'opp', 'serve_short', 'model', 0.9, 100, 'serve_short'], [130, 'me', 'net', 'model', 0.6, 130, 'net'], [160, 'opp', 'unknown', 'model', nan, 160, 'unknown']]
 >>> model_rallies(pd.DataFrame({"rally": [1, 2], "start_frame": [90, 400], "end_frame": [200, 500], "hits": [3, 0]}), labels).values.tolist()
 [[1, 90, 200, False]]
+>>> model_rallies(pd.DataFrame({"rally": [1], "start_frame": [90], "end_frame": [200], "hits": [3]}), labels, bounds_checked=True).values.tolist()
+[[1, 90, 200, True]]
 
 ```

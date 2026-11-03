@@ -66,6 +66,7 @@ pure: arrays and tables in, tables out. Only `load_player_tracks`, `load_hit_mod
 | `--no-serves` | don't add an inferred serve row to each rally |
 | `--in-play-model MODEL` | rallies are the in-play stretches this model finds (`python -m vision.in_play`, `docs/vision/in_play.md`) instead of the gap rule. Hits are the hit chain inside each stretch. The inferred serve sits at the stretch's start unless the first detected hit is within 0.3 s of it. Off by default |
 | `--rallies-from MODEL` | rallies and serve rows come from this hit model (run with the gap rule and the inferred serve, at `--rallies-hit-score-min` and `--rallies-end-score-min`, default 0.5 and 0.7); the `--model` hits fill each of those rallies after its serve row (`rallies_with_newer_hits`). Can't be combined with `--in-play-model` or `--no-serves`. Off by default |
+| `--rallies-from-labels RALLIES_CSV` | rallies are the user's, from a `_rallies.csv` of `python -m vision.label` (for example marked with `vision.label_ui --blank`: b at serve contact, e at the landing). Each rally gets a serve row at its start frame, with no score. The server is the player opposite the first detected hit, or, with no hits, the one with the higher hit score at the start. The `--model` hit chain fills the rally from more than 0.25 s after the serve to its end frame, and nothing outside the rallies is kept. The user's rally numbers are kept. Can't be combined with `--rallies-from`, `--in-play-model`, `--stretch-model`, `--serve-stance` or `--no-serves`. Off by default |
 | `--stretch-model MODEL` | with `--in-play-model`: this hit model's scores feed the in-play model (and, with `--serve-stance`, the stance serve, at the default thresholds 0.5 and 0.7); the `--model` hits fill the stretches. Without it `--model` does both. Off by default |
 | `--serve-stance` | with `--in-play-model`: each stretch's serve is the stance rule's (`docs/vision/serve_stance.md`), the nearest guess from 2 s before the stretch start to 1 s after, and the rally starts there. The `--model` hit chain fills the rally after the serve, up to 0.2 s past the stretch end. A stretch without a guess keeps the inferred serve at its start. Can't be combined with `--no-serves`. Off by default |
 | `--train` | fit the model on the `--range` ranges (labelled through `--match`) and save it to `--model` |
@@ -434,6 +435,35 @@ newer scorer's detected hits after the serve row, up to the rally's `end_frame`:
 [[1, 100, 'opp'], [1, 160, 'me'], [1, 290, 'opp'], [2, 400, 'me']]
 >>> table["hits"].tolist()
 [3, 1]
+
+```
+
+### `hits_in_labelled_rallies(tracks, scores, user_rallies, settings) -> (hits, rallies)`, `labelled_rally(candidates, scores, start_index, end_index, same_hit_frames, settings)`, `serve_hitter(chain, start_index, scores) -> str`
+The `--rallies-from-labels` pipeline. `user_rallies` has `rally`, `start_frame` and
+`end_frame` in video frames. For each rally:
+- a serve row at the start frame, with no score;
+- the alternating hit chain of the candidates from more than `same_hit_frames` after
+  the start up to the end frame.
+
+The server is the player opposite the chain's first hit; with an empty chain, the player
+with the higher score at the start. The rally numbers and bounds are the user's. Below,
+the opponent's peak 5 frames after the first serve is the serve itself and is dropped.
+The second rally has only the serve and one hit by `me`, so `opp` serves.
+
+```python
+>>> from vision.movement import PlayerTracks, hits_in_labelled_rallies
+>>> frames = np.arange(1000, 1300)
+>>> no_points, no_boxes = np.full((300, 2), np.nan), np.full((300, 4), np.nan)
+>>> tracks = PlayerTracks(frames, no_points, no_points, no_boxes, no_boxes)
+>>> scores = {"me": np.zeros(300), "opp": np.zeros(300)}
+>>> for index, player in ((5, "opp"), (30, "opp"), (55, "me"), (80, "opp"), (200, "me")):
+...     scores[player][index] = 0.9
+>>> user_rallies = pd.DataFrame({"rally": [4, 7], "start_frame": [1000, 1190], "end_frame": [1090, 1250]})
+>>> hits, table = hits_in_labelled_rallies(tracks, scores, user_rallies, settings_for_video(30.0, 1280.0))
+>>> hits[["rally", "frame", "hitter"]].values.tolist()
+[[4, 1000, 'me'], [4, 1030, 'opp'], [4, 1055, 'me'], [4, 1080, 'opp'], [7, 1190, 'opp'], [7, 1200, 'me']]
+>>> table.values.tolist()
+[[4, 1000, 1090, 4], [7, 1190, 1250, 2]]
 
 ```
 
